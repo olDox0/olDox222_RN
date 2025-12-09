@@ -1,1 +1,7 @@
 # Adicione suas dependências aqui
+
+# Ferramentas de Análise de Saúde (adicionadas pelo doxoade)
+radon
+coverage
+pytest
+pyflakes

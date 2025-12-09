@@ -1,13 +1,15 @@
 venv/
-
 __pycache__/
 *.py[cod]
-
 build/
 dist/
 *.egg-info/
-
 .vscode/
 .idea/
+.doxoade_cache/
 
 .env
+*.txt
+
+#Assegurar
+!requirements.txt

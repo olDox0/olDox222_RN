@@ -1,0 +1,4 @@
+[tool.doxoade]
+ignore = []
+source_dir = "."
+keep = [ "coverage", "pyflakes", "pytest", "radon",]
