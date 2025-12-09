@@ -7,9 +7,11 @@ dist/
 .vscode/
 .idea/
 .doxoade_cache/
+#.doxoade_cache/check_cache.json
 
 .env
 *.txt
+*.ini
 
 #Assegurar
 !requirements.txt
