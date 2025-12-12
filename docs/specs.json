@@ -1,0 +1,35 @@
+{
+  "lab_info": {
+    "name": "OlDox Research Neural",
+    "acronym": "ORN",
+    "engine": "DoxoNet v3.0 (NumPy)",
+    "location": "Doxoade/ORN"
+  },
+  "technologies": {
+    "neural_net": {
+      "type": "LSTM (Long Short-Term Memory)",
+      "layers": ["Embedding", "LSTM Cell", "Softmax"],
+      "optimizer": "SGD com Momentum & Gradient Clipping",
+      "precision": "Float32 (Treino) / Int8 (Armazenamento)"
+    },
+    "symbolic_ai": {
+      "type": "Pushdown Automaton (Autômato de Pilha)",
+      "constraints": [
+        "Parenthesis Balancing",
+        "Variable Scope Tracking",
+        "Operator Adjacency Rules"
+      ]
+    },
+    "training": {
+      "method": "Curriculum Learning",
+      "curriculum": ["Synthetic Python Syntax", "Linter Solution Templates"],
+      "tokenization": "Word-Level com Tokens Especiais (<UNK>, ENDMARKER)"
+    }
+  },
+  "achievements": {
+    "model_size": "92 KB",
+    "inference_speed": "~50ms/token (CPU)",
+    "accuracy_syntax": "100% (Garantida pelo Arquiteto)",
+    "accuracy_semantic": "~85% (Variável conforme contexto)"
+  }
+}
