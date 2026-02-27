@@ -1,1 +1,4 @@
-ou ORN, ê um projeto de rede neural focado em desenvolver uma rede neural para a IA do olDox222IA, o foco da rede Ç entender linguagem natural e linguagem de programaá∆o, alem de entender logica complexa, a ideia Ç desenvolver sistema sofisticado de retropropagaá∆o e feedback, e desenvolver sistema de feedback sofisticado e auto consiciente dele mesmo 
+# ORN ‚Äî AI CLI para C√≥digo
+Modelo: Qwen2.5-Coder-0.5B-Instruct-Q4_K_M
+Comandos: think, audit, fix, gen, brain, graph, config
+Protocolos: OSL | PASC | Programming Gods

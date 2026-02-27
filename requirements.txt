@@ -1,7 +1,21 @@
-# Adicione suas dependências aqui
-
-# Ferramentas de Análise de Saúde (adicionadas pelo doxoade)
-radon
-coverage
-pytest
-pyflakes
+#
+#
+#
+#       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+#   pip install llama-cpp-python \
+#   python -c "import llama_cpp; print(llama_cpp.__version__)"
+# --- Instalação manual do llama-cpp-python no Windows ---
+# --- Obrigatórias ---
+# --- Removidas ---
+# NÃO instalar via pip build — requer compilador C++ (MSVC/nmake).
+# ORN — Dependências
+# OSL-13: pins de versão para reprodutibilidade
+# OSL-18: preferir stdlib; externas somente quando necessário
+# Ou, se o doxoade w64toolkit já instalou, verificar com:
+# Referência: https://github.com/abetlen/llama-cpp-python/releases
+# Usar wheel pré-compilada:
+# colorama  → substituído por doxcolors (engine/ui/colors.py + colors.conf)
+# rich      → substituído por Display + ColorManager (zero deps)
+beautifulsoup4==4.14.2
+click==8.3.1
+numpy>=1.26.0             # VectorDB coseno (Osíris) — já instalado

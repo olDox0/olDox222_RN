@@ -1,4 +1,36 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orn"
+version = "0.1.0"
+description = "ORN — AI CLI para Código (Qwen2.5-Coder local)"
+authors = [{ name = "olDox222" }]
+requires-python = ">=3.10"
+readme = "README.md"
+
+dependencies = [
+    "click>=8.1",
+]
+
+[project.scripts]
+orn        = "engine.__main__:main"
+orn-server = "engine.server.__main__:main"
+orn-web    = "engine.web.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["engine*"]
+
 [tool.doxoade]
-ignore = []
-source_dir = "."
-keep = [ "coverage", "pyflakes", "pytest", "radon",]
+ignore = ["lixao", "models", "data/session"]
+
+[tool.doxoade.check]
+complexity_threshold = 10
+max_function_lines   = 60
+max_file_lines       = 500
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"

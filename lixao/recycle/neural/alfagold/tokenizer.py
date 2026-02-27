@@ -1,0 +1,162 @@
+# doxoade/neural/alfagold/tokenizer.py
+import re
+from collections import defaultdict, Counter
+
+class AlfagoldTokenizer:
+    def __init__(self):
+        # Mapeia bytes para caracteres unicode seguros
+        self.byte_encoder = self.bytes_to_unicode()
+        self.byte_decoder = {v: k for k, v in self.byte_encoder.items()}
+        
+        self.vocab = {}         
+        self.inverse_vocab = {} 
+        self.bpe_ranks = {}
+        self.cache = {}
+        
+        # Estado inicial
+        self.vocab_size = 0
+
+    def bytes_to_unicode(self):
+        """
+        Cria um mapa de bytes para caracteres unicode imprimíveis.
+        """
+        bs = list(range(ord("!"), ord("~")+1)) + list(range(ord("¡"), ord("¬")+1)) + list(range(ord("®"), ord("ÿ")+1))
+        cs = bs[:]
+        n = 0
+        for b in range(2**8):
+            if b not in bs:
+                bs.append(b)
+                cs.append(256 + n)
+                n += 1
+        cs = [chr(n) for n in cs]
+        return dict(zip(bs, cs))
+
+    def get_stats(self, vocab):
+        """Conta a frequência de pares de símbolos adjacentes."""
+        pairs = defaultdict(int)
+        for word, freq in vocab.items():
+            symbols = word.split()
+            for i in range(len(symbols)-1):
+                pairs[symbols[i], symbols[i+1]] += freq
+        return pairs
+
+    def merge_vocab(self, pair, v_in):
+        """Mescla o par mais frequente em todo o vocabulário."""
+        v_out = {}
+        bigram = re.escape(' '.join(pair))
+        p = re.compile(r'(?<!\S)' + bigram + r'(?!\S)')
+        for word in v_in:
+            w_out = p.sub(''.join(pair), word)
+            v_out[w_out] = v_in[word]
+        return v_out
+
+    def train(self, text, vocab_size=1000):
+        print(f"   🔨 [BPE] Treinando Tokenizer (Alvo: {vocab_size})...")
+        tokens_raw = re.findall(r"\w+|[^\w\s]", text, re.UNICODE)
+        
+        # Conta frequência
+        vocab = Counter()
+        for token in tokens_raw:
+            chars = " ".join([self.byte_encoder[b] for b in token.encode('utf-8')])
+            vocab[chars] += 1
+
+        self.vocab_size = vocab_size
+        num_merges = max(0, vocab_size - 300) 
+        
+        for i in range(num_merges):
+            pairs = self.get_stats(vocab)
+            if not pairs: break
+            best = max(pairs, key=pairs.get)
+            self.bpe_ranks[best] = i
+            vocab = self.merge_vocab(best, vocab)
+
+        print("   🔨 [BPE] Mapeando IDs Únicos...")
+        
+        # [FIX] Reinicia os dicionários para garantir limpeza
+        self.vocab = {}
+        self.inverse_vocab = {}
+        current_id = 0
+        
+        # 1. Bytes Base (0-255)
+        for b in self.byte_encoder.values():
+            self.vocab[b] = current_id
+            self.inverse_vocab[current_id] = b
+            current_id += 1
+            
+        # 2. Tokens Aprendidos (Merges)
+        for word in sorted(vocab.keys()):
+            token = word.replace(' ', '')
+            if token not in self.vocab:
+                self.vocab[token] = current_id
+                self.inverse_vocab[current_id] = token
+                current_id += 1
+                
+        # 3. Tokens Especiais
+        for special in ["<UNK>", "<PAD>", "ENDMARKER"]:
+            if special not in self.vocab:
+                self.vocab[special] = current_id
+                self.inverse_vocab[current_id] = special
+                current_id += 1
+        
+        print(f"   ✅ [BPE] Concluído. Vocab Final: {len(self.vocab)} (Max ID: {current_id-1})")
+
+    def bpe(self, token):
+        if token in self.cache: return self.cache[token]
+        word = tuple([self.byte_encoder[b] for b in token.encode('utf-8')])
+        pairs = self.get_stats({ " ".join(word): 1 })
+
+        if not pairs: return token
+
+        while True:
+            bigram = min(pairs, key=lambda pair: self.bpe_ranks.get(pair, float('inf')))
+            if bigram not in self.bpe_ranks: break
+            first, second = bigram
+            new_word = []
+            i = 0
+            while i < len(word):
+                try: j = word.index(first, i)
+                except ValueError: 
+                    new_word.extend(word[i:])
+                    break
+                new_word.extend(word[i:j])
+                i = j
+                if word[i] == first and i < len(word)-1 and word[i+1] == second:
+                    new_word.append(first+second)
+                    i += 2
+                else:
+                    new_word.append(word[i])
+                    i += 1
+            word = tuple(new_word)
+            if len(word) == 1: break
+            pairs = self.get_stats({ " ".join(word): 1 })
+
+        word = " ".join(word)
+        self.cache[token] = word
+        return word
+
+    def encode(self, text):
+        tokens_raw = re.findall(r"\w+|[^\w\s]", text, re.UNICODE)
+        ids = []
+        unk_id = self.vocab.get("<UNK>", 0)
+        
+        for token in tokens_raw:
+            if not token: continue
+            bpe_tokens = self.bpe(token).split(' ')
+            for t in bpe_tokens:
+                token_id = self.vocab.get(t, unk_id)
+                ids.append(token_id)
+        return ids
+
+    def decode(self, ids):
+        text = ""
+        for i in ids:
+            token = self.inverse_vocab.get(i, "")
+            if token in ["<UNK>", "<PAD>", "ENDMARKER"]: continue
+            chars = []
+            for c in token:
+                if c in self.byte_decoder: chars.append(chr(self.byte_decoder[c]))
+                else: chars.append(c)
+            part = "".join(chars)
+            if len(text) > 0 and part.isalnum() and text[-1].isalnum(): text += " " + part
+            else: text += part
+        return text

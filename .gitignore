@@ -1,17 +1,72 @@
-venv/
+# Arquivos de Cache do Python
 __pycache__/
 *.py[cod]
+*.pyc
+*.pyo
+*.pyd
+
+# Arquivos de Ambiente Virtual
+venv/
+.venv/
+env/
+.env
+
+# Arquivos de Build e Distribuição (para PyInstaller)
 build/
 dist/
 *.egg-info/
+*.spec
+
+# --- ARQUIVOS SENSÍVEIS E DE USUÁRIO (NUNCA COMPARTILHAR) ---
+chief_dossier.json
+doxoade_report.json
+Exemplo/
+tmp/
+.dox_agent_workspace/
+.dox_lab/
+tests/
+regression_tests/canon/
+recovery_zone/
+credentials.json
+token.json
+config.json
+#doxoade.bat
+*.log
+*.txt
+*.bkp
+*.bak
+*.dox
+*.pyx
+*.old_trash
+.nppBackup
+nppBackup/
+./nppBackup/
+pytest_temp_dir/
+.doxoade/vulcan/foundry/
+
+# --- Arquivos de Configuração de IDE ---
 .vscode/
 .idea/
+
+# Arquivos de sistema do Windows
+desktop.ini
+Thumbs.db
+
+# --- BACKUPS E ARQUIVOS TEMPORÁRIOS ---
+Vers/
+
+*.mak
+*.log
+
+# Doxoade cache files
 .doxoade_cache/
-#.doxoade_cache/check_cache.json
+.doxoade/
+.doxoade/vulcan/foundry/
 
-.env
-*.txt
-*.ini
+# terceirizados
+opt/w64devkit/
+models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF
 
-#Assegurar
+# Exceções (Auto-fixed pelo Doxoade)
 !requirements.txt
+!PipelineHelp.txt

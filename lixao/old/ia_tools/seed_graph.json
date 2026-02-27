@@ -1,0 +1,3742 @@
+{
+  "id": 1,
+  "type": "Module",
+  "flow": [
+    {
+      "id": 90,
+      "type": "Expr",
+      "flow": [
+        {
+          "id": 91,
+          "type": "Constant",
+          "flow": []
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "ClassDef",
+      "flow": [
+        {
+          "id": 90,
+          "type": "Expr",
+          "flow": [
+            {
+              "id": 91,
+              "type": "Constant",
+              "flow": []
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "FunctionDef",
+          "flow": [
+            {
+              "id": 999,
+              "type": "arguments",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 7,
+                  "type": "Call",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 7,
+                  "type": "Call",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 999,
+                  "type": "List",
+                  "flow": [
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 999,
+                      "type": "Load",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 999,
+                  "type": "List",
+                  "flow": [
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 999,
+                      "type": "Load",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "oia_id": 2001,
+          "label": "CAPACITY:__init__"
+        },
+        {
+          "id": 3,
+          "type": "FunctionDef",
+          "flow": [
+            {
+              "id": 999,
+              "type": "arguments",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 90,
+              "type": "Expr",
+              "flow": [
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 90,
+              "type": "Expr",
+              "flow": [
+                {
+                  "id": 7,
+                  "type": "Call",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "oia_id": 2002,
+          "label": "CAPACITY:reset"
+        },
+        {
+          "id": 3,
+          "type": "FunctionDef",
+          "flow": [
+            {
+              "id": 999,
+              "type": "arguments",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": []
+                },
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 90,
+              "type": "Expr",
+              "flow": [
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "UnaryOp",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Not",
+                      "flow": []
+                    },
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 21,
+                  "type": "Raise",
+                  "flow": [
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 60,
+                  "type": "Name",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Load",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "oia_id": 2003,
+          "label": "CAPACITY:set_constraints"
+        },
+        {
+          "id": 3,
+          "type": "FunctionDef",
+          "flow": [
+            {
+              "id": 999,
+              "type": "arguments",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": []
+                },
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 90,
+              "type": "Expr",
+              "flow": [
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Is",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 21,
+                  "type": "Raise",
+                  "flow": [
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "UnaryOp",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Not",
+                      "flow": []
+                    },
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 20,
+                  "type": "Return",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 60,
+                  "type": "Name",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 7,
+                  "type": "Call",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Eq",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 5,
+                  "type": "Assign",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Store",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 5,
+                  "type": "Assign",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Store",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 32,
+                  "type": "BoolOp",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "And",
+                      "flow": []
+                    },
+                    {
+                      "id": 30,
+                      "type": "Compare",
+                      "flow": [
+                        {
+                          "id": 6,
+                          "type": "Attribute",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Eq",
+                          "flow": []
+                        },
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 6,
+                          "type": "Attribute",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 30,
+                      "type": "Compare",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "NotIn",
+                          "flow": []
+                        },
+                        {
+                          "id": 6,
+                          "type": "Attribute",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 90,
+                  "type": "Expr",
+                  "flow": [
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 6,
+                          "type": "Attribute",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 11,
+              "type": "For",
+              "flow": [
+                {
+                  "id": 60,
+                  "type": "Name",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 60,
+                  "type": "Name",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Load",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 30,
+                      "type": "Compare",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Eq",
+                          "flow": []
+                        },
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "AugAssign",
+                      "flow": [
+                        {
+                          "id": 6,
+                          "type": "Attribute",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Store",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Add",
+                          "flow": []
+                        },
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 10,
+                      "type": "If",
+                      "flow": [
+                        {
+                          "id": 30,
+                          "type": "Compare",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "In",
+                              "flow": []
+                            },
+                            {
+                              "id": 999,
+                              "type": "List",
+                              "flow": [
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 5,
+                          "type": "Assign",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Store",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 10,
+                      "type": "If",
+                      "flow": [
+                        {
+                          "id": 30,
+                          "type": "Compare",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Eq",
+                              "flow": []
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 10,
+                          "type": "If",
+                          "flow": [
+                            {
+                              "id": 30,
+                              "type": "Compare",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Gt",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "AugAssign",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Store",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Sub",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 10,
+                          "type": "If",
+                          "flow": [
+                            {
+                              "id": 32,
+                              "type": "BoolOp",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "And",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 30,
+                                  "type": "Compare",
+                                  "flow": [
+                                    {
+                                      "id": 6,
+                                      "type": "Attribute",
+                                      "flow": [
+                                        {
+                                          "id": 60,
+                                          "type": "Name",
+                                          "flow": [
+                                            {
+                                              "id": 999,
+                                              "type": "Load",
+                                              "flow": []
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Eq",
+                                      "flow": []
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 30,
+                                  "type": "Compare",
+                                  "flow": [
+                                    {
+                                      "id": 6,
+                                      "type": "Attribute",
+                                      "flow": [
+                                        {
+                                          "id": 60,
+                                          "type": "Name",
+                                          "flow": [
+                                            {
+                                              "id": 999,
+                                              "type": "Load",
+                                              "flow": []
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Eq",
+                                      "flow": []
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "id": 5,
+                              "type": "Assign",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Store",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 10,
+                          "type": "If",
+                          "flow": [
+                            {
+                              "id": 30,
+                              "type": "Compare",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Eq",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 10,
+                              "type": "If",
+                              "flow": [
+                                {
+                                  "id": 30,
+                                  "type": "Compare",
+                                  "flow": [
+                                    {
+                                      "id": 6,
+                                      "type": "Attribute",
+                                      "flow": [
+                                        {
+                                          "id": 60,
+                                          "type": "Name",
+                                          "flow": [
+                                            {
+                                              "id": 999,
+                                              "type": "Load",
+                                              "flow": []
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Eq",
+                                      "flow": []
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 5,
+                                  "type": "Assign",
+                                  "flow": [
+                                    {
+                                      "id": 6,
+                                      "type": "Attribute",
+                                      "flow": [
+                                        {
+                                          "id": 60,
+                                          "type": "Name",
+                                          "flow": [
+                                            {
+                                              "id": 999,
+                                              "type": "Load",
+                                              "flow": []
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "id": 999,
+                                          "type": "Store",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 5,
+                                  "type": "Assign",
+                                  "flow": [
+                                    {
+                                      "id": 6,
+                                      "type": "Attribute",
+                                      "flow": [
+                                        {
+                                          "id": 60,
+                                          "type": "Name",
+                                          "flow": [
+                                            {
+                                              "id": 999,
+                                              "type": "Load",
+                                              "flow": []
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "id": 999,
+                                          "type": "Store",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 6,
+                  "type": "Attribute",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 60,
+                  "type": "Name",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Load",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "oia_id": 2004,
+          "label": "CAPACITY:observar"
+        },
+        {
+          "id": 3,
+          "type": "FunctionDef",
+          "flow": [
+            {
+              "id": 999,
+              "type": "arguments",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": []
+                },
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 90,
+              "type": "Expr",
+              "flow": [
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "UnaryOp",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Not",
+                      "flow": []
+                    },
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 21,
+                  "type": "Raise",
+                  "flow": [
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 5,
+              "type": "Assign",
+              "flow": [
+                {
+                  "id": 60,
+                  "type": "Name",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Store",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 7,
+                  "type": "Call",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "UnaryOp",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Not",
+                      "flow": []
+                    },
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 20,
+                  "type": "Return",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "Tuple",
+                      "flow": [
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        },
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Eq",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 32,
+                      "type": "BoolOp",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "And",
+                          "flow": []
+                        },
+                        {
+                          "id": 999,
+                          "type": "UnaryOp",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Not",
+                              "flow": []
+                            },
+                            {
+                              "id": 7,
+                              "type": "Call",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 30,
+                          "type": "Compare",
+                          "flow": [
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 999,
+                              "type": "NotIn",
+                              "flow": []
+                            },
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 20,
+                      "type": "Return",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Tuple",
+                          "flow": [
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "GeneratorExp",
+                          "flow": [
+                            {
+                              "id": 30,
+                              "type": "Compare",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "In",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "comprehension",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Store",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 20,
+                      "type": "Return",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Tuple",
+                          "flow": [
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Eq",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 30,
+                      "type": "Compare",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "In",
+                          "flow": []
+                        },
+                        {
+                          "id": 6,
+                          "type": "Attribute",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 20,
+                      "type": "Return",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Tuple",
+                          "flow": [
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 7,
+                      "type": "Call",
+                      "flow": [
+                        {
+                          "id": 6,
+                          "type": "Attribute",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 90,
+                      "type": "Expr",
+                      "flow": [
+                        {
+                          "id": 7,
+                          "type": "Call",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 5,
+                  "type": "Assign",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Store",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 32,
+                      "type": "BoolOp",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "And",
+                          "flow": []
+                        },
+                        {
+                          "id": 7,
+                          "type": "Call",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 30,
+                          "type": "Compare",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "NotIn",
+                              "flow": []
+                            },
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 60,
+                      "type": "Name",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 10,
+                      "type": "If",
+                      "flow": [
+                        {
+                          "id": 7,
+                          "type": "Call",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 20,
+                          "type": "Return",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Tuple",
+                              "flow": [
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 10,
+                      "type": "If",
+                      "flow": [
+                        {
+                          "id": 30,
+                          "type": "Compare",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "NotIn",
+                              "flow": []
+                            },
+                            {
+                              "id": 999,
+                              "type": "List",
+                              "flow": [
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 20,
+                          "type": "Return",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Tuple",
+                              "flow": [
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Eq",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 30,
+                      "type": "Compare",
+                      "flow": [
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        },
+                        {
+                          "id": 999,
+                          "type": "NotIn",
+                          "flow": []
+                        },
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 20,
+                      "type": "Return",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Tuple",
+                          "flow": [
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Eq",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 32,
+                      "type": "BoolOp",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Or",
+                          "flow": []
+                        },
+                        {
+                          "id": 30,
+                          "type": "Compare",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Eq",
+                              "flow": []
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 7,
+                          "type": "Call",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 10,
+                      "type": "If",
+                      "flow": [
+                        {
+                          "id": 32,
+                          "type": "BoolOp",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Or",
+                              "flow": []
+                            },
+                            {
+                              "id": 30,
+                              "type": "Compare",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "In",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "List",
+                                  "flow": [
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    },
+                                    {
+                                      "id": 91,
+                                      "type": "Constant",
+                                      "flow": []
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "id": 30,
+                              "type": "Compare",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Eq",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 20,
+                          "type": "Return",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Tuple",
+                              "flow": [
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 91,
+                                  "type": "Constant",
+                                  "flow": []
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 20,
+              "type": "Return",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "Tuple",
+                  "flow": [
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    },
+                    {
+                      "id": 999,
+                      "type": "Load",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "oia_id": 2005,
+          "label": "CAPACITY:validar"
+        },
+        {
+          "id": 3,
+          "type": "FunctionDef",
+          "flow": [
+            {
+              "id": 999,
+              "type": "arguments",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 90,
+              "type": "Expr",
+              "flow": [
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 20,
+              "type": "Return",
+              "flow": [
+                {
+                  "id": 31,
+                  "type": "BinOp",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Sub",
+                      "flow": []
+                    },
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 60,
+              "type": "Name",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "Load",
+                  "flow": []
+                }
+              ]
+            }
+          ],
+          "oia_id": 2006,
+          "label": "CAPACITY:variaveis_pendentes"
+        },
+        {
+          "id": 3,
+          "type": "FunctionDef",
+          "flow": [
+            {
+              "id": 999,
+              "type": "arguments",
+              "flow": [
+                {
+                  "id": 999,
+                  "type": "arg",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 90,
+              "type": "Expr",
+              "flow": [
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Eq",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 20,
+                  "type": "Return",
+                  "flow": [
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Eq",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 20,
+                  "type": "Return",
+                  "flow": [
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 30,
+                  "type": "Compare",
+                  "flow": [
+                    {
+                      "id": 6,
+                      "type": "Attribute",
+                      "flow": [
+                        {
+                          "id": 60,
+                          "type": "Name",
+                          "flow": [
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Load",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 999,
+                      "type": "Eq",
+                      "flow": []
+                    },
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                },
+                {
+                  "id": 10,
+                  "type": "If",
+                  "flow": [
+                    {
+                      "id": 32,
+                      "type": "BoolOp",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "And",
+                          "flow": []
+                        },
+                        {
+                          "id": 7,
+                          "type": "Call",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "id": 30,
+                          "type": "Compare",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "NotIn",
+                              "flow": []
+                            },
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "id": 20,
+                      "type": "Return",
+                      "flow": [
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 10,
+              "type": "If",
+              "flow": [
+                {
+                  "id": 32,
+                  "type": "BoolOp",
+                  "flow": [
+                    {
+                      "id": 999,
+                      "type": "And",
+                      "flow": []
+                    },
+                    {
+                      "id": 30,
+                      "type": "Compare",
+                      "flow": [
+                        {
+                          "id": 6,
+                          "type": "Attribute",
+                          "flow": [
+                            {
+                              "id": 60,
+                              "type": "Name",
+                              "flow": [
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Load",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 999,
+                          "type": "Eq",
+                          "flow": []
+                        },
+                        {
+                          "id": 91,
+                          "type": "Constant",
+                          "flow": []
+                        }
+                      ]
+                    },
+                    {
+                      "id": 32,
+                      "type": "BoolOp",
+                      "flow": [
+                        {
+                          "id": 999,
+                          "type": "Or",
+                          "flow": []
+                        },
+                        {
+                          "id": 30,
+                          "type": "Compare",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 60,
+                                  "type": "Name",
+                                  "flow": [
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 999,
+                              "type": "Eq",
+                              "flow": []
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            }
+                          ]
+                        },
+                        {
+                          "id": 7,
+                          "type": "Call",
+                          "flow": [
+                            {
+                              "id": 6,
+                              "type": "Attribute",
+                              "flow": [
+                                {
+                                  "id": 6,
+                                  "type": "Attribute",
+                                  "flow": [
+                                    {
+                                      "id": 60,
+                                      "type": "Name",
+                                      "flow": [
+                                        {
+                                          "id": 999,
+                                          "type": "Load",
+                                          "flow": []
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "id": 999,
+                                      "type": "Load",
+                                      "flow": []
+                                    }
+                                  ]
+                                },
+                                {
+                                  "id": 999,
+                                  "type": "Load",
+                                  "flow": []
+                                }
+                              ]
+                            },
+                            {
+                              "id": 91,
+                              "type": "Constant",
+                              "flow": []
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "id": 20,
+                  "type": "Return",
+                  "flow": [
+                    {
+                      "id": 91,
+                      "type": "Constant",
+                      "flow": []
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": 20,
+              "type": "Return",
+              "flow": [
+                {
+                  "id": 91,
+                  "type": "Constant",
+                  "flow": []
+                }
+              ]
+            }
+          ],
+          "oia_id": 2007,
+          "label": "CAPACITY:sugerir_correcao"
+        }
+      ]
+    }
+  ]
+}
