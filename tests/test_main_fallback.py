@@ -35,3 +35,17 @@ def test_main_reraises_unrelated_typeerror(monkeypatch) -> None:
         assert "unsupported operand type(s)" in str(exc)
     else:
         raise AssertionError("expected TypeError to be re-raised")
+
+
+def test_main_does_not_fallback_for_generic_signature_error(monkeypatch) -> None:
+    def broken_cli() -> None:
+        raise TypeError("foo() missing 1 required positional argument: 'x'")
+
+    monkeypatch.setattr(cli_module, "cli", broken_cli)
+
+    try:
+        entrypoint.main()
+    except TypeError as exc:
+        assert "foo() missing 1 required positional argument" in str(exc)
+    else:
+        raise AssertionError("expected TypeError to be re-raised")

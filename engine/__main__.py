@@ -158,7 +158,14 @@ def _is_wrapper_signature_type_error(exc: TypeError) -> bool:
         "required positional argument",
         "unexpected keyword argument",
     )
-    wrapper_tokens = ("cli_vulcan_optimized", "optimized", "argument")
+    # Evita falso positivo: só fazemos fallback quando a mensagem aponta
+    # explicitamente para wrapper/entrypoint de CLI otimizado.
+    wrapper_tokens = (
+        "cli_vulcan_optimized",
+        "v_cli_",
+        "_vulcan_optimized",
+        "cli()",
+    )
     return any(token in msg for token in signature_tokens) and any(
         token in msg for token in wrapper_tokens
     )
