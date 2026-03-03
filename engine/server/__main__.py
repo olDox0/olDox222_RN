@@ -132,9 +132,6 @@ if callable(_doxo_probe_embedded):
 # --- DOXOADE_VULCAN_BOOTSTRAP:END ---
 
 
-from _doxoade_vulcan_runtime import probe_embedded
-probe_embedded()
-
 # -*- coding: utf-8 -*-
 # engine/server/__main__.py
 from engine.server.server import ServerCLI
