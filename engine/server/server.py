@@ -27,7 +27,96 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# [VULCAN] Bootstrap do MetaFinder
+# Deve ocorrer ANTES de qualquer import de terceiros (llama_cpp, etc.)
+#
+# Estrategia de localizacao do doxoade (em ordem de prioridade):
+#   1. Variavel DOXOADE_ROOT definida no ambiente
+#   2. Pasta local doxoade/ subindo a arvore a partir de __file__
+#   3. Pacote instalado no venv (importavel diretamente, sem sys.path extra)
+#      — caso tipico quando doxoade esta em site-packages
+# ---------------------------------------------------------------------------
+
+def _vulcan_boot() -> tuple[bool, str]:
+    """
+    Garante que doxoade seja importavel e instala o VulcanMetaFinder.
+    Retorna (sucesso: bool, mensagem_detalhada: str).
+    OSL-15: nunca propaga excecao — falha = Python puro, servidor continua.
+    """
+    # ── Etapa 1: injetar sys.path se necessario ──────────────────────────────
+
+    # Caso 1: variavel de ambiente explicita (deploy / CI)
+    env_root = os.environ.get("DOXOADE_ROOT")
+    if env_root:
+        env_path = str(Path(env_root).resolve())
+        if env_path not in sys.path:
+            sys.path.insert(0, env_path)
+
+    # Caso 2: pasta local — sobe a arvore a partir deste arquivo
+    if not env_root:
+        here = Path(__file__).resolve()
+        for parent in [here, *here.parents]:
+            if (parent / "doxoade" / "__init__.py").exists():
+                root_str = str(parent)
+                if root_str not in sys.path:
+                    sys.path.insert(0, root_str)
+                break
+
+    # Caso 3: pacote instalado no venv → ja importavel, nada a fazer
+
+    # ── Etapa 2: verificar se o import funciona ──────────────────────────────
+    try:
+        import doxoade  # noqa: F401
+    except ImportError as exc:
+        return False, (
+            f"'doxoade' nao encontrado em sys.path nem instalado no venv.\n"
+            f"  ImportError: {exc}\n"
+            f"  Solucoes:\n"
+            f"    a) Execute na raiz do projeto: cd <raiz> && orn-server start\n"
+            f"    b) Instale o pacote: pip install -e <raiz>\n"
+            f"    c) Defina: set DOXOADE_ROOT=<raiz_que_contem_pasta_doxoade>"
+        )
+
+    # ── Etapa 3: instalar MetaFinder ─────────────────────────────────────────
+    try:
+        from doxoade.tools.vulcan.runtime import find_vulcan_project_root, install_meta_finder
+
+        # Tenta localizar .doxoade/vulcan/bin a partir do CWD e de __file__
+        root = (
+            find_vulcan_project_root(Path.cwd())
+            or find_vulcan_project_root(__file__)
+        )
+        if root is None:
+            return False, (
+                "doxoade importado OK, mas '.doxoade/vulcan/bin' nao encontrado.\n"
+                f"  Certifique-se de rodar 'doxoade vulcan lib' antes de iniciar o servidor.\n"
+                f"  CWD atual: {Path.cwd()}"
+            )
+
+        install_meta_finder(root)
+
+        lib_bin = root / ".doxoade" / "vulcan" / "lib_bin"
+        n_bins  = len(list(lib_bin.glob("*.pyd"))) if lib_bin.exists() else 0
+        return True, f"raiz='{root}' | {n_bins} binario(s) em lib_bin/"
+
+    except Exception:
+        return False, f"MetaFinder falhou:\n{traceback.format_exc()}"
+
+
+# Ativa ANTES dos imports de terceiros
+_VULCAN_ACTIVE, _VULCAN_MSG = _vulcan_boot()
+
+if _VULCAN_ACTIVE:
+    print(f"[VULCAN] OK — {_VULCAN_MSG}", flush=True)
+else:
+    for _line in _VULCAN_MSG.splitlines():
+        print(f"[VULCAN] {_line}", flush=True)
+    print("[VULCAN] Continuando com Python puro (OSL-15).", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +128,6 @@ PORT     = 8371
 BACKLOG  = 4
 RECV_SZ  = 65536
 
-# PID e log ficam no diretorio do projeto (onde orn-server e chamado)
 PID_FILE = Path("server.pid")
 LOG_FILE = Path("server.log")
 
@@ -50,12 +138,18 @@ LOG_FILE = Path("server.log")
 
 _llm   = None
 _cfg   = None
-_stats = {"requests": 0, "errors": 0, "total_tokens": 0, "start": None}
-_lock  = threading.Lock()
+_stats = {
+    "requests":        0,
+    "errors":          0,
+    "total_tokens":    0,
+    "total_elapsed_s": 0.0,
+    "start":           None,
+}
+_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-# Boot
+# Boot do modelo
 # ---------------------------------------------------------------------------
 
 def _load_model() -> None:
@@ -68,7 +162,8 @@ def _load_model() -> None:
         print(f"[ERRO] Modelo nao encontrado: {_cfg.model_path}", flush=True)
         sys.exit(1)
 
-    print(f"[BOOT] {_cfg.model_path.name}", flush=True)
+    backend = "VULCAN/nativo" if _VULCAN_ACTIVE else "Python puro"
+    print(f"[BOOT] {_cfg.model_path.name}  [{backend}]", flush=True)
     print(f"[BOOT] n_threads={_cfg.n_threads}  n_ctx={_cfg.n_ctx}", flush=True)
 
     t0   = time.monotonic()
@@ -96,17 +191,28 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
     )
     t0 = time.monotonic()
     with _lock:
-        out = _llm(prompt_full, max_tokens=max_tokens,
-                   stop=["<|im_end|>", "</s>"], echo=False)
+        out = _llm(
+            prompt_full,
+            max_tokens     = max_tokens,
+            stop           = ["<|im_end|>", "</s>"],
+            echo           = False,
+            temperature    = _cfg.temperature,
+            top_p          = _cfg.top_p,
+            top_k          = _cfg.top_k,
+            repeat_penalty = _cfg.repeat_penalty,
+        )
     elapsed = round(time.monotonic() - t0, 3)
     return out["choices"][0]["text"].strip(), elapsed
 
 
 # ---------------------------------------------------------------------------
-# Handlers
+# Handler de conexao
 # ---------------------------------------------------------------------------
 
 def _handle(conn: socket.socket) -> None:
+    # OSL-7: resp sempre definida — cliente nunca fica pendurado sem resposta
+    resp: dict = {"output": "", "elapsed_s": 0, "error": "internal error"}
+
     try:
         conn.settimeout(10)
         data = b""
@@ -120,22 +226,30 @@ def _handle(conn: socket.socket) -> None:
 
         line = data.decode("utf-8").strip()
         if not line:
+            resp = {"output": "", "elapsed_s": 0, "error": "payload vazio"}
             return
 
         # STATUS especial
         if line.upper() == "STATUS":
-            up = round(time.monotonic() - _stats["start"], 1) if _stats["start"] else 0
-            resp = {"status": "online", "uptime_s": up,
-                    "requests": _stats["requests"],
-                    "errors": _stats["errors"],
-                    "total_tokens": _stats["total_tokens"],
-                    "port": PORT}
-            conn.sendall((json.dumps(resp) + "\n").encode())
+            up  = round(time.monotonic() - _stats["start"], 1) if _stats["start"] else 0
+            req = _stats["requests"]
+            avg = round(_stats["total_elapsed_s"] / req, 3) if req > 0 else 0
+            resp = {
+                "status":         "online",
+                "uptime_s":       up,
+                "requests":       req,
+                "errors":         _stats["errors"],
+                "total_tokens":   _stats["total_tokens"],
+                "avg_elapsed_s":  avg,
+                "port":           PORT,
+                "vulcan":         _VULCAN_ACTIVE,
+                "vulcan_detail":  _VULCAN_MSG,
+            }
             return
 
-        req        = json.loads(line)
-        prompt     = str(req.get("prompt", "")).strip()
-        max_tokens = max(1, min(int(req.get("max_tokens", 128)), 2048))
+        req_data   = json.loads(line)
+        prompt     = str(req_data.get("prompt", "")).strip()
+        max_tokens = max(1, min(int(req_data.get("max_tokens", 128)), 2048))
 
         if not prompt:
             resp = {"output": "", "elapsed_s": 0, "error": "prompt vazio"}
@@ -143,16 +257,27 @@ def _handle(conn: socket.socket) -> None:
             _stats["requests"] += 1
             try:
                 output, elapsed = _infer(prompt, max_tokens)
-                _stats["total_tokens"] += max_tokens
+                _stats["total_tokens"]    += max_tokens
+                _stats["total_elapsed_s"] += elapsed
                 resp = {"output": output, "elapsed_s": elapsed, "error": None}
             except Exception as e:
                 _stats["errors"] += 1
-                resp = {"output": "", "elapsed_s": 0, "error": str(e)}
+                resp = {
+                    "output":    "",
+                    "elapsed_s": 0,
+                    "error":     str(e),
+                    "traceback": traceback.format_exc(),
+                }
 
     except json.JSONDecodeError as e:
         resp = {"output": "", "elapsed_s": 0, "error": f"JSON invalido: {e}"}
     except Exception as e:
-        resp = {"output": "", "elapsed_s": 0, "error": f"handler: {e}"}
+        resp = {
+            "output":    "",
+            "elapsed_s": 0,
+            "error":     f"handler: {e}",
+            "traceback": traceback.format_exc(),
+        }
     finally:
         try:
             conn.settimeout(None)
@@ -163,7 +288,7 @@ def _handle(conn: socket.socket) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Loop
+# Loop principal
 # ---------------------------------------------------------------------------
 
 def _serve() -> None:
@@ -171,11 +296,8 @@ def _serve() -> None:
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT))
     srv.listen(BACKLOG)
-    # Timeout de 1s: accept() nao bloqueia para sempre
-    # Ctrl+C e capturado em ate 1s (mesmo fix do orn-web)
     srv.settimeout(1.0)
     PID_FILE.write_text(str(os.getpid()))
-
     print(f"[SRV] PID={os.getpid()}  Porta={PORT}", flush=True)
 
     while True:
@@ -183,13 +305,14 @@ def _serve() -> None:
             conn, _ = srv.accept()
             threading.Thread(target=_handle, args=(conn,), daemon=True).start()
         except socket.timeout:
-            continue   # sem conexao no ultimo 1s — verifica KeyboardInterrupt
+            continue
         except KeyboardInterrupt:
             print("\n[SRV] Encerrando...", flush=True)
             _shutdown()
             break
         except Exception as e:
             print(f"[SRV] accept error: {e}", flush=True)
+            traceback.print_exc()
 
 
 def _shutdown() -> None:
@@ -200,12 +323,18 @@ def _shutdown() -> None:
         except Exception:
             pass
         _llm = None
+    if _VULCAN_ACTIVE:
+        try:
+            from doxoade.tools.vulcan.runtime import uninstall_meta_finder
+            uninstall_meta_finder()
+        except Exception:
+            pass
     PID_FILE.unlink(missing_ok=True)
     print("[SRV] Modelo liberado.", flush=True)
 
 
 # ---------------------------------------------------------------------------
-# CLI do servidor
+# CLI
 # ---------------------------------------------------------------------------
 
 class ServerCLI:
@@ -213,8 +342,7 @@ class ServerCLI:
 
     def run(self, args: list[str]) -> None:
         if not args or args[0] == "start":
-            bg = "--bg" in args
-            self._start(background=bg)
+            self._start(background="--bg" in args)
         elif args[0] == "stop":
             self._stop()
         elif args[0] == "status":
@@ -229,19 +357,16 @@ class ServerCLI:
         else:
             self._help()
 
-    # ----------------------------------------------------------------
-
     def _start(self, background: bool = False) -> None:
         if self._is_online():
             print(f"[SRV] Servidor ja rodando na porta {PORT}.")
             return
-
         if background:
             log = open(LOG_FILE, "w")
             subprocess.Popen(
                 [sys.executable, "-m", "engine.server", "start"],
                 stdout=log, stderr=log,
-                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
             print(f"[SRV] Iniciado em background. Log: {LOG_FILE}")
             print(f"[SRV] Aguarde ~5s e verifique: orn-server status")
@@ -273,16 +398,22 @@ class ServerCLI:
         up = resp.get("uptime_s", 0)
         h, rem = divmod(int(up), 3600)
         m, s   = divmod(rem, 60)
-        print(f"  Status:   ONLINE")
-        print(f"  Uptime:   {h:02d}:{m:02d}:{s:02d}")
-        print(f"  Requests: {resp['requests']}")
-        print(f"  Errors:   {resp['errors']}")
-        print(f"  Tokens:   {resp['total_tokens']}")
-        print(f"  Porta:    {resp.get('port', PORT)}")
+        print(f"  Status:      ONLINE")
+        print(f"  Uptime:      {h:02d}:{m:02d}:{s:02d}")
+        print(f"  Requests:    {resp['requests']}")
+        print(f"  Errors:      {resp['errors']}")
+        print(f"  Tokens:      {resp['total_tokens']}")
+        print(f"  Avg latency: {resp.get('avg_elapsed_s', 0)}s")
+        print(f"  Porta:       {resp.get('port', PORT)}")
+        vulcan_str = "ATIVO" if resp.get("vulcan") else "Python puro"
+        print(f"  Vulcan:      {vulcan_str}")
+        if not resp.get("vulcan"):
+            for line in resp.get("vulcan_detail", "").splitlines()[:4]:
+                print(f"               {line}")
 
     def _ask(self, prompt: str, max_tokens: int = 128) -> None:
         if not prompt:
-            print("[ERRO] Forneça um prompt: orn-server ask 'sua pergunta'")
+            print("[ERRO] Forneca um prompt: orn-server ask 'sua pergunta'")
             return
         resp = self._query(prompt, max_tokens)
         if resp is None:
@@ -290,6 +421,8 @@ class ServerCLI:
             return
         if resp.get("error"):
             print(f"[ERRO] {resp['error']}")
+            if resp.get("traceback"):
+                print(resp["traceback"])
         else:
             print(resp["output"])
             print(f"\n[{resp['elapsed_s']}s]")
@@ -302,10 +435,6 @@ class ServerCLI:
         print("  status         exibe uptime e estatisticas")
         print('  ask "prompt"   consulta direta ao modelo')
         print('  ask "prompt" --tokens 200')
-
-    # ----------------------------------------------------------------
-    # Helpers de socket (reutilizados pelo server_client.py)
-    # ----------------------------------------------------------------
 
     def _is_online(self) -> bool:
         try:
@@ -326,7 +455,7 @@ class ServerCLI:
     def _raw_query(self, payload: bytes) -> dict | None:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(2.0)
+                s.settimeout(60.0)
                 s.connect((HOST, PORT))
                 s.settimeout(None)
                 s.sendall(payload)

@@ -35,7 +35,7 @@ from engine.ui.display import Display
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """ORN — AI CLI para código (Qwen2.5-Coder local)."""
-    ctx.ensure_object(dict)   # OSL-6: contexto mínimo
+    ctx.ensure_object(dict)
 
 
 # ---------------------------------------------------------------------------
@@ -57,14 +57,22 @@ def cli(ctx: click.Context) -> None:
               help="Força modo direto (ignora servidor mesmo se online).")
 @click.option("--search", "-s", default=None, metavar="QUERY|FONTE:QUERY",
               help="Busca contexto online. Ex: 'asyncio' ou 'pypi:requests'")
+@click.option("--no-auto", is_flag=True, default=False,
+              help="Desativa busca autônoma (two-pass) nesta chamada.")
 def think(prompt: tuple[str, ...], context_file: str | None,
           raw: bool, tokens: int | None, direct: bool,
-          search: str | None = None) -> None:
+          search: str | None, no_auto: bool) -> None:
     """Pergunta livre ao Qwen. Ex: orn think 'como faço X em Python?'"""
     import time
-    full_prompt = " ".join(prompt)
 
-    # --search: busca contexto online e injeta antes do prompt
+    # Pergunta pura — imutável durante toda a montagem do prompt
+    question   = " ".join(prompt)
+    max_tokens = tokens or 128
+
+    # Blocos de contexto acumulados — cada um no formato [CTX-BEGIN/END]
+    context_blocks: list[str] = []
+
+    # --search manual: busca e acumula bloco
     if search:
         from engine.tools.crawler import OrnCrawler   # noqa: PLC0415
         src_key, _, sq = search.partition(":")
@@ -78,27 +86,30 @@ def think(prompt: tuple[str, ...], context_file: str | None,
             result  = crawler.search(crawl_query, source=crawl_source)
             if result.ok:
                 Display.success(f"[CRAWLER] {result.source}: {result.title!r}")
-                full_prompt = result.to_prompt_block() + "\n" + full_prompt
+                context_blocks.append(result.to_prompt_block())
             else:
                 Display.warn(f"[CRAWLER] {result.error}")
         except Exception as _ce:
             Display.warn(f"[CRAWLER] Erro: {_ce}")
 
-    # Injeta contexto de arquivo se fornecido
+    # --file: lê arquivo e acumula bloco
     if context_file:
         try:
             ctx_text = open(context_file, encoding="utf-8", errors="replace").read(3000)
-            full_prompt = f"[CONTEXTO DO ARQUIVO: {context_file}]\n{ctx_text}\n\n[PERGUNTA]\n{full_prompt}"
+            context_blocks.append(
+                f"[CTX-BEGIN]\n"
+                f"scope: {context_file}\n"
+                f"{ctx_text}\n"
+                f"[CTX-END]\n"
+            )
         except OSError:
             pass
 
-    max_tokens = tokens or 128
-
     Display.banner()
-    Display.thinking(full_prompt if not context_file else " ".join(prompt))
+    Display.thinking(question)
 
     # ---------------------------------------------------------------
-    # MODO SERVIDOR: detecta e usa SiCDox Server se disponivel
+    # MODO SERVIDOR
     # ---------------------------------------------------------------
     from engine.tools.server_client import is_server_online, ask as server_ask  # noqa
 
@@ -106,10 +117,48 @@ def think(prompt: tuple[str, ...], context_file: str | None,
 
     if use_server:
         Display.info("Modo servidor ativo — sem espera de load.")
+
+        # -----------------------------------------------------------
+        # TWO-PASS AUTÔNOMO
+        # Condições: servidor ativo + sem contexto manual + não desativado
+        # -----------------------------------------------------------
+        auto_search_ran = False
+        if not no_auto and not context_blocks:
+            from engine.tools.auto_search import AutoSearchDecider  # noqa: PLC0415
+            decider     = AutoSearchDecider()
+            search_term = decider.decide(question, server_ask)
+
+            if search_term:
+                Display.info(f"[AUTO] Buscando: {search_term!r}")
+                try:
+                    from engine.tools.crawler import OrnCrawler   # noqa: PLC0415
+                    result = OrnCrawler().search(search_term, source="auto")
+                    if result.ok:
+                        Display.success(
+                            f"[AUTO] Contexto: {result.source} — {result.title!r}"
+                        )
+                        context_blocks.append(result.to_prompt_block())
+                    else:
+                        Display.warn(
+                            f"[AUTO] Busca falhou ({result.error}). "
+                            f"Respondendo sem contexto externo."
+                        )
+                except Exception as _ae:
+                    Display.warn(f"[AUTO] Erro no crawler: {_ae}. Continuando sem contexto.")
+                auto_search_ran = True
+            else:
+                Display.info("[AUTO] Respondendo do conhecimento interno.")
+
+        # Monta prompt final: N blocos → [TASK] → question
+        if context_blocks:
+            full_prompt = "".join(context_blocks) + "\n[TASK]\n" + question
+        else:
+            full_prompt = question
+
         Display.separator()
 
-        t0 = time.monotonic()
-        resp = server_ask(full_prompt, max_tokens)
+        t0      = time.monotonic()
+        resp    = server_ask(full_prompt, max_tokens)
         elapsed = round(time.monotonic() - t0, 3)
 
         if resp is None:
@@ -125,13 +174,21 @@ def think(prompt: tuple[str, ...], context_file: str | None,
             else:
                 Display.code_block(resp["output"])
             Display.separator()
-            Display.info(f"Tempo: {resp.get('elapsed_s', elapsed)}s  [servidor]")
+            mode_label = "[servidor+auto]" if auto_search_ran else "[servidor]"
+            Display.info(f"Tempo: {resp.get('elapsed_s', elapsed)}s  {mode_label}")
             return
 
     # ---------------------------------------------------------------
     # MODO DIRETO: Executive + Bridge (carrega modelo aqui)
+    # Two-pass não roda no modo direto — custo proibitivo no N2808.
+    # --search e --file manuais funcionam normalmente.
     # ---------------------------------------------------------------
     if not use_server:
+        if context_blocks:
+            full_prompt = "".join(context_blocks) + "\n[TASK]\n" + question
+        else:
+            full_prompt = question
+
         Display.info("Modo direto — carregando modelo (~80s no N2808)...")
         Display.separator()
 
@@ -190,7 +247,6 @@ def config(model: str | None, threads: int | None,
         _show_config()
         return
 
-    # Persistência de config — TODO Fase 2: salvar em data/orn_config.json
     if model:
         Display.warn(f"--model definido: {model}")
         Display.info("(persistência de config será implementada na Fase 2)")
@@ -204,7 +260,7 @@ def config(model: str | None, threads: int | None,
 
 def _show_config() -> None:
     """Exibe configuração atual e resultado do first_contact. OSL-4."""
-    from engine.core.llm_bridge import BridgeConfig       # noqa: PLC0415
+    from engine.core.llm_bridge import BridgeConfig          # noqa: PLC0415
     from engine.tools.first_contact import check_environment  # noqa: PLC0415
 
     cfg = BridgeConfig()
@@ -218,6 +274,10 @@ def _show_config() -> None:
     Display.kv("n_threads",     str(cfg.n_threads))
     Display.kv("n_gpu_layers",  str(cfg.n_gpu_layers))
     Display.kv("ttl_seconds",   str(cfg.ttl_seconds))
+    Display.kv("temperature",   str(cfg.temperature))
+    Display.kv("top_p",         str(cfg.top_p))
+    Display.kv("top_k",         str(cfg.top_k))
+    Display.kv("repeat_penalty",str(cfg.repeat_penalty))
 
     Display.separator()
     Display.info("Verificação de ambiente (first_contact):")

@@ -9,7 +9,13 @@ Uso:
   orn-web start --no-browser  inicia sem abrir browser
   orn-web stop           para o servidor
 
-OSL-18: stdlib apenas (http.server, json, threading, webbrowser).
+Mudancas v0.3:
+  - Auto-search two-pass integrado no POST /ask
+  - Response JSON inclui source e source_url
+  - renderMarkdown: indentacao e tabs preservados
+  - Badge de fonte exibido na interface
+
+OSL-18: stdlib apenas (http.server, json, threading, webbrowser, socket).
 OSL-15: Erros de proxy nao derrubam o servidor web.
 God: Apolo — da forma e clareza ao pensamento do Hefesto.
 """
@@ -32,7 +38,7 @@ PID_FILE   = Path("web_server.pid")
 
 
 # ---------------------------------------------------------------------------
-# HTML da interface — single file, zero dependencias externas
+# HTML da interface
 # ---------------------------------------------------------------------------
 
 HTML = r"""<!DOCTYPE html>
@@ -56,6 +62,7 @@ HTML = r"""<!DOCTYPE html>
     --text:      #FF6700;
     --text-dim:  #ffbe78;
     --code-bg:   #001404;
+    --code-text: #a8e6a8;
     --radius:    13px;
     --mono:      'JetBrains Mono', monospace;
     --sans:      'Syne', sans-serif;
@@ -81,14 +88,10 @@ HTML = r"""<!DOCTYPE html>
     padding: 15px 25px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
-    flex-shrink: 10;
+    flex-shrink: 0;
   }
 
-  .logo {
-    display: flex;
-    align-items: center;
-    gap: 25px;
-  }
+  .logo { display: flex; align-items: center; gap: 25px; }
 
   .logo-mark {
     width: 106px; height: 36px;
@@ -97,8 +100,7 @@ HTML = r"""<!DOCTYPE html>
     display: flex; align-items: center; justify-content: center;
     font-family: var(--mono);
     font-size: 14px; font-weight: 600;
-    color: #fff;
-    letter-spacing: -1px;
+    color: #fff; letter-spacing: -1px;
   }
 
   .logo-text { font-size: 18px; font-weight: 800; letter-spacing: -0.5px; }
@@ -181,6 +183,7 @@ HTML = r"""<!DOCTYPE html>
     border-bottom-left-radius: 4px;
   }
 
+  /* ── META + SOURCE ── */
   .bubble .meta {
     font-family: var(--mono);
     font-size: 10px;
@@ -188,12 +191,34 @@ HTML = r"""<!DOCTYPE html>
     margin-top: 8px;
     padding-top: 8px;
     border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
   }
+
+  .source-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(38, 188, 95, 0.12);
+    border: 1px solid rgba(38, 188, 95, 0.35);
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--success);
+    text-decoration: none;
+    transition: background 0.2s;
+  }
+  .source-badge:hover { background: rgba(38, 188, 95, 0.22); }
+  .source-badge::before { content: "⬡"; font-size: 9px; }
 
   /* ── CODE BLOCKS ── */
   .bubble pre {
     background: var(--code-bg);
     border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
     border-radius: 8px;
     padding: 14px 16px;
     margin: 10px 0;
@@ -207,8 +232,12 @@ HTML = r"""<!DOCTYPE html>
   .bubble code {
     font-family: var(--mono);
     font-size: 13px;
-    line-height: 1.6;
-    color: #a8d8a8;
+    line-height: 1.75;
+    color: var(--code-text);
+    /* CRÍTICO: preserva tabs e espaços de indentação */
+    white-space: pre;
+    tab-size: 4;
+    -moz-tab-size: 4;
   }
 
   .bubble p > code {
@@ -218,6 +247,7 @@ HTML = r"""<!DOCTYPE html>
     font-size: 12px;
     color: var(--accent);
     border: 1px solid var(--border);
+    white-space: pre;
   }
 
   .lang-tag {
@@ -282,9 +312,8 @@ HTML = r"""<!DOCTYPE html>
     cursor: pointer; transition: all 0.2s;
   }
   .sug-btn:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: rgba(79,156,249,0.05);
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(38,188,95,0.05);
   }
 
   /* ── INPUT AREA ── */
@@ -304,32 +333,22 @@ HTML = r"""<!DOCTYPE html>
   .token-row label { white-space: nowrap; }
 
   #tokenSlider {
-    flex: 1;
-    -webkit-appearance: none;
-    height: 3px;
-    background: var(--border);
-    border-radius: 3px;
-    outline: none;
+    flex: 1; -webkit-appearance: none;
+    height: 3px; background: var(--border);
+    border-radius: 3px; outline: none;
   }
 
   #tokenSlider::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 14px; height: 14px;
-    background: var(--accent);
-    border-radius: 50%;
-    cursor: pointer;
-    transition: background 0.2s;
+    background: var(--accent); border-radius: 50%;
+    cursor: pointer; transition: background 0.2s;
   }
   #tokenSlider::-webkit-slider-thumb:hover { background: var(--accent2); }
 
-  #tokenVal {
-    min-width: 38px; text-align: right;
-    color: var(--accent); font-weight: 600;
-  }
+  #tokenVal { min-width: 38px; text-align: right; color: var(--accent); font-weight: 600; }
 
-  .input-row {
-    display: flex; gap: 10px; align-items: flex-end;
-  }
+  .input-row { display: flex; gap: 10px; align-items: flex-end; }
 
   #promptInput {
     flex: 1;
@@ -337,18 +356,13 @@ HTML = r"""<!DOCTYPE html>
     border: 1px solid var(--border);
     border-radius: var(--radius);
     color: var(--text);
-    font-family: var(--sans);
-    font-size: 14px;
+    font-family: var(--sans); font-size: 14px;
     padding: 12px 16px;
     resize: none;
-    height: 48px;
-    min-height: 48px;
-    max-height: 200px;
-    overflow-y: auto;
-    outline: none;
+    height: 48px; min-height: 48px; max-height: 200px;
+    overflow-y: auto; outline: none;
     transition: border-color 0.2s;
     line-height: 1.5;
-    box-sizing: border-box;
   }
 
   #promptInput:focus { border-color: var(--accent); }
@@ -356,17 +370,12 @@ HTML = r"""<!DOCTYPE html>
 
   #sendBtn {
     background: linear-gradient(135deg, var(--accent), var(--accent2));
-    border: none;
-    border-radius: var(--radius);
-    color: #fff;
-    font-family: var(--sans);
+    border: none; border-radius: var(--radius);
+    color: #fff; font-family: var(--sans);
     font-size: 14px; font-weight: 700;
-    padding: 0 22px;
-    height: 48px;
-    cursor: pointer;
-    transition: opacity 0.2s, transform 0.1s;
-    white-space: nowrap;
-    flex-shrink: 0;
+    padding: 0 22px; height: 48px;
+    cursor: pointer; transition: opacity 0.2s, transform 0.1s;
+    white-space: nowrap; flex-shrink: 0;
   }
   #sendBtn:hover   { opacity: 0.9; }
   #sendBtn:active  { transform: scale(0.97); }
@@ -378,25 +387,22 @@ HTML = r"""<!DOCTYPE html>
     text-align: center;
   }
 
+  /* ── TIPOGRAFIA DO BUBBLE ── */
   .bubble h1, .bubble h2, .bubble h3,
   .bubble h4, .bubble h5, .bubble h6 {
     margin: 10px 0 4px 0;
-    font-family: var(--sans);
-    color: var(--text);
-    font-weight: 700;
+    font-family: var(--sans); color: var(--text); font-weight: 700;
   }
   .bubble h3 { font-size: 14px; color: var(--accent); }
   .bubble h2 { font-size: 15px; }
   .bubble h1 { font-size: 16px; }
 
-  .bubble ul {
-    padding-left: 20px;
-    margin: 6px 0;
+  .bubble p {
+    margin: 4px 0; line-height: 1.75; font-size: 14px;
   }
-  .bubble li {
-    margin: 2px 0;
-    line-height: 1.6;
-  }
+
+  .bubble ul { padding-left: 20px; margin: 6px 0; }
+  .bubble li { margin: 2px 0; line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -460,11 +466,11 @@ slider.addEventListener('input', () => tokenVal.textContent = slider.value);
 
 // ── Auto-resize textarea ──────────────────────────────────────
 function resizeInput() {
-    input.style.height = '48px';
-    input.style.height = Math.min(input.scrollHeight, 200) + 'px';
-  }
-  input.addEventListener('input', resizeInput);
-  input.addEventListener('keyup', resizeInput);
+  input.style.height = '48px';
+  input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+}
+input.addEventListener('input', resizeInput);
+input.addEventListener('keyup', resizeInput);
 
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -487,10 +493,10 @@ async function checkStatus() {
     const s = await r.json();
     dot.className = 'status-dot online';
     const up = s.uptime_s || 0;
-    const h = String(Math.floor(up/3600)).padStart(2,'0');
-    const m = String(Math.floor((up%3600)/60)).padStart(2,'0');
-    const sc = String(Math.floor(up%60)).padStart(2,'0');
-    statusTxt.textContent = `online · ${h}:${m}:${sc} · ${s.requests||0} req`;
+    const h  = String(Math.floor(up / 3600)).padStart(2, '0');
+    const m  = String(Math.floor((up % 3600) / 60)).padStart(2, '0');
+    const sc = String(Math.floor(up % 60)).padStart(2, '0');
+    statusTxt.textContent = `online · ${h}:${m}:${sc} · ${s.requests || 0} req`;
   } catch {
     dot.className = 'status-dot offline';
     statusTxt.textContent = 'servidor offline';
@@ -499,47 +505,62 @@ async function checkStatus() {
 checkStatus();
 setInterval(checkStatus, 10000);
 
-// ── Markdown / code highlight (lightweight) ───────────────────
+// ── Markdown / code highlight ─────────────────────────────────
+function escCode(s) {
+  // Preserva indentação: substitui apenas caracteres HTML especiais,
+  // mantendo tabs (\t), espaços e quebras de linha intactos.
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function renderMarkdown(text) {
   const blocks = [];
 
-  // 1. Extrai blocos de codigo (``` ... ```)
-  text = text.replace(/```(\w*)[ \t]*\r?\n?([\s\S]*?)```/g, (_, lang, code) => {
-    const tag = lang ? `<span class="lang-tag">${lang}</span>` : '';
+  // 1. Extrai blocos de código ``` ... ```
+  // CRÍTICO: não aplica trim() no conteúdo — preserva indentação original
+  text = text.replace(/```(\w*)[ \t]*\r?\n([\s\S]*?)```/g, (_, lang, code) => {
+    // Remove apenas a última quebra de linha (se houver), sem tocar na indentação
+    const codeClean = code.replace(/\n$/, '');
+    const tag = lang ? `<span class="lang-tag">${escHtml(lang)}</span>` : '';
     const idx = blocks.length;
-    blocks.push(`<pre>${tag}<code>${escCode(code.trim())}</code></pre>`);
+    blocks.push(`<pre>${tag}<code>${escCode(codeClean)}</code></pre>`);
     return `\x00BLOCK${idx}\x00`;
   });
 
-  // 2. Escapa HTML do texto restante
-  text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  // 2. Escapa HTML do texto restante (fora dos blocos)
+  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  // 3. Headers markdown (### ## #)
-  text = text.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
-  text = text.replace(/^#####\s+(.+)$/gm,  '<h5>$1</h5>');
-  text = text.replace(/^####\s+(.+)$/gm,   '<h4>$1</h4>');
-  text = text.replace(/^###\s+(.+)$/gm,    '<h3>$1</h3>');
-  text = text.replace(/^##\s+(.+)$/gm,     '<h2>$1</h2>');
-  text = text.replace(/^#\s+(.+)$/gm,      '<h1>$1</h1>');
+  // 3. Headers markdown
+  text = text.replace(/^#{6}\s+(.+)$/gm, '<h6>$1</h6>');
+  text = text.replace(/^#{5}\s+(.+)$/gm, '<h5>$1</h5>');
+  text = text.replace(/^#{4}\s+(.+)$/gm, '<h4>$1</h4>');
+  text = text.replace(/^#{3}\s+(.+)$/gm, '<h3>$1</h3>');
+  text = text.replace(/^#{2}\s+(.+)$/gm, '<h2>$1</h2>');
+  text = text.replace(/^#\s+(.+)$/gm,    '<h1>$1</h1>');
 
-  // 4. Negrito e italico
+  // 4. Negrito e itálico
   text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/\*([^*\n]+)\*/g,     '<em>$1</em>');
 
-  // 5. Codigo inline (depois de escapar HTML)
+  // 5. Código inline
   text = text.replace(/`([^`\n]+)`/g, '<code>$1</code>');
 
-  // 6. Listas (- item)
+  // 6. Listas
   text = text.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
-  text = text.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
+  text = text.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
 
-  // 7. Paragrafos e quebras (evita envolver headers/ul em <p>)
+  // 7. Parágrafos (não envolve headers/ul/pre em <p>)
   const lines = text.split('\n');
-  let html = '';
-  let inPara = false;
+  let html = '', inPara = false;
   for (const line of lines) {
     const trimmed = line.trim();
-    const isBlock = /^<(h[1-6]|ul|li|pre)/.test(trimmed) || trimmed === '';
+    const isBlock = /^<(h[1-6]|ul|li|pre|\x00BLOCK)/.test(trimmed) || trimmed === '';
     if (isBlock) {
       if (inPara) { html += '</p>'; inPara = false; }
       if (trimmed !== '') html += trimmed + '\n';
@@ -551,28 +572,20 @@ function renderMarkdown(text) {
   }
   if (inPara) html += '</p>';
 
-  // 8. Restaura blocos de codigo
+  // 8. Restaura blocos de código
   html = html.replace(/\x00BLOCK(\d+)\x00/g, (_, i) => blocks[+i]);
 
   return html;
 }
 
-function escCode(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
 // ── Append message ────────────────────────────────────────────
-function appendMsg(role, html, meta) {
+function appendMsg(role, html, meta, source, sourceUrl) {
   if (empty.style.display !== 'none') empty.style.display = 'none';
 
   const div = document.createElement('div');
   div.className = `msg ${role}`;
 
-  const av  = document.createElement('div');
+  const av = document.createElement('div');
   av.className = 'avatar';
   av.textContent = role === 'user' ? 'EU' : 'ORN';
 
@@ -580,10 +593,27 @@ function appendMsg(role, html, meta) {
   bub.className = 'bubble';
   bub.innerHTML = html;
 
-  if (meta) {
+  if (meta || source) {
     const m = document.createElement('div');
     m.className = 'meta';
-    m.textContent = meta;
+    if (meta) {
+      const t = document.createElement('span');
+      t.textContent = meta;
+      m.appendChild(t);
+    }
+    // Badge de fonte — aparece quando source está presente
+    if (source) {
+      const badge = document.createElement('a');
+      badge.className = 'source-badge';
+      badge.textContent = source;
+      badge.title = sourceUrl || source;
+      if (sourceUrl) {
+        badge.href   = sourceUrl;
+        badge.target = '_blank';
+        badge.rel    = 'noopener noreferrer';
+      }
+      m.appendChild(badge);
+    }
     bub.appendChild(m);
   }
 
@@ -620,8 +650,8 @@ async function sendPrompt() {
 
   appendMsg('user', escHtml(prompt));
 
-  const tokens    = parseInt(slider.value);
-  const thinking  = appendThinking();
+  const tokens   = parseInt(slider.value);
+  const thinking = appendThinking();
 
   try {
     const res = await fetch('/ask', {
@@ -633,16 +663,15 @@ async function sendPrompt() {
     thinking.remove();
 
     if (data.error) {
-      appendMsg('model',
-        `<span style="color:#ef4444">⚠ ${escHtml(data.error)}</span>`);
+      appendMsg('model', `<span style="color:#ef4444">⚠ ${escHtml(data.error)}</span>`);
     } else {
       const meta = `${data.elapsed_s}s · ${tokens} tokens · servidor`;
-      appendMsg('model', renderMarkdown(data.output), meta);
+      appendMsg('model', renderMarkdown(data.output), meta,
+                data.source || null, data.source_url || null);
     }
   } catch (e) {
     thinking.remove();
-    appendMsg('model',
-      `<span style="color:#ef4444">⚠ Erro de conexão: ${e.message}</span>`);
+    appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão: ${e.message}</span>`);
   }
 
   busy = false;
@@ -655,16 +684,78 @@ async function sendPrompt() {
 
 
 # ---------------------------------------------------------------------------
+# Auto-search two-pass (inline — sem import do engine para manter stdlib)
+# ---------------------------------------------------------------------------
+
+def _decide_search(prompt: str) -> str | None:
+    """1ª pass: pergunta ao modelo se precisa de busca externa.
+
+    Retorna termo de busca ou None.
+    OSL-4: função curta, uma responsabilidade.
+    """
+    decision_prompt = (
+        "You are a search decision engine.\n"
+        "Read the question and decide:\n"
+        "- If it requires current, external or specific factual data: "
+        "respond ONLY with SEARCH:<term>\n"
+        "- If answerable from general knowledge: respond ONLY with NO\n\n"
+        "Rules:\n"
+        "- SEARCH:<term> must be 1-3 words max\n"
+        "- No explanation, no punctuation, no extra text\n\n"
+        f"Question: {prompt.strip()}"
+    )
+    resp = _query_infer_raw(
+        json.dumps({"prompt": decision_prompt, "max_tokens": 20}).encode() + b"\n"
+    )
+    if not resp or resp.get("error"):
+        return None
+    return _parse_search_decision(resp.get("output", ""))
+
+
+def _parse_search_decision(text: str) -> str | None:
+    """Parse defensivo da resposta de decisão.
+
+    OSL-5.1: nunca levanta exceção — retorna None em caso de dúvida.
+    """
+    if not text:
+        return None
+    normalized = text.strip().lower()
+    if not normalized.startswith("search:"):
+        return None
+    term = text.strip()[len("search:"):].strip()
+    if not term or len(term.split()) > 5:
+        return None
+    return term
+
+
+def _run_crawler(query: str) -> tuple[str, str, str]:
+    """Executa o crawler e retorna (context_block, source, source_url).
+
+    Retorna ('', '', '') se falhar.
+    OSL-15: falha não propaga exceção.
+    """
+    try:
+        from engine.tools.crawler import OrnCrawler  # noqa: PLC0415
+        result = OrnCrawler().search(query, source="auto")
+        if result.ok:
+            return result.to_prompt_block(), result.source, result.url
+    except Exception as e:
+        print(f"\033[31m ■ Erro: {e}")
+        traceback.print_tb(e.__traceback__)
+        pass
+    return "", "", ""
+
+
+# ---------------------------------------------------------------------------
 # Handler HTTP
 # ---------------------------------------------------------------------------
 
 class ORNHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
-        pass   # silencia o log padrao do http.server
+        pass
 
     def _send(self, code: int, ctype: str, body: bytes) -> None:
-        """Envia resposta suprimindo WinError 10053 (browser fecha conexao)."""
         try:
             self.send_response(code)
             if ctype:
@@ -674,70 +765,111 @@ class ORNHandler(BaseHTTPRequestHandler):
             if body:
                 self.wfile.write(body)
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
-            pass   # OSL-15: browser fechou antes — nao e erro do servidor
+            pass
 
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", HTML.encode("utf-8"))
         elif self.path == "/status":
-            resp = self._query_infer(b"STATUS\n")
+            resp = _query_infer_raw(b"STATUS\n")
             if resp is None:
                 resp = {"status": "offline", "error": "orn-server nao encontrado"}
             self._send(200, "application/json", json.dumps(resp).encode())
         elif self.path == "/favicon.ico":
-            self._send(204, "", b"")   # sem favicon — sem erro
+            self._send(204, "", b"")
         else:
             self._send(404, "", b"")
 
     def do_POST(self):
-        if self.path == "/ask":
-            length = int(self.headers.get("Content-Length", 0))
-            body   = self.rfile.read(length)
-            try:
-                req = json.loads(body)
-            except Exception:
-                req = {}
-
-            prompt     = str(req.get("prompt", "")).strip()
-            max_tokens = max(1, min(int(req.get("max_tokens", 128)), 2048))
-
-            if not prompt:
-                resp = {"output": "", "elapsed_s": 0, "error": "prompt vazio"}
-            else:
-                payload = (json.dumps({
-                    "prompt": prompt,
-                    "max_tokens": max_tokens
-                }) + "\n").encode()
-                resp = self._query_infer(payload)
-                if resp is None:
-                    resp = {"output": "", "elapsed_s": 0,
-                            "error": "orn-server offline. Execute: orn-server start"}
-
-            out = json.dumps(resp, ensure_ascii=False).encode()
-            self._send(200, "application/json", out)
-        else:
+        if self.path != "/ask":
             self._send(404, "", b"")
+            return
 
-    def _query_infer(self, payload: bytes) -> dict | None:
-        """Envia requisicao para o SiCDox Server (porta 8371)."""
+        length = int(self.headers.get("Content-Length", 0))
+        body   = self.rfile.read(length)
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(3.0)
-                s.connect((HOST, INFER_PORT))
-                s.settimeout(None)
-                s.sendall(payload)
-                data = b""
-                while True:
-                    chunk = s.recv(65536)
-                    if not chunk:
-                        break
-                    data += chunk
-                    if data.endswith(b"\n"):
-                        break
-            return json.loads(data.decode("utf-8").strip())
+            req = json.loads(body)
         except Exception:
-            return None
+            req = {}
 
+        prompt     = str(req.get("prompt", "")).strip()
+        max_tokens = max(1, min(int(req.get("max_tokens", 128)), 2048))
+
+        if not prompt:
+            resp = {"output": "", "elapsed_s": 0, "error": "prompt vazio",
+                    "source": None, "source_url": None}
+            self._send(200, "application/json",
+                       json.dumps(resp, ensure_ascii=False).encode())
+            return
+
+        # ---------------------------------------------------------------
+        # TWO-PASS AUTÔNOMO
+        # 1ª pass: decide se precisa de busca
+        # ---------------------------------------------------------------
+        ctx_block  = ""
+        source     = None
+        source_url = None
+
+        search_term = _decide_search(prompt)
+        if search_term:
+            ctx_block, source, source_url = _run_crawler(search_term)
+            # Se crawler falhou — source fica None, continua sem contexto
+
+        # Monta prompt final
+        if ctx_block:
+            full_prompt = ctx_block + "\n[TASK]\n" + prompt
+        else:
+            full_prompt = prompt
+
+        # ---------------------------------------------------------------
+        # 2ª pass: inferência com contexto
+        # ---------------------------------------------------------------
+        payload = (json.dumps({
+            "prompt":     full_prompt,
+            "max_tokens": max_tokens
+        }) + "\n").encode()
+
+        infer_resp = _query_infer_raw(payload)
+
+        if infer_resp is None:
+            resp = {"output": "", "elapsed_s": 0,
+                    "error": "orn-server offline. Execute: orn-server start",
+                    "source": None, "source_url": None}
+        else:
+            resp = {
+                "output":     infer_resp.get("output", ""),
+                "elapsed_s":  infer_resp.get("elapsed_s", 0),
+                "error":      infer_resp.get("error"),
+                "source":     source or None,
+                "source_url": source_url or None,
+            }
+
+        out = json.dumps(resp, ensure_ascii=False).encode()
+        self._send(200, "application/json", out)
+
+
+# ---------------------------------------------------------------------------
+# Socket helper — reutilizado por handler e funções inline
+# ---------------------------------------------------------------------------
+
+def _query_infer_raw(payload: bytes) -> dict | None:
+    """Envia payload para o SiCDox Server e retorna dict ou None."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(3.0)
+            s.connect((HOST, INFER_PORT))
+            s.settimeout(None)
+            s.sendall(payload)
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+                if data.endswith(b"\n"):
+                    break
+        return json.loads(data.decode("utf-8").strip())
+    except Exception: return None
 
 # ---------------------------------------------------------------------------
 # WebCLI
@@ -758,7 +890,6 @@ class WebCLI:
     def _start(self, open_browser: bool = True) -> None:
         url = f"http://{HOST}:{WEB_PORT}"
         srv = HTTPServer((HOST, WEB_PORT), ORNHandler)
-        # Timeout de 1s: Ctrl+C responde rapido (sem isso fica preso)
         srv.socket.settimeout(1.0)
         PID_FILE.write_text(str(os.getpid()))
 
@@ -788,3 +919,5 @@ class WebCLI:
             print(f"[WEB] Encerrado (PID {pid}).")
         except Exception as e:
             print(f"[WEB] Erro: {e}")
+            print(f"\033[31m ■ Erro: {e}")
+            traceback.print_tb(e.__traceback__)

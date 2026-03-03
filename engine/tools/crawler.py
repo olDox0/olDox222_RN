@@ -3,7 +3,7 @@
 ORN — OrnCrawler (Hermes-Web)
 Motor de busca autônoma para injeção de contexto no modelo.
 
-Reciclado de: OLINE v3.6 (BaseCollector, EthicalScraper, wikipedia_io, 
+Reciclado de: OLINE v3.6 (BaseCollector, EthicalScraper, wikipedia_io,
               wikipedia_utils, stackexchange, arxiv)
 Descartado:   Flask, SQLite, TF-IDF, NLTK, translator (desnecessários)
 
@@ -77,12 +77,19 @@ class CrawlerResult:
         return self.error is None and bool(self.context.strip())
 
     def to_prompt_block(self, max_chars: int = 2000) -> str:
-        """Formata para injeção no prompt do modelo."""
+        """Formata para injeção no prompt do modelo.
+
+        Usa contrato [CTX-BEGIN]/[CTX-END] alinhado com executive.py e cli.py.
+        """
         if not self.ok:
             return ""
-        header = f"[CONTEXTO — {self.source.upper()}] {self.title}\nFonte: {self.url}\n\n"
-        body   = self.context[:max_chars]
-        return header + body + "\n"
+        return (
+            f"[CTX-BEGIN]\n"
+            f"scope: {self.source} | {self.title}\n"
+            f"url: {self.url}\n"
+            f"{self.context[:max_chars]}\n"
+            f"[CTX-END]\n"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +159,6 @@ def _clean_wiki_html(html: str) -> str:
     """Reciclado de OLINE wikipedia_utils v1.0 — remove navboxes, tabelas."""
     BS4 = _get_bs4()
     if BS4 is None:
-        # Fallback: remove tags HTML manualmente
         return re.sub(r'<[^>]+>', ' ', html).strip()
     soup = BS4(html, "html.parser")
     for unwanted in soup.find_all(["table", "style", "script", "sup"]):
@@ -178,15 +184,14 @@ def search_wikipedia(query: str, lang: str = "pt",
 
     sess = session or _make_session()
 
-    # Wikipedia REST API e case-sensitive — testa variantes de capitalização
     base = query.replace(" ", "_")
     slug_variants = list(dict.fromkeys([
-        base[0].upper() + base[1:],                    # Asyncio_python
-        base.title().replace(" ", "_"),                 # Asyncio_Python
-        base,                                           # asyncio_python
-        base.split("_")[0][0].upper() +                # Asyncio (só 1o termo)
+        base[0].upper() + base[1:],
+        base.title().replace(" ", "_"),
+        base,
+        base.split("_")[0][0].upper() +
             base.split("_")[0][1:],
-        base.upper(),                                   # ASYNCIO (raro mas existe)
+        base.upper(),
     ]))
 
     tried = []
@@ -200,7 +205,6 @@ def search_wikipedia(query: str, lang: str = "pt",
                 if r.status_code == 404:
                     continue
                 r.raise_for_status()
-                # Detecta proxy retornando HTML em vez de JSON
                 ct = r.headers.get("Content-Type", "")
                 if "html" in ct.lower() or not r.text.strip():
                     sess2 = _make_session(verify_ssl=False)
@@ -230,7 +234,6 @@ def search_wikipedia(query: str, lang: str = "pt",
                          error=f"Nao encontrado: {query!r} (tentou {len(tried)} slugs)")
 
 
-
 def search_stackoverflow(query: str, site: str = "stackoverflow",
                          session=None, max_results: int = 2,
                          max_chars: int = 2000) -> CrawlerResult:
@@ -250,13 +253,12 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
     sess = session or _make_session()
 
     try:
-        # Passo 1: busca perguntas com body incluido
         r = sess.get(
             "https://api.stackexchange.com/2.3/search/advanced",
             params={
                 "order": "desc", "sort": "relevance",
                 "q": query, "site": site,
-                "filter": "withbody",   # garante body na pergunta
+                "filter": "withbody",
                 "pagesize": max_results,
             },
             timeout=10,
@@ -279,7 +281,6 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
         q_url   = q_item.get("link", "")
         q_body  = q_item.get("body", "")
 
-        # Passo 2: busca respostas com body
         context_html = ""
         try:
             r2 = sess.get(
@@ -287,7 +288,7 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
                 params={
                     "order": "desc", "sort": "votes",
                     "site": site,
-                    "filter": "withbody",   # garante body nas respostas
+                    "filter": "withbody",
                     "pagesize": 1,
                 },
                 timeout=10,
@@ -299,11 +300,9 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
         except Exception:
             pass
 
-        # Usa body da pergunta se resposta estiver vazia
         if not context_html:
             context_html = q_body
 
-        # Limpa HTML
         BS4 = _get_bs4()
         if BS4 and context_html:
             body_text = BS4(context_html, "html.parser").get_text(separator=" ", strip=True)
@@ -312,7 +311,6 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
         else:
             body_text = ""
 
-        # Fallback: usa titulo + snippet se body ainda vazio
         if not body_text.strip():
             snippet = q_item.get("excerpt", q_item.get("body_markdown", ""))
             body_text = snippet or q_title
@@ -335,7 +333,6 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
 
     except Exception as e:
         return CrawlerResult("stackoverflow", query, error=str(e))
-
 
 
 def search_arxiv(query: str, max_results: int = 1,
@@ -364,7 +361,7 @@ def search_arxiv(query: str, max_results: int = 1,
             timeout=15,
         )
         r.raise_for_status()
-        time.sleep(3)   # rate limit OLINE ArXiv
+        time.sleep(3)
 
         root = ET.fromstring(r.text)
         ns   = {"atom": "http://www.w3.org/2005/Atom"}
@@ -429,7 +426,6 @@ def search_pypi(package: str, session=None) -> CrawlerResult:
 
         context = f"Pacote: {package} v{ver}\nResumo: {desc}\n"
         if long_d:
-            # Remove markdown excessivo da descrição longa
             clean = re.sub(r'#{1,6}\s+', '', long_d)
             clean = re.sub(r'\n{3,}', '\n\n', clean)
             context += clean[:1500]
@@ -457,7 +453,6 @@ def search_github(query: str, token: str | None = None,
     """
     GitHub Search API — repositórios e código.
     Sem token: 10 req/min. Com token: 30 req/min.
-    Respeita rate limit via header X-RateLimit-Remaining.
     """
     cache_key = f"github:{query}"
     if cache_key in _session_cache:
@@ -484,7 +479,6 @@ def search_github(query: str, token: str | None = None,
             },
             timeout=10,
         )
-        # Rate limit
         remaining = int(r.headers.get("X-RateLimit-Remaining", 99))
         if remaining < 5:
             print(f"[CRAWLER] GitHub rate limit baixo: {remaining}")
@@ -524,7 +518,6 @@ def search_github(query: str, token: str | None = None,
 
 # ---------------------------------------------------------------------------
 # Generic — requests + robots.txt + BeautifulSoup (fallback)
-# Reciclado de OLINE generic.py + generic_utils.py
 # ---------------------------------------------------------------------------
 
 def search_generic(url: str, session=None,
@@ -559,7 +552,6 @@ def search_generic(url: str, session=None,
         else:
             soup  = BS4(r.text, "html.parser")
             title = soup.title.string.strip() if soup.title else url
-            # Limpeza UI agressiva (reciclado de OLINE clean_generic_html)
             for tag in soup.find_all(
                     ["script", "style", "nav", "header", "footer",
                      "aside", "form", "svg", "button", "noscript"]):
@@ -594,11 +586,11 @@ def search_generic(url: str, session=None,
 class OrnCrawler:
     """
     Interface principal do crawler para uso interno do ORN.
-    
+
     Uso no CLI (engine/cli.py):
         crawler = OrnCrawler()
         result  = crawler.search("asyncio python", source="auto")
-        prompt  = result.to_prompt_block() + user_prompt
+        prompt  = result.to_prompt_block() + "[TASK]\n" + user_question
 
     Uso programático:
         result = crawler.search("requests library", source="pypi")
@@ -606,10 +598,8 @@ class OrnCrawler:
             print(result.context)
     """
 
-    # Fontes por prioridade para "auto"
     _AUTO_ORDER = ["wikipedia", "stackoverflow", "pypi", "arxiv", "github"]
 
-    # Rate limits por domínio (segundos entre requests)
     _RATE_LIMITS: dict[str, float] = {
         "arxiv.org":          3.0,
         "api.stackexchange.com": 0.5,
@@ -625,10 +615,9 @@ class OrnCrawler:
         self._ethical      = _EthicalScraper()
         self.github_token  = github_token
         self.verify_ssl    = verify_ssl
-        self._context_limit = 2000   # chars max injetados no prompt
+        self._context_limit = 2000
 
     def _rate_wait(self, domain: str) -> None:
-        """Respeita rate limit por domínio."""
         limit = self._RATE_LIMITS.get(domain, 0.0)
         if limit <= 0:
             return
@@ -649,7 +638,6 @@ class OrnCrawler:
         if not query:
             return CrawlerResult("none", query, error="query vazia")
 
-        # Verifica dependencias na primeira chamada
         deps = self.check_deps()
         if not deps["requests"]:
             return CrawlerResult("none", query,
@@ -691,14 +679,13 @@ class OrnCrawler:
 
         return CrawlerResult(source, query,
                              error=f"fonte desconhecida: {source!r}")
+
     def _auto_search(self, query: str, lang: str) -> CrawlerResult:
         """
-        Estrategia auto: tenta fontes por prioridade ate encontrar resultado util.
-        Heuristica de roteamento baseada na query.
+        Estratégia auto: tenta fontes por prioridade até encontrar resultado útil.
         """
         q = query.lower()
 
-        # PyPI first: query de palavra unica OU keyword de pacote
         is_single = len(query.split()) == 1
         is_lib = any(kw in q for kw in
                      ["lib", "library", "package", "pip", "pypi", "module", "modulo"])
@@ -707,7 +694,6 @@ class OrnCrawler:
             if result.ok:
                 return result
 
-        # Stack Overflow: prioridade alta para queries de codigo
         is_code = (
             "." in query or
             any(kw in q for kw in [
@@ -723,7 +709,6 @@ class OrnCrawler:
             if result.ok:
                 return result
 
-        # GitHub: repositorios
         if any(kw in q for kw in
                ["github", "repo", "open source", "framework", "tool"]):
             self._rate_wait("api.github.com")
@@ -732,7 +717,6 @@ class OrnCrawler:
             if result.ok:
                 return result
 
-        # ArXiv: papers
         if any(kw in q for kw in [
             "paper", "research", "neural", "algorithm", "transformer",
             "machine learning", "deep learning", "llm", "model",
@@ -743,13 +727,11 @@ class OrnCrawler:
             if result.ok:
                 return result
 
-        # Wikipedia: fallback geral
         self._rate_wait("wikipedia.org")
         result = search_wikipedia(query, lang=lang, session=self._session)
         if result.ok:
             return result
 
-        # Ultimo fallback: SO sem filtro de keywords
         if not is_code:
             self._rate_wait("api.stackexchange.com")
             result = search_stackoverflow(query, session=self._session,
@@ -760,7 +742,6 @@ class OrnCrawler:
         return CrawlerResult("auto", query,
                              error=f"Todas as fontes falharam para: {query!r}. "
                                    f"Tente: --search 'stackoverflow:query' ou 'wikipedia:query'")
-
 
     def clear_cache(self) -> None:
         """Limpa o cache de sessão."""
@@ -773,5 +754,5 @@ class OrnCrawler:
         return {
             "requests":       requests is not None,
             "beautifulsoup4": BS4 is not None,
-            "urllib.robotparser": True,   # stdlib
+            "urllib.robotparser": True,
         }

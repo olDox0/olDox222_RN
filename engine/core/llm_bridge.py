@@ -61,7 +61,6 @@ class BridgeConfig:
     )
     n_ctx:         int  = 2048   # janela total do KV-cache (conservador)
     active_window: int  = 1024   # tokens ativos na sliding window
-    max_tokens:    int  = 512    # resposta máxima por chamada
 
     # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
     n_threads:     int  = 2
@@ -72,17 +71,25 @@ class BridgeConfig:
 
     # max_tokens reduzido para testes — 679s foi causado por resposta gigante
     # Regra: 128 para testes rápidos, 512 para uso normal
-    max_tokens:    int  = 512
+    max_tokens:    int   = 512
+
+    # Parâmetros de sampling (doc ORN_up — seção 3)
+    # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
+    temperature:    float = 0.45
+    top_p:          float = 0.85
+    top_k:          int   = 40
+    repeat_penalty: float = 1.1
 
     system_prompt: str  = (
         "You are ORN, a code assistant. "
         "Answer DIRECTLY and CONCISELY. "
         "No introductions. No examples unless asked. "
         "If asked for N lines, write exactly N lines. "
-        "Prefer Python, C, C++, batch script."
-        "response in portuguese. "
-        "dont lie. "
-        "be honest and transparent. "
+        "Respond in at most 5 items unless instructed otherwise. "
+        "Never mix multiple tasks in one response. "
+        "Prefer Python, C, C++, batch script. "
+        "Respond in portuguese. "
+        "Do not lie. Be honest and transparent. "
     )
 
 
@@ -291,8 +298,12 @@ class SiCDoxBridge:
 
         output = self._llm(
             prompt,
-            max_tokens = max_tokens,
-            stop       = ["<|im_end|>", "</s>"],
-            echo       = False,
+            max_tokens     = max_tokens,
+            stop           = ["<|im_end|>", "</s>"],
+            echo           = False,
+            temperature    = self._cfg.temperature,
+            top_p          = self._cfg.top_p,
+            top_k          = self._cfg.top_k,
+            repeat_penalty = self._cfg.repeat_penalty,
         )
         return output["choices"][0]["text"]

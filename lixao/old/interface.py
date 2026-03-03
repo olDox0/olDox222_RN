@@ -11,14 +11,16 @@ from doxovis import Cores
 #    os.system('cls' if os.name == 'nt' else 'clear')
 
 def banner():
-    print(f"""{Cores.CIANO}
+    print(
+    f"""{Cores.CIANO}
     ____  ____  _  _  ____  __ _  ____  ____ 
    (  _ \(  _ )( \/ )/ ___)(  ( \(  __)(_  _)
     )(_) ))(_)( )  ( \___ \/    / ) _)   )(  
    (____/(____)(_/\_)(____/\_)__)(____) (__) 
    
    >> NEURO-SUITE v2.0 | Vision & Language{Cores.RESET}
-    """)
+    """
+    )
 
 banner()
 

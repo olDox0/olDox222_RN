@@ -185,9 +185,11 @@ class SiCDoxExecutive:
             file_content = _read_file_safe(context["context_file"])
             if file_content:
                 full_prompt = (
-                    f"[CONTEXTO DO ARQUIVO: {context['context_file']}]\n"
-                    f"{file_content}\n\n"
-                    f"[PERGUNTA]\n{prompt}"
+                    f"[CTX-BEGIN]\n"
+                    f"scope: {context['context_file']}\n"
+                    f"{file_content}\n"
+                    f"[CTX-END]\n\n"
+                    f"[TASK]\n{prompt}"
                 )
 
         # 2. Inferência — max_tokens do contexto (CLI --tokens) ou None (usa config)
