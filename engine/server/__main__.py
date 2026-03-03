@@ -134,11 +134,48 @@ if callable(_doxo_probe_embedded):
 
 # -*- coding: utf-8 -*-
 # engine/server/__main__.py
-from engine.server.server import ServerCLI
+from pathlib import Path
+import importlib.util
 import sys
 
+from engine.server.server import ServerCLI
+
+
+def _load_python_server_cli_fallback():
+    server_file = Path(__file__).resolve().parent / "server.py"
+    spec = importlib.util.spec_from_file_location("_orn_server_cli_fallback", str(server_file))
+    if not spec or not spec.loader:
+        raise RuntimeError("Falha ao criar spec para fallback de engine.server.server")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.ServerCLI
+
+
+def _is_wrapper_signature_type_error(exc: TypeError) -> bool:
+    msg = str(exc)
+    signature_tokens = (
+        "positional argument",
+        "required positional argument",
+        "unexpected keyword argument",
+    )
+    wrapper_tokens = (
+        "ServerCLI",
+        "_vulcan_optimized",
+        "v_",
+        "optimized",
+    )
+    return any(token in msg for token in signature_tokens) and any(token in msg for token in wrapper_tokens)
+
+
 def main():
-    ServerCLI().run(sys.argv[1:])
+    try:
+        ServerCLI().run(sys.argv[1:])
+    except TypeError as exc:
+        if not _is_wrapper_signature_type_error(exc):
+            raise
+        fallback = _load_python_server_cli_fallback()
+        fallback().run(sys.argv[1:])
+
 
 if __name__ == "__main__":
     main()

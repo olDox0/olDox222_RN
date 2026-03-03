@@ -138,12 +138,48 @@ if callable(_doxo_probe_embedded):
 ORN — orn-web entry point
 God: Apolo — a interface que da forma ao pensamento.
 """
-#from __future__ import annotations
+from pathlib import Path
+import importlib.util
 import sys
+
+
+def _load_python_web_cli_fallback():
+    web_file = Path(__file__).resolve().parent / "web_server.py"
+    spec = importlib.util.spec_from_file_location("_orn_web_cli_fallback", str(web_file))
+    if not spec or not spec.loader:
+        raise RuntimeError("Falha ao criar spec para fallback de engine.web.web_server")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.WebCLI
+
+
+def _is_wrapper_signature_type_error(exc: TypeError) -> bool:
+    msg = str(exc)
+    signature_tokens = (
+        "positional argument",
+        "required positional argument",
+        "unexpected keyword argument",
+    )
+    wrapper_tokens = (
+        "WebCLI",
+        "_vulcan_optimized",
+        "v_",
+        "optimized",
+    )
+    return any(token in msg for token in signature_tokens) and any(token in msg for token in wrapper_tokens)
+
 
 def main() -> None:
     from engine.web.web_server import WebCLI
-    WebCLI().run(sys.argv[1:])
+
+    try:
+        WebCLI().run(sys.argv[1:])
+    except TypeError as exc:
+        if not _is_wrapper_signature_type_error(exc):
+            raise
+        fallback = _load_python_web_cli_fallback()
+        fallback().run(sys.argv[1:])
+
 
 if __name__ == "__main__":
     main()
