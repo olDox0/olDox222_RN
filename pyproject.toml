@@ -18,6 +18,7 @@ dependencies = [
 orn        = "engine.__main__:main"
 orn-server = "engine.server.__main__:main"
 orn-web    = "engine.web.__main__:main"
+orn-probe  = "engine.telemetry.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

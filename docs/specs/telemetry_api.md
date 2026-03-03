@@ -77,3 +77,10 @@ Exemplo:
 ```
 
 No shutdown do servidor, um snapshot local também é persistido em `telemetry/server_runtime.json` para análise offline.
+
+
+## Comandos de acesso rápido
+
+- `orn probe status`: consulta STATUS do servidor e mostra hotspots.
+- `orn probe status --json-output`: imprime payload bruto em JSON.
+- `orn-probe --json`: utilitário dedicado para consumo em scripts.

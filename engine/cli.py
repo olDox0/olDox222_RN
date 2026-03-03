@@ -21,6 +21,7 @@ Comandos futuros:
 """
 
 import sys
+import json
 import click
 
 from engine.ui.display import Display
@@ -411,3 +412,45 @@ def web_stop() -> None:
     """Para a interface web."""
     from engine.web.web_server import WebCLI   # noqa
     WebCLI().run(["stop"])
+
+# ---------------------------------------------------------------------------
+# probe — telemetria operacional
+# ---------------------------------------------------------------------------
+
+@cli.group()
+def probe() -> None:
+    """Consulta telemetria e hotspots do servidor."""
+    pass
+
+
+@probe.command("status")
+@click.option("--json-output", "json_output", is_flag=True, default=False,
+              help="Exibe payload STATUS bruto em JSON.")
+def probe_status(json_output: bool) -> None:
+    """Mostra status de telemetria do servidor (hotspots)."""
+    from engine.telemetry.cli import query_server_status  # noqa: PLC0415
+
+    payload = query_server_status()
+    if payload is None:
+        Display.warn("Servidor offline. Execute: orn-server start")
+        return
+
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    Display.section("PROBE", "orn-server status")
+    Display.kv("status", str(payload.get("status", "unknown")))
+    Display.kv("requests", str(payload.get("requests", 0)))
+    Display.kv("errors", str(payload.get("errors", 0)))
+    Display.kv("avg_elapsed_s", str(payload.get("avg_elapsed_s", 0)))
+
+    hotspots = payload.get("telemetry_hotspots", [])
+    if hotspots:
+        Display.info("Hotspots:")
+        for row in hotspots[:5]:
+            print(
+                "  - "
+                f"{row.get('name', '?')} calls={row.get('calls', 0)} "
+                f"avg={row.get('avg_ms', 0)}ms p95={row.get('p95_ms', 0)}ms"
+            )
