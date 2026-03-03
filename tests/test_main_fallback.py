@@ -18,6 +18,11 @@ def test_main_falls_back_on_vulcan_signature_typeerror(monkeypatch) -> None:
     assert called == [True]
 
 
+def test_wrapper_signature_detector_supports_click_ctx_message() -> None:
+    exc = TypeError("cli_vulcan_optimized() missing 1 required positional argument: 'ctx'")
+    assert entrypoint._is_wrapper_signature_type_error(exc)
+
+
 def test_main_reraises_unrelated_typeerror(monkeypatch) -> None:
     def broken_cli() -> None:
         raise TypeError("unsupported operand type(s)")

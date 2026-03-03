@@ -150,6 +150,20 @@ def _load_python_cli_fallback():
     return module.cli
 
 
+def _is_wrapper_signature_type_error(exc: TypeError) -> bool:
+    """Retorna True quando o TypeError parece ser de assinatura do wrapper compilado."""
+    msg = str(exc)
+    signature_tokens = (
+        "positional argument",
+        "required positional argument",
+        "unexpected keyword argument",
+    )
+    wrapper_tokens = ("cli_vulcan_optimized", "optimized", "argument")
+    return any(token in msg for token in signature_tokens) and any(
+        token in msg for token in wrapper_tokens
+    )
+
+
 def main():
     from engine.cli import cli
 
@@ -158,11 +172,11 @@ def main():
     except TypeError as exc:
         # Vulcan pode substituir o wrapper do Click por uma função com assinatura
         # incompatível (ex.: espera `ctx`). Nesse caso, caímos para Python puro.
-        msg = str(exc)
-        if "positional argument" not in msg and "required positional argument" not in msg:
+        if not _is_wrapper_signature_type_error(exc):
             raise
         fallback_cli = _load_python_cli_fallback()
         fallback_cli()
+
 
 if __name__ == "__main__":
     main()
