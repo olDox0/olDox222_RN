@@ -135,10 +135,34 @@ if callable(_doxo_probe_embedded):
 # -*- coding: utf-8 -*-
 # ORN/engine/__main__.py
 
-from engine.cli import cli
+from pathlib import Path
+import importlib.util
+
+
+def _load_python_cli_fallback():
+    """Carrega `engine/cli.py` direto do arquivo para contornar wrappers inválidos."""
+    cli_file = Path(__file__).resolve().parent / "cli.py"
+    spec = importlib.util.spec_from_file_location("_orn_cli_fallback", str(cli_file))
+    if not spec or not spec.loader:
+        raise RuntimeError("Falha ao criar spec para fallback de engine.cli")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.cli
+
 
 def main():
-    cli()
+    from engine.cli import cli
+
+    try:
+        cli()
+    except TypeError as exc:
+        # Vulcan pode substituir o wrapper do Click por uma função com assinatura
+        # incompatível (ex.: espera `ctx`). Nesse caso, caímos para Python puro.
+        msg = str(exc)
+        if "positional argument" not in msg and "required positional argument" not in msg:
+            raise
+        fallback_cli = _load_python_cli_fallback()
+        fallback_cli()
 
 if __name__ == "__main__":
     main()
