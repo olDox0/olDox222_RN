@@ -30,6 +30,8 @@ import time
 import traceback
 from pathlib import Path
 
+from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
+
 
 # ---------------------------------------------------------------------------
 # [VULCAN] Bootstrap do MetaFinder
@@ -183,6 +185,7 @@ def _load_model() -> None:
 # Inferencia
 # ---------------------------------------------------------------------------
 
+@orn_probe(category="exec", critical=True, probe_name="server.infer")
 def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
     prompt_full = (
         f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
@@ -208,6 +211,40 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
 # ---------------------------------------------------------------------------
 # Handler de conexao
 # ---------------------------------------------------------------------------
+
+
+def _telemetry_hotspots(limit: int = 3) -> list[dict]:
+    """Resumo de gargalos de telemetria para endpoint STATUS."""
+    try:
+        snap = GLOBAL_TELEMETRY.snapshot()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for name, stats in snap.items():
+        calls = int(stats.get("calls", 0) or 0)
+        avg_ms = float(stats.get("avg_ms", 0) or 0)
+        rows.append(
+            {
+                "name": name,
+                "calls": calls,
+                "avg_ms": avg_ms,
+                "p95_ms": float(stats.get("p95_ms", 0) or 0),
+                "total_ms": round(calls * avg_ms, 4),
+            }
+        )
+
+    rows.sort(key=lambda x: x["total_ms"], reverse=True)
+    return rows[: max(1, limit)]
+
+
+def _flush_telemetry_snapshot() -> None:
+    try:
+        GLOBAL_TELEMETRY.flush_json(Path("telemetry") / "server_runtime.json")
+    except Exception:
+        # Telemetria nunca pode derrubar o servidor.
+        pass
+
 
 def _handle(conn: socket.socket) -> None:
     # OSL-7: resp sempre definida — cliente nunca fica pendurado sem resposta
@@ -244,6 +281,7 @@ def _handle(conn: socket.socket) -> None:
                 "port":           PORT,
                 "vulcan":         _VULCAN_ACTIVE,
                 "vulcan_detail":  _VULCAN_MSG,
+                "telemetry_hotspots": _telemetry_hotspots(),
             }
             return
 
@@ -329,6 +367,7 @@ def _shutdown() -> None:
             uninstall_meta_finder()
         except Exception:
             pass
+    _flush_telemetry_snapshot()
     PID_FILE.unlink(missing_ok=True)
     print("[SRV] Modelo liberado.", flush=True)
 
@@ -410,6 +449,15 @@ class ServerCLI:
         if not resp.get("vulcan"):
             for line in resp.get("vulcan_detail", "").splitlines()[:4]:
                 print(f"               {line}")
+        hotspots = resp.get("telemetry_hotspots", [])
+        if hotspots:
+            print("  Telemetria (hotspots):")
+            for row in hotspots[:3]:
+                print(
+                    "    - "
+                    f"{row.get('name','?')} calls={row.get('calls', 0)} "
+                    f"avg={row.get('avg_ms', 0)}ms p95={row.get('p95_ms', 0)}ms"
+                )
 
     def _ask(self, prompt: str, max_tokens: int = 128) -> None:
         if not prompt:

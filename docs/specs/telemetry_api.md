@@ -60,3 +60,20 @@ Formato de saída por probe:
 1. Ligar `@orn_probe` nos hot paths reais do ORN.
 2. Definir schema opcional em SQLite para histórico.
 3. Alimentar o classificador de performance (OPI) com os snapshots.
+
+## Telemetria no servidor (STATUS)
+
+O endpoint `STATUS` do `orn-server` inclui o campo `telemetry_hotspots`, com os gargalos ordenados por custo total (`calls * avg_ms`).
+
+Exemplo:
+
+```json
+{
+  "status": "online",
+  "telemetry_hotspots": [
+    {"name": "server.infer", "calls": 124, "avg_ms": 85.2, "p95_ms": 131.4, "total_ms": 10564.8}
+  ]
+}
+```
+
+No shutdown do servidor, um snapshot local também é persistido em `telemetry/server_runtime.json` para análise offline.
