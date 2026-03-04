@@ -494,8 +494,13 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
         print(f"  - infer_calls={ai.get('infer_calls', 0)}")
         print(f"  - last_infer={ai.get('last_infer_s', 0)}s")
         print(f"  - last_tokens_per_s={ai.get('last_tokens_per_s', 0)} tok/s")
+        print(f"  - total_tokens_per_s={ai.get('total_tokens_per_s', 0)} tok/s")
         print(f"  - avg_prompt_chars={ai.get('avg_prompt_chars', 0)}")
         print(f"  - avg_output_chars={ai.get('avg_output_chars', 0)}")
+        print(f"  - last_lock_wait={_fmt_ms(ai.get('last_lock_wait_ms', 0))}")
+        print(f"  - last_llm_call={_fmt_ms(ai.get('last_llm_call_ms', 0))}")
+        print(f"  - last_non_llm={_fmt_ms(ai.get('last_non_llm_ms', 0))}")
+        print(f"  - last_llm_share={ai.get('last_llm_share_pct', 0)}%")
 
     hotspots = payload.get("telemetry_hotspots", [])
     if hotspots:

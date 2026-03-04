@@ -74,8 +74,13 @@ Exemplo:
     "infer_calls": 124,
     "last_infer_s": 1.42,
     "last_tokens_per_s": 90.1,
+    "total_tokens_per_s": 72.4,
     "avg_prompt_chars": 312.4,
-    "avg_output_chars": 421.8
+    "avg_output_chars": 421.8,
+    "last_lock_wait_ms": 0.7,
+    "last_llm_call_ms": 1410.5,
+    "last_non_llm_ms": 9.5,
+    "last_llm_share_pct": 99.3
   },
   "telemetry_hotspots": [
     {"name": "server.infer.llm_call", "calls": 124, "avg_ms": 85.2, "p95_ms": 131.4, "total_ms": 10564.8}

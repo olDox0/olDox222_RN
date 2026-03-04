@@ -155,6 +155,10 @@ _stats = {
     "last_max_tokens": 0,
     "sum_prompt_chars": 0,
     "sum_output_chars": 0,
+    "last_llm_call_ms": 0.0,
+    "last_lock_wait_ms": 0.0,
+    "sum_llm_call_ms": 0.0,
+    "sum_lock_wait_ms": 0.0,
 }
 _boot_perf = {
     "vulcan_boot_ms": _VULCAN_BOOT_MS,
@@ -243,6 +247,11 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
     _observe_telemetry("server.infer.lock_wait", lock_wait_ms)
     _observe_telemetry("server.infer.llm_call", llm_call_ms)
 
+    _stats["last_lock_wait_ms"] = round(lock_wait_ms, 4)
+    _stats["last_llm_call_ms"] = round(llm_call_ms, 4)
+    _stats["sum_lock_wait_ms"] += lock_wait_ms
+    _stats["sum_llm_call_ms"] += llm_call_ms
+
     elapsed = round(time.monotonic() - t0, 3)
     return out["choices"][0]["text"].strip(), elapsed
 
@@ -315,6 +324,12 @@ def _handle(conn: socket.socket) -> None:
             avg_prompt_chars = round(_stats["sum_prompt_chars"] / infer_calls, 2) if infer_calls else 0
             avg_output_chars = round(_stats["sum_output_chars"] / infer_calls, 2) if infer_calls else 0
             last_tokens_per_s = round((_stats["last_max_tokens"] / _stats["last_infer_s"]) if _stats["last_infer_s"] else 0, 3)
+            total_tokens_per_s = round((_stats["total_tokens"] / _stats["total_elapsed_s"]) if _stats["total_elapsed_s"] else 0, 3)
+            last_output_chars_per_s = round((_stats["last_output_chars"] / _stats["last_infer_s"]) if _stats["last_infer_s"] else 0, 3)
+            avg_lock_wait_ms = round((_stats["sum_lock_wait_ms"] / infer_calls) if infer_calls else 0, 4)
+            avg_llm_call_ms = round((_stats["sum_llm_call_ms"] / infer_calls) if infer_calls else 0, 4)
+            last_non_llm_ms = round(max((_stats["last_infer_s"] * 1000.0) - _stats["last_llm_call_ms"], 0.0), 4)
+            last_llm_share_pct = round((_stats["last_llm_call_ms"] / (_stats["last_infer_s"] * 1000.0) * 100.0) if _stats["last_infer_s"] else 0, 2)
 
             resp = {
                 "status":         "online",
@@ -336,6 +351,14 @@ def _handle(conn: socket.socket) -> None:
                     "avg_prompt_chars": avg_prompt_chars,
                     "avg_output_chars": avg_output_chars,
                     "last_tokens_per_s": last_tokens_per_s,
+                    "total_tokens_per_s": total_tokens_per_s,
+                    "last_output_chars_per_s": last_output_chars_per_s,
+                    "last_lock_wait_ms": _stats["last_lock_wait_ms"],
+                    "last_llm_call_ms": _stats["last_llm_call_ms"],
+                    "avg_lock_wait_ms": avg_lock_wait_ms,
+                    "avg_llm_call_ms": avg_llm_call_ms,
+                    "last_non_llm_ms": last_non_llm_ms,
+                    "last_llm_share_pct": last_llm_share_pct,
                 },
                 "telemetry_hotspots": _telemetry_hotspots(),
             }
@@ -524,8 +547,13 @@ class ServerCLI:
             print(f"    - infer_calls={ai_perf.get('infer_calls', 0)}")
             print(f"    - last_infer_s={ai_perf.get('last_infer_s', 0)}")
             print(f"    - last_tokens_per_s={ai_perf.get('last_tokens_per_s', 0)}")
+            print(f"    - total_tokens_per_s={ai_perf.get('total_tokens_per_s', 0)}")
             print(f"    - last_prompt_chars={ai_perf.get('last_prompt_chars', 0)}")
             print(f"    - last_output_chars={ai_perf.get('last_output_chars', 0)}")
+            print(f"    - last_lock_wait_ms={ai_perf.get('last_lock_wait_ms', 0)}")
+            print(f"    - last_llm_call_ms={ai_perf.get('last_llm_call_ms', 0)}")
+            print(f"    - last_non_llm_ms={ai_perf.get('last_non_llm_ms', 0)}")
+            print(f"    - last_llm_share_pct={ai_perf.get('last_llm_share_pct', 0)}")
 
         hotspots = resp.get("telemetry_hotspots", [])
         if hotspots:

@@ -95,3 +95,21 @@ def test_status_ai_perf_updates_after_infer(monkeypatch) -> None:
     assert payload["ai_perf"]["last_prompt_chars"] == 2
     assert payload["ai_perf"]["last_output_chars"] == len("resposta")
     assert payload["ai_perf"]["last_tokens_per_s"] == 10.0
+    assert "last_llm_call_ms" in payload["ai_perf"]
+    assert "last_lock_wait_ms" in payload["ai_perf"]
+    assert "last_non_llm_ms" in payload["ai_perf"]
+    assert "last_llm_share_pct" in payload["ai_perf"]
+
+
+def test_status_ai_perf_total_tps(monkeypatch) -> None:
+    monkeypatch.setattr(server, "_infer", lambda prompt, max_tokens: ("ok", 1.0))
+
+    conn_req = _FakeConn((json.dumps({"prompt": "abcd", "max_tokens": 40}) + "\n").encode())
+    server._handle(conn_req)
+
+    conn_status = _FakeConn(b"STATUS\n")
+    server._handle(conn_status)
+    payload = json.loads(conn_status._sent.decode("utf-8").strip())
+
+    assert payload["ai_perf"]["total_tokens_per_s"] >= 0
+    assert payload["ai_perf"]["avg_prompt_chars"] >= 0

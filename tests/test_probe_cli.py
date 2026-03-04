@@ -109,3 +109,34 @@ def test_orn_probe_human_includes_ai_perf_block(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "IA perf" in result.output
     assert "last_tokens_per_s=80.0" in result.output
+
+
+def test_orn_probe_human_includes_ai_phase_fields(monkeypatch) -> None:
+    payload = {
+        "status": "online",
+        "requests": 2,
+        "errors": 0,
+        "avg_elapsed_s": 10.0,
+        "boot_perf": {"vulcan_boot_ms": 40.0, "model_load_ms": 2200.0},
+        "ai_perf": {
+            "infer_calls": 2,
+            "last_infer_s": 1.5,
+            "last_tokens_per_s": 80.0,
+            "total_tokens_per_s": 42.0,
+            "avg_prompt_chars": 100.0,
+            "avg_output_chars": 120.0,
+            "last_lock_wait_ms": 1.2,
+            "last_llm_call_ms": 1400.0,
+            "last_non_llm_ms": 100.0,
+            "last_llm_share_pct": 93.3,
+        },
+        "telemetry_hotspots": [],
+    }
+    monkeypatch.setattr(probe_cli, "query_server_status", lambda: payload)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["probe", "status"])
+    assert result.exit_code == 0
+    assert "last_lock_wait" in result.output
+    assert "last_llm_call" in result.output
+    assert "last_llm_share" in result.output
