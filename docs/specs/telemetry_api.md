@@ -113,3 +113,6 @@ echo %ERRORLEVEL%
 
 
 - `ai_perf` resume métricas práticas da IA (throughput, tamanhos médios de prompt/saída e última inferência).
+
+
+- Quando o servidor retorna schema antigo, `orn probe status` entra em modo `compat` e deriva alguns campos de `ai_perf` a partir de `telemetry_hotspots` (evita zeros enganosos).

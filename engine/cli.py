@@ -441,7 +441,7 @@ def probe() -> None:
               help="Salva saída JSON em arquivo (útil no Windows sem /tmp).")
 def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -> None:
     """Mostra status de telemetria do servidor (hotspots)."""
-    from engine.telemetry.cli import query_server_status  # noqa: PLC0415
+    from engine.telemetry.cli import normalize_status_payload, query_server_status  # noqa: PLC0415
 
     payload = query_server_status()
     if payload is None:
@@ -476,6 +476,8 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
             print(payload_text)
         return
 
+    payload, inferred = normalize_status_payload(payload)
+
     Display.section("PROBE", "orn-server status")
     Display.kv("status", str(payload.get("status", "unknown")))
     Display.kv("requests", str(payload.get("requests", 0)))
@@ -490,7 +492,7 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
 
     ai = payload.get("ai_perf", {})
     if ai:
-        Display.info("IA perf:")
+        Display.info("IA perf (compat)" if inferred else "IA perf:")
         print(f"  - infer_calls={ai.get('infer_calls', 0)}")
         print(f"  - last_infer={ai.get('last_infer_s', 0)}s")
         print(f"  - last_tokens_per_s={ai.get('last_tokens_per_s', 0)} tok/s")

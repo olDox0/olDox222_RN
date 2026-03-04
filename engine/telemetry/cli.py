@@ -39,7 +39,57 @@ def query_server_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, time
         return None
 
 
+
+
+def _hotspot_by_name(payload: dict, name: str) -> dict | None:
+    for row in payload.get("telemetry_hotspots", []) or []:
+        if row.get("name") == name:
+            return row
+    return None
+
+
+def normalize_status_payload(payload: dict) -> tuple[dict, bool]:
+    """Normaliza STATUS para exibição humana, com fallback para schemas antigos."""
+    norm = dict(payload)
+    ai = dict(norm.get("ai_perf") or {})
+    inferred = False
+
+    if "total_tokens_per_s" not in ai:
+        total_tokens = float(norm.get("total_tokens", 0) or 0)
+        avg_elapsed_s = float(norm.get("avg_elapsed_s", 0) or 0)
+        requests = float(norm.get("requests", 0) or 0)
+        total_elapsed_s = avg_elapsed_s * requests
+        ai["total_tokens_per_s"] = round((total_tokens / total_elapsed_s) if total_elapsed_s else 0, 3)
+        inferred = True
+
+    infer_row = _hotspot_by_name(norm, "server.infer")
+    llm_row = _hotspot_by_name(norm, "server.infer.llm_call")
+    lock_row = _hotspot_by_name(norm, "server.infer.lock_wait")
+
+    if "last_llm_call_ms" not in ai and llm_row:
+        ai["last_llm_call_ms"] = float(llm_row.get("avg_ms", 0) or 0)
+        inferred = True
+    if "last_lock_wait_ms" not in ai and lock_row:
+        ai["last_lock_wait_ms"] = float(lock_row.get("avg_ms", 0) or 0)
+        inferred = True
+
+    if "last_non_llm_ms" not in ai:
+        infer_ms = float(ai.get("last_infer_s", 0) or 0) * 1000.0
+        llm_ms = float(ai.get("last_llm_call_ms", 0) or 0)
+        ai["last_non_llm_ms"] = round(max(infer_ms - llm_ms, 0.0), 4)
+        inferred = True
+
+    if "last_llm_share_pct" not in ai:
+        infer_ms = float(ai.get("last_infer_s", 0) or 0) * 1000.0
+        llm_ms = float(ai.get("last_llm_call_ms", 0) or 0)
+        ai["last_llm_share_pct"] = round((llm_ms / infer_ms * 100.0) if infer_ms else 0, 2)
+        inferred = True
+
+    norm["ai_perf"] = ai
+    return norm, inferred
+
 def _print_human_status(payload: dict, *, limit: int = 5) -> None:
+    payload, inferred = normalize_status_payload(payload)
     print(f"status: {payload.get('status', 'unknown')}")
     print(f"requests: {payload.get('requests', 0)}")
     print(f"errors: {payload.get('errors', 0)}")
@@ -52,7 +102,8 @@ def _print_human_status(payload: dict, *, limit: int = 5) -> None:
 
     ai = payload.get("ai_perf", {})
     if ai:
-        print("ai_perf:")
+        title = "ai_perf (compat)" if inferred else "ai_perf"
+        print(f"{title}:")
         print(f"  - infer_calls   : {ai.get('infer_calls', 0)}")
         print(f"  - last_infer    : {ai.get('last_infer_s', 0)}s")
         print(f"  - last_tps      : {ai.get('last_tokens_per_s', 0)} tok/s")

@@ -140,3 +140,31 @@ def test_orn_probe_human_includes_ai_phase_fields(monkeypatch) -> None:
     assert "last_lock_wait" in result.output
     assert "last_llm_call" in result.output
     assert "last_llm_share" in result.output
+
+
+def test_orn_probe_human_compat_derives_ai_fields(monkeypatch) -> None:
+    payload = {
+        "status": "online",
+        "requests": 4,
+        "errors": 0,
+        "total_tokens": 296,
+        "avg_elapsed_s": 175.074,
+        "ai_perf": {
+            "infer_calls": 4,
+            "last_infer_s": 290.781,
+            "last_tokens_per_s": 0.44,
+        },
+        "telemetry_hotspots": [
+            {"name": "server.infer", "avg_ms": 175080.8, "total_ms": 700323.3},
+            {"name": "server.infer.llm_call", "avg_ms": 175058.7, "total_ms": 700235.0},
+        ],
+    }
+    monkeypatch.setattr(probe_cli, "query_server_status", lambda: payload)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["probe", "status"])
+    assert result.exit_code == 0
+    assert "IA perf (compat)" in result.output
+    assert "total_tokens_per_s=" in result.output
+    assert "last_llm_call=" in result.output
+    assert "last_llm_share=" in result.output
