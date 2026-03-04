@@ -46,6 +46,8 @@ def test_status_payload_includes_telemetry_hotspots(monkeypatch) -> None:
     assert payload["telemetry_hotspots"][0]["name"] == "server.infer"
     assert "boot_perf" in payload
     assert "vulcan_boot_ms" in payload["boot_perf"]
+    assert "ai_perf" in payload
+    assert "infer_calls" in payload["ai_perf"]
 
 
 def test_infer_registers_phase_telemetry(monkeypatch) -> None:
@@ -76,3 +78,20 @@ def test_infer_registers_phase_telemetry(monkeypatch) -> None:
     names = [item[0] for item in observed]
     assert "server.infer.lock_wait" in names
     assert "server.infer.llm_call" in names
+
+
+def test_status_ai_perf_updates_after_infer(monkeypatch) -> None:
+    monkeypatch.setattr(server, "_infer", lambda prompt, max_tokens: ("resposta", 2.0))
+
+    conn_req = _FakeConn((json.dumps({"prompt": "oi", "max_tokens": 20}) + "\n").encode())
+    server._handle(conn_req)
+
+    conn_status = _FakeConn(b"STATUS\n")
+    server._handle(conn_status)
+    payload = json.loads(conn_status._sent.decode("utf-8").strip())
+
+    assert payload["ai_perf"]["infer_calls"] >= 1
+    assert payload["ai_perf"]["last_max_tokens"] == 20
+    assert payload["ai_perf"]["last_prompt_chars"] == 2
+    assert payload["ai_perf"]["last_output_chars"] == len("resposta")
+    assert payload["ai_perf"]["last_tokens_per_s"] == 10.0

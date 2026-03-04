@@ -488,6 +488,15 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
         print(f"  - vulcan_boot={_fmt_ms(boot.get('vulcan_boot_ms', 0))}")
         print(f"  - model_load={_fmt_ms(boot.get('model_load_ms', 0))}")
 
+    ai = payload.get("ai_perf", {})
+    if ai:
+        Display.info("IA perf:")
+        print(f"  - infer_calls={ai.get('infer_calls', 0)}")
+        print(f"  - last_infer={ai.get('last_infer_s', 0)}s")
+        print(f"  - last_tokens_per_s={ai.get('last_tokens_per_s', 0)} tok/s")
+        print(f"  - avg_prompt_chars={ai.get('avg_prompt_chars', 0)}")
+        print(f"  - avg_output_chars={ai.get('avg_output_chars', 0)}")
+
     hotspots = payload.get("telemetry_hotspots", [])
     if hotspots:
         total = sum(float(r.get("total_ms", 0) or 0) for r in hotspots) or 1.0

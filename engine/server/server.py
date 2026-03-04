@@ -148,6 +148,13 @@ _stats = {
     "total_tokens":    0,
     "total_elapsed_s": 0.0,
     "start":           None,
+    "infer_calls":     0,
+    "last_infer_s":    0.0,
+    "last_prompt_chars": 0,
+    "last_output_chars": 0,
+    "last_max_tokens": 0,
+    "sum_prompt_chars": 0,
+    "sum_output_chars": 0,
 }
 _boot_perf = {
     "vulcan_boot_ms": _VULCAN_BOOT_MS,
@@ -304,6 +311,11 @@ def _handle(conn: socket.socket) -> None:
             up  = round(time.monotonic() - _stats["start"], 1) if _stats["start"] else 0
             req = _stats["requests"]
             avg = round(_stats["total_elapsed_s"] / req, 3) if req > 0 else 0
+            infer_calls = _stats["infer_calls"]
+            avg_prompt_chars = round(_stats["sum_prompt_chars"] / infer_calls, 2) if infer_calls else 0
+            avg_output_chars = round(_stats["sum_output_chars"] / infer_calls, 2) if infer_calls else 0
+            last_tokens_per_s = round((_stats["last_max_tokens"] / _stats["last_infer_s"]) if _stats["last_infer_s"] else 0, 3)
+
             resp = {
                 "status":         "online",
                 "uptime_s":       up,
@@ -315,6 +327,16 @@ def _handle(conn: socket.socket) -> None:
                 "vulcan":         _VULCAN_ACTIVE,
                 "vulcan_detail":  _VULCAN_MSG,
                 "boot_perf":      dict(_boot_perf),
+                "ai_perf": {
+                    "infer_calls": infer_calls,
+                    "last_infer_s": _stats["last_infer_s"],
+                    "last_max_tokens": _stats["last_max_tokens"],
+                    "last_prompt_chars": _stats["last_prompt_chars"],
+                    "last_output_chars": _stats["last_output_chars"],
+                    "avg_prompt_chars": avg_prompt_chars,
+                    "avg_output_chars": avg_output_chars,
+                    "last_tokens_per_s": last_tokens_per_s,
+                },
                 "telemetry_hotspots": _telemetry_hotspots(),
             }
             return
@@ -331,6 +353,13 @@ def _handle(conn: socket.socket) -> None:
                 output, elapsed = _infer(prompt, max_tokens)
                 _stats["total_tokens"]    += max_tokens
                 _stats["total_elapsed_s"] += elapsed
+                _stats["infer_calls"]     += 1
+                _stats["last_infer_s"]    = elapsed
+                _stats["last_prompt_chars"] = len(prompt)
+                _stats["last_output_chars"] = len(output)
+                _stats["last_max_tokens"] = max_tokens
+                _stats["sum_prompt_chars"] += len(prompt)
+                _stats["sum_output_chars"] += len(output)
                 resp = {"output": output, "elapsed_s": elapsed, "error": None}
             except Exception as e:
                 _stats["errors"] += 1
@@ -488,6 +517,16 @@ class ServerCLI:
             print("  Boot perf:")
             print(f"    - vulcan_boot_ms={boot_perf.get('vulcan_boot_ms', 0)}")
             print(f"    - model_load_ms={boot_perf.get('model_load_ms', 0)}")
+
+        ai_perf = resp.get("ai_perf", {})
+        if ai_perf:
+            print("  IA perf:")
+            print(f"    - infer_calls={ai_perf.get('infer_calls', 0)}")
+            print(f"    - last_infer_s={ai_perf.get('last_infer_s', 0)}")
+            print(f"    - last_tokens_per_s={ai_perf.get('last_tokens_per_s', 0)}")
+            print(f"    - last_prompt_chars={ai_perf.get('last_prompt_chars', 0)}")
+            print(f"    - last_output_chars={ai_perf.get('last_output_chars', 0)}")
+
         hotspots = resp.get("telemetry_hotspots", [])
         if hotspots:
             print("  Telemetria (hotspots):")

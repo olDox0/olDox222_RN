@@ -84,3 +84,28 @@ def test_orn_probe_script_main_json_out_file(monkeypatch, tmp_path) -> None:
     assert rc == 0
     saved = json.loads(out_file.read_text(encoding="utf-8"))
     assert saved["requests"] == 9
+
+
+def test_orn_probe_human_includes_ai_perf_block(monkeypatch) -> None:
+    payload = {
+        "status": "online",
+        "requests": 2,
+        "errors": 0,
+        "avg_elapsed_s": 10.0,
+        "boot_perf": {"vulcan_boot_ms": 40.0, "model_load_ms": 2200.0},
+        "ai_perf": {
+            "infer_calls": 2,
+            "last_infer_s": 1.5,
+            "last_tokens_per_s": 80.0,
+            "avg_prompt_chars": 100.0,
+            "avg_output_chars": 120.0,
+        },
+        "telemetry_hotspots": [],
+    }
+    monkeypatch.setattr(probe_cli, "query_server_status", lambda: payload)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["probe", "status"])
+    assert result.exit_code == 0
+    assert "IA perf" in result.output
+    assert "last_tokens_per_s=80.0" in result.output

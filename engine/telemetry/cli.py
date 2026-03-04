@@ -50,6 +50,15 @@ def _print_human_status(payload: dict, *, limit: int = 5) -> None:
         print(f"  - vulcan_boot: {_fmt_ms(boot.get('vulcan_boot_ms', 0))}")
         print(f"  - model_load : {_fmt_ms(boot.get('model_load_ms', 0))}")
 
+    ai = payload.get("ai_perf", {})
+    if ai:
+        print("ai_perf:")
+        print(f"  - infer_calls: {ai.get('infer_calls', 0)}")
+        print(f"  - last_infer : {ai.get('last_infer_s', 0)}s")
+        print(f"  - last_tps   : {ai.get('last_tokens_per_s', 0)} tok/s")
+        print(f"  - avg_prompt : {ai.get('avg_prompt_chars', 0)} chars")
+        print(f"  - avg_output : {ai.get('avg_output_chars', 0)} chars")
+
     hotspots = payload.get("telemetry_hotspots", [])
     if hotspots:
         total = sum(float(r.get("total_ms", 0) or 0) for r in hotspots) or 1.0

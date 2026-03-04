@@ -70,8 +70,15 @@ Exemplo:
 ```json
 {
   "status": "online",
+  "ai_perf": {
+    "infer_calls": 124,
+    "last_infer_s": 1.42,
+    "last_tokens_per_s": 90.1,
+    "avg_prompt_chars": 312.4,
+    "avg_output_chars": 421.8
+  },
   "telemetry_hotspots": [
-    {"name": "server.infer", "calls": 124, "avg_ms": 85.2, "p95_ms": 131.4, "total_ms": 10564.8}
+    {"name": "server.infer.llm_call", "calls": 124, "avg_ms": 85.2, "p95_ms": 131.4, "total_ms": 10564.8}
   ]
 }
 ```
@@ -98,3 +105,6 @@ python -m engine probe status --json-output --strict --out telemetry\probe_statu
 type telemetry\probe_status.json
 echo %ERRORLEVEL%
 ```
+
+
+- `ai_perf` resume métricas práticas da IA (throughput, tamanhos médios de prompt/saída e última inferência).
