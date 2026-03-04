@@ -41,3 +41,23 @@ def test_orn_probe_script_main_json(monkeypatch, capsys) -> None:
     assert rc == 0
     parsed = json.loads(captured.out)
     assert parsed["telemetry_hotspots"][0]["name"] == "server.infer"
+
+
+def test_orn_probe_status_offline_json_strict(monkeypatch) -> None:
+    monkeypatch.setattr(probe_cli, "query_server_status", lambda: None)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["probe", "status", "--json-output", "--strict"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "offline"
+
+
+def test_orn_probe_script_main_json_offline(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(probe_cli, "query_server_status", lambda host, port: None)
+
+    rc = probe_cli.main(["--json"])
+    captured = capsys.readouterr()
+    assert rc == 1
+    payload = json.loads(captured.out)
+    assert payload["status"] == "offline"

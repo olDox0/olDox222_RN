@@ -82,5 +82,7 @@ No shutdown do servidor, um snapshot local também é persistido em `telemetry/s
 ## Comandos de acesso rápido
 
 - `orn probe status`: consulta STATUS do servidor e mostra hotspots.
-- `orn probe status --json-output`: imprime payload bruto em JSON.
-- `orn-probe --json`: utilitário dedicado para consumo em scripts.
+- `orn probe status --json-output`: imprime payload bruto em JSON (inclusive offline).
+- `orn probe status --strict`: retorna código 1 quando servidor está offline.
+- `orn probe status --limit N`: limita quantidade de hotspots exibidos.
+- `orn-probe --json [--limit N]`: utilitário dedicado para consumo em scripts.

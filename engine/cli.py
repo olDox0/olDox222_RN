@@ -426,17 +426,29 @@ def probe() -> None:
 @probe.command("status")
 @click.option("--json-output", "json_output", is_flag=True, default=False,
               help="Exibe payload STATUS bruto em JSON.")
-def probe_status(json_output: bool) -> None:
+@click.option("--limit", type=int, default=5, show_default=True,
+              help="Quantidade máxima de hotspots exibidos.")
+@click.option("--strict", is_flag=True, default=False,
+              help="Retorna código de erro quando o servidor estiver offline.")
+def probe_status(json_output: bool, limit: int, strict: bool) -> None:
     """Mostra status de telemetria do servidor (hotspots)."""
     from engine.telemetry.cli import query_server_status  # noqa: PLC0415
 
     payload = query_server_status()
     if payload is None:
-        Display.warn("Servidor offline. Execute: orn-server start")
+        if json_output:
+            print(json.dumps({"status": "offline", "error": "server_unreachable"}, ensure_ascii=False, indent=2))
+        else:
+            Display.warn("Servidor offline. Execute: orn-server start")
+        if strict:
+            raise SystemExit(1)
         return
 
     if json_output:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        trimmed = dict(payload)
+        if "telemetry_hotspots" in trimmed and isinstance(trimmed["telemetry_hotspots"], list):
+            trimmed["telemetry_hotspots"] = trimmed["telemetry_hotspots"][:max(1, limit)]
+        print(json.dumps(trimmed, ensure_ascii=False, indent=2))
         return
 
     Display.section("PROBE", "orn-server status")
@@ -448,7 +460,7 @@ def probe_status(json_output: bool) -> None:
     hotspots = payload.get("telemetry_hotspots", [])
     if hotspots:
         Display.info("Hotspots:")
-        for row in hotspots[:5]:
+        for row in hotspots[:max(1, limit)]:
             print(
                 "  - "
                 f"{row.get('name', '?')} calls={row.get('calls', 0)} "

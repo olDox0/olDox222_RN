@@ -31,7 +31,7 @@ def query_server_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, time
         return None
 
 
-def _print_human_status(payload: dict) -> None:
+def _print_human_status(payload: dict, *, limit: int = 5) -> None:
     print(f"status: {payload.get('status', 'unknown')}")
     print(f"requests: {payload.get('requests', 0)}")
     print(f"errors: {payload.get('errors', 0)}")
@@ -39,7 +39,7 @@ def _print_human_status(payload: dict) -> None:
     hotspots = payload.get("telemetry_hotspots", [])
     if hotspots:
         print("hotspots:")
-        for row in hotspots:
+        for row in hotspots[:max(1, limit)]:
             print(
                 "  - "
                 f"{row.get('name', '?')} calls={row.get('calls', 0)} "
@@ -52,17 +52,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--json", dest="as_json", action="store_true", help="Saída JSON bruta")
+    parser.add_argument("--limit", type=int, default=5, help="Quantidade máxima de hotspots na saída")
     args = parser.parse_args(argv)
 
     payload = query_server_status(host=args.host, port=args.port)
     if payload is None:
-        print("[probe] servidor offline")
+        if args.as_json:
+            print(json.dumps({"status": "offline", "error": "server_unreachable"}, ensure_ascii=False, indent=2))
+        else:
+            print("[probe] servidor offline")
         return 1
 
     if args.as_json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        trimmed = dict(payload)
+        if "telemetry_hotspots" in trimmed and isinstance(trimmed["telemetry_hotspots"], list):
+            trimmed["telemetry_hotspots"] = trimmed["telemetry_hotspots"][:max(1, args.limit)]
+        print(json.dumps(trimmed, ensure_ascii=False, indent=2))
     else:
-        _print_human_status(payload)
+        _print_human_status(payload, limit=max(1, args.limit))
     return 0
 
 
