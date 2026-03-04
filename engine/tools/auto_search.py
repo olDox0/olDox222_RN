@@ -26,12 +26,23 @@ from typing import Callable
 _DECISION_PROMPT = """\
 You are a search decision engine.
 Read the question and decide:
-- If it requires current, external or specific factual data: respond ONLY with SEARCH:<term>
-- If answerable from general knowledge: respond ONLY with NO
+- If it requires CURRENT data, news, prices, or OBSCURE facts: respond ONLY with SEARCH:<term>
+- For algorithms, syntax, standard library, well-known concepts: respond ONLY with NO
+
+Examples of NO (never search these):
+- bubble sort, quicksort, binary search
+- Python syntax, C pointers, loops
+- KV-cache explanation, recursion, Big O
+- standard library functions
+
+Examples of SEARCH:
+- current version of library X
+- recent news about Y
+- price of Z
 
 Rules:
-- SEARCH:<term> must be a single short search term (1-3 words max)
-- No explanation, no punctuation, no extra text
+- SEARCH:<term> must be 1-3 words max
+- No explanation, no extra text
 
 Question: {question}"""
 

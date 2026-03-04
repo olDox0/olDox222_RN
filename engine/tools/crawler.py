@@ -235,23 +235,17 @@ def search_wikipedia(query: str, lang: str = "pt",
 
 
 def search_stackoverflow(query: str, site: str = "stackoverflow",
-                         session=None, max_results: int = 2,
+                         session=None, max_results: int = 1,
                          max_chars: int = 2000) -> CrawlerResult:
-    """
-    Stack Exchange API v2.3 — busca perguntas e retorna contexto util.
-    Quota: 10.000 req/dia sem token. CC BY-SA 4.0.
-    """
     cache_key = f"so:{site}:{query}"
     if cache_key in _session_cache:
         return _session_cache[cache_key]
 
     requests, _, _ = _get_requests()
     if requests is None:
-        return CrawlerResult("stackoverflow", query,
-                             error="requests nao instalado")
+        return CrawlerResult("stackoverflow", query, error="requests nao instalado")
 
     sess = session or _make_session()
-
     try:
         r = sess.get(
             "https://api.stackexchange.com/2.3/search/advanced",
@@ -264,7 +258,7 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
             timeout=10,
         )
         r.raise_for_status()
-        data = r.json()
+        data  = r.json()
 
         quota = data.get("quota_remaining", "?")
         if isinstance(quota, int) and quota < 50:
@@ -279,30 +273,33 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
         q_id    = q_item.get("question_id")
         q_title = q_item.get("title", query)
         q_url   = q_item.get("link", "")
-        q_body  = q_item.get("body", "")
+        q_body  = q_item.get("body", "") or q_item.get("excerpt", "")
 
-        context_html = ""
-        try:
-            r2 = sess.get(
-                f"https://api.stackexchange.com/2.3/questions/{q_id}/answers",
-                params={
-                    "order": "desc", "sort": "votes",
-                    "site": site,
-                    "filter": "withbody",
-                    "pagesize": 1,
-                },
-                timeout=10,
-            )
-            r2.raise_for_status()
-            answers = r2.json().get("items", [])
-            if answers:
-                context_html = answers[0].get("body", "")
-        except Exception:
-            pass
-
-        if not context_html:
+        # Usa o body da pergunta se suficientemente rico — evita 2ª request
+        if len(q_body.strip()) > 100:
             context_html = q_body
+        else:
+            # Só faz 2ª request se o body da pergunta for pobre
+            context_html = q_body  # fallback se a 2ª falhar
+            try:
+                r2 = sess.get(
+                    f"https://api.stackexchange.com/2.3/questions/{q_id}/answers",
+                    params={
+                        "order": "desc", "sort": "votes",
+                        "site": site,
+                        "filter": "withbody",
+                        "pagesize": 1,
+                    },
+                    timeout=10,
+                )
+                r2.raise_for_status()
+                answers = r2.json().get("items", [])
+                if answers:
+                    context_html = answers[0].get("body", "") or context_html
+            except Exception:
+                pass
 
+        # Processa HTML → texto plano (caminho único)
         BS4 = _get_bs4()
         if BS4 and context_html:
             body_text = BS4(context_html, "html.parser").get_text(separator=" ", strip=True)
@@ -312,27 +309,7 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
             body_text = ""
 
         if not body_text.strip():
-            snippet = q_item.get("excerpt", q_item.get("body_markdown", ""))
-            body_text = snippet or q_title
-
-        if not body_text.strip():
-            return CrawlerResult("stackoverflow", query,
-                                 error=f"SO retornou resposta vazia para: {query!r}")
-
-        time.sleep(0.5)
-
-        result = CrawlerResult(
-            source  = f"stackoverflow-{site}",
-            query   = query,
-            title   = q_title,
-            url     = q_url,
-            context = body_text[:max_chars],
-        )
-        _session_cache[cache_key] = result
-        return result
-
-    except Exception as e:
-        return CrawlerResult("stackoverflow", query, error=str(e))
+            snippet
 
 
 def search_arxiv(query: str, max_results: int = 1,

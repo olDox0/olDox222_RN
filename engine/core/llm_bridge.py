@@ -57,11 +57,14 @@ class BridgeConfig:
 
     model_path:    Path = Path(
         "models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF"
-        "/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+        "/qwen2.5-coder-0.5b-instruct-q2_k.gguf"
+        #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
-    n_ctx:         int  = 2048   # janela total do KV-cache (conservador)
-    active_window: int  = 1024   # tokens ativos na sliding window
-
+    n_ctx:         int  = 1024   # era 2048 — reduz KV-cache pela metade
+    active_window: int  = 512    # era 1024 — proporcional
+    n_batch:       int  = 32     # NOVO — era 512 (default llama.cpp)
+                                  # 64 = menos pressão de memória no N2808
+                                  
     # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
     n_threads:     int  = 2
     n_gpu_layers:  int  = 0      # CPU-only (sem GPU no N2808)
@@ -80,17 +83,10 @@ class BridgeConfig:
     top_k:          int   = 40
     repeat_penalty: float = 1.1
 
-    system_prompt: str  = (
-        "You are ORN, a code assistant. "
-        "Answer DIRECTLY and CONCISELY. "
-        "No introductions. No examples unless asked. "
-        "If asked for N lines, write exactly N lines. "
-        "Respond in at most 5 items unless instructed otherwise. "
-        "Never mix multiple tasks in one response. "
-        "Prefer Python, C, C++, batch script. "
-        "Respond in portuguese. "
-        "Do not lie. Be honest and transparent. "
-    )
+    system_prompt: str = (
+        "Code assistant. Be direct and concise. "
+        "No intro. Portuguese. Python/C/C++/batch."
+    )  # era ~170 tokens, agora ~20 tokens
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +264,8 @@ class SiCDoxBridge:
             n_ctx        = self._cfg.n_ctx,
             n_threads    = self._cfg.n_threads,
             n_gpu_layers = self._cfg.n_gpu_layers,
+            n_batch      = self._cfg.n_batch,   # ADICIONAR
+            use_mlock    = True,
             verbose      = False,
         )
         self._load_time = time.monotonic()
