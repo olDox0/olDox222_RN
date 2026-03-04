@@ -61,3 +61,26 @@ def test_orn_probe_script_main_json_offline(monkeypatch, capsys) -> None:
     assert rc == 1
     payload = json.loads(captured.out)
     assert payload["status"] == "offline"
+
+
+def test_orn_probe_status_json_out_file(monkeypatch, tmp_path) -> None:
+    payload = {"status": "online", "requests": 1, "errors": 0, "avg_elapsed_s": 0.1, "telemetry_hotspots": []}
+    monkeypatch.setattr(probe_cli, "query_server_status", lambda: payload)
+
+    out_file = tmp_path / "probe_status.json"
+    runner = CliRunner()
+    result = runner.invoke(cli, ["probe", "status", "--json-output", "--out", str(out_file)])
+    assert result.exit_code == 0
+    saved = json.loads(out_file.read_text(encoding="utf-8"))
+    assert saved["status"] == "online"
+
+
+def test_orn_probe_script_main_json_out_file(monkeypatch, tmp_path) -> None:
+    payload = {"status": "online", "requests": 9, "errors": 0, "avg_elapsed_s": 0.9, "telemetry_hotspots": []}
+    monkeypatch.setattr(probe_cli, "query_server_status", lambda host, port: payload)
+
+    out_file = tmp_path / "probe_script.json"
+    rc = probe_cli.main(["--json", "--out", str(out_file)])
+    assert rc == 0
+    saved = json.loads(out_file.read_text(encoding="utf-8"))
+    assert saved["requests"] == 9

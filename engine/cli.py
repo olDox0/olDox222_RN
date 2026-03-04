@@ -430,14 +430,24 @@ def probe() -> None:
               help="Quantidade máxima de hotspots exibidos.")
 @click.option("--strict", is_flag=True, default=False,
               help="Retorna código de erro quando o servidor estiver offline.")
-def probe_status(json_output: bool, limit: int, strict: bool) -> None:
+@click.option("--out", type=click.Path(), default=None,
+              help="Salva saída JSON em arquivo (útil no Windows sem /tmp).")
+def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -> None:
     """Mostra status de telemetria do servidor (hotspots)."""
     from engine.telemetry.cli import query_server_status  # noqa: PLC0415
 
     payload = query_server_status()
     if payload is None:
         if json_output:
-            print(json.dumps({"status": "offline", "error": "server_unreachable"}, ensure_ascii=False, indent=2))
+            payload_text = json.dumps({"status": "offline", "error": "server_unreachable"}, ensure_ascii=False, indent=2)
+            if out:
+                from pathlib import Path as _p  # noqa: PLC0415
+                t = _p(out)
+                t.parent.mkdir(parents=True, exist_ok=True)
+                t.write_text(payload_text + "\n", encoding="utf-8")
+                Display.info(f"JSON salvo em: {t}")
+            else:
+                print(payload_text)
         else:
             Display.warn("Servidor offline. Execute: orn-server start")
         if strict:
@@ -448,7 +458,15 @@ def probe_status(json_output: bool, limit: int, strict: bool) -> None:
         trimmed = dict(payload)
         if "telemetry_hotspots" in trimmed and isinstance(trimmed["telemetry_hotspots"], list):
             trimmed["telemetry_hotspots"] = trimmed["telemetry_hotspots"][:max(1, limit)]
-        print(json.dumps(trimmed, ensure_ascii=False, indent=2))
+        payload_text = json.dumps(trimmed, ensure_ascii=False, indent=2)
+        if out:
+            from pathlib import Path as _p  # noqa: PLC0415
+            t = _p(out)
+            t.parent.mkdir(parents=True, exist_ok=True)
+            t.write_text(payload_text + "\n", encoding="utf-8")
+            Display.info(f"JSON salvo em: {t}")
+        else:
+            print(payload_text)
         return
 
     Display.section("PROBE", "orn-server status")

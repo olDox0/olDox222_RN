@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import socket
+from pathlib import Path
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -47,27 +48,38 @@ def _print_human_status(payload: dict, *, limit: int = 5) -> None:
             )
 
 
+def _emit_output(content: str, *, out: str | None = None) -> None:
+    if out:
+        target = Path(out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content + ("" if content.endswith("\n") else "\n"), encoding="utf-8")
+        print(f"[probe] salvo em: {target}")
+        return
+    print(content)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orn-probe", description="Consulta telemetria do ORN server.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--json", dest="as_json", action="store_true", help="Saída JSON bruta")
     parser.add_argument("--limit", type=int, default=5, help="Quantidade máxima de hotspots na saída")
+    parser.add_argument("--out", default=None, help="Arquivo de saída (útil no Windows em vez de /tmp)")
     args = parser.parse_args(argv)
 
     payload = query_server_status(host=args.host, port=args.port)
     if payload is None:
         if args.as_json:
-            print(json.dumps({"status": "offline", "error": "server_unreachable"}, ensure_ascii=False, indent=2))
+            _emit_output(json.dumps({"status": "offline", "error": "server_unreachable"}, ensure_ascii=False, indent=2), out=args.out)
         else:
-            print("[probe] servidor offline")
+            _emit_output("[probe] servidor offline", out=args.out)
         return 1
 
     if args.as_json:
         trimmed = dict(payload)
         if "telemetry_hotspots" in trimmed and isinstance(trimmed["telemetry_hotspots"], list):
             trimmed["telemetry_hotspots"] = trimmed["telemetry_hotspots"][:max(1, args.limit)]
-        print(json.dumps(trimmed, ensure_ascii=False, indent=2))
+        _emit_output(json.dumps(trimmed, ensure_ascii=False, indent=2), out=args.out)
     else:
         _print_human_status(payload, limit=max(1, args.limit))
     return 0
