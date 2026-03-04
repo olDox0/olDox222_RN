@@ -13,6 +13,13 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8371
 
 
+def _fmt_ms(value: float) -> str:
+    value = float(value or 0)
+    if value >= 1000:
+        return f"{value / 1000.0:.3f}s"
+    return f"{value:.3f}ms"
+
+
 def query_server_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 5.0) -> dict | None:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -37,14 +44,23 @@ def _print_human_status(payload: dict, *, limit: int = 5) -> None:
     print(f"requests: {payload.get('requests', 0)}")
     print(f"errors: {payload.get('errors', 0)}")
     print(f"avg_elapsed_s: {payload.get('avg_elapsed_s', 0)}")
+    boot = payload.get("boot_perf", {})
+    if boot:
+        print("boot_perf:")
+        print(f"  - vulcan_boot: {_fmt_ms(boot.get('vulcan_boot_ms', 0))}")
+        print(f"  - model_load : {_fmt_ms(boot.get('model_load_ms', 0))}")
+
     hotspots = payload.get("telemetry_hotspots", [])
     if hotspots:
+        total = sum(float(r.get("total_ms", 0) or 0) for r in hotspots) or 1.0
         print("hotspots:")
         for row in hotspots[:max(1, limit)]:
+            share = (float(row.get("total_ms", 0) or 0) / total) * 100.0
             print(
                 "  - "
                 f"{row.get('name', '?')} calls={row.get('calls', 0)} "
-                f"avg={row.get('avg_ms', 0)}ms p95={row.get('p95_ms', 0)}ms"
+                f"avg={_fmt_ms(row.get('avg_ms', 0))} p95={_fmt_ms(row.get('p95_ms', 0))} "
+                f"total={_fmt_ms(row.get('total_ms', 0))} share={share:.1f}%"
             )
 
 

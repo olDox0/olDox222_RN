@@ -27,6 +27,13 @@ import click
 from engine.ui.display import Display
 
 
+def _fmt_ms(value: float) -> str:
+    value = float(value or 0)
+    if value >= 1000:
+        return f"{value / 1000.0:.3f}s"
+    return f"{value:.3f}ms"
+
+
 # ---------------------------------------------------------------------------
 # Grupo raiz
 # ---------------------------------------------------------------------------
@@ -475,12 +482,21 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
     Display.kv("errors", str(payload.get("errors", 0)))
     Display.kv("avg_elapsed_s", str(payload.get("avg_elapsed_s", 0)))
 
+    boot = payload.get("boot_perf", {})
+    if boot:
+        Display.info("Boot perf:")
+        print(f"  - vulcan_boot={_fmt_ms(boot.get('vulcan_boot_ms', 0))}")
+        print(f"  - model_load={_fmt_ms(boot.get('model_load_ms', 0))}")
+
     hotspots = payload.get("telemetry_hotspots", [])
     if hotspots:
+        total = sum(float(r.get("total_ms", 0) or 0) for r in hotspots) or 1.0
         Display.info("Hotspots:")
         for row in hotspots[:max(1, limit)]:
+            share = (float(row.get("total_ms", 0) or 0) / total) * 100.0
             print(
                 "  - "
                 f"{row.get('name', '?')} calls={row.get('calls', 0)} "
-                f"avg={row.get('avg_ms', 0)}ms p95={row.get('p95_ms', 0)}ms"
+                f"avg={_fmt_ms(row.get('avg_ms', 0))} p95={_fmt_ms(row.get('p95_ms', 0))} "
+                f"total={_fmt_ms(row.get('total_ms', 0))} share={share:.1f}%"
             )

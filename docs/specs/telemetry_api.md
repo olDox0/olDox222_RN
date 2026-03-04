@@ -87,3 +87,14 @@ No shutdown do servidor, um snapshot local também é persistido em `telemetry/s
 - `orn probe status --strict`: retorna código 1 quando servidor está offline.
 - `orn probe status --limit N`: limita quantidade de hotspots exibidos.
 - `orn-probe --json [--limit N] [--out ARQUIVO]`: utilitário dedicado para consumo em scripts.
+
+
+### Exemplos no Windows (cmd.exe)
+
+No `cmd.exe`, use comandos separados (ou `&&`) em vez de sintaxe Bash com `; rc=$?`.
+
+```bat
+python -m engine probe status --json-output --strict --out telemetry\probe_status.json
+type telemetry\probe_status.json
+echo %ERRORLEVEL%
+```

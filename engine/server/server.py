@@ -111,7 +111,9 @@ def _vulcan_boot() -> tuple[bool, str]:
 
 
 # Ativa ANTES dos imports de terceiros
+_t_boot0 = time.monotonic()
 _VULCAN_ACTIVE, _VULCAN_MSG = _vulcan_boot()
+_VULCAN_BOOT_MS = round((time.monotonic() - _t_boot0) * 1000.0, 3)
 
 if _VULCAN_ACTIVE:
     print(f"[VULCAN] OK — {_VULCAN_MSG}", flush=True)
@@ -147,12 +149,32 @@ _stats = {
     "total_elapsed_s": 0.0,
     "start":           None,
 }
+_boot_perf = {
+    "vulcan_boot_ms": _VULCAN_BOOT_MS,
+    "model_load_ms": 0.0,
+}
 _lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
 # Boot do modelo
 # ---------------------------------------------------------------------------
+
+
+def _observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") -> None:
+    """Registro fail-silent de métricas para fases internas do servidor."""
+    try:
+        GLOBAL_TELEMETRY.observe(
+            name,
+            float(elapsed_ms),
+            category=category,
+            critical=(category == "exec"),
+            is_cold=False,
+            failed=False,
+        )
+    except Exception:
+        pass
+
 
 def _load_model() -> None:
     global _llm, _cfg
@@ -177,6 +199,8 @@ def _load_model() -> None:
         verbose      = False,
     )
     elapsed = round(time.monotonic() - t0, 1)
+    _boot_perf["model_load_ms"] = round(elapsed * 1000.0, 3)
+    _observe_telemetry("server.boot.model_load", _boot_perf["model_load_ms"], category="boot")
     _stats["start"] = time.monotonic()
     print(f"[BOOT] Pronto em {elapsed}s — {HOST}:{PORT}", flush=True)
 
@@ -193,7 +217,10 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
         f"<|im_start|>assistant\n"
     )
     t0 = time.monotonic()
+    t_wait0 = time.monotonic()
     with _lock:
+        lock_wait_ms = (time.monotonic() - t_wait0) * 1000.0
+        t_llm0 = time.monotonic()
         out = _llm(
             prompt_full,
             max_tokens     = max_tokens,
@@ -204,8 +231,14 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
             top_k          = _cfg.top_k,
             repeat_penalty = _cfg.repeat_penalty,
         )
+        llm_call_ms = (time.monotonic() - t_llm0) * 1000.0
+
+    _observe_telemetry("server.infer.lock_wait", lock_wait_ms)
+    _observe_telemetry("server.infer.llm_call", llm_call_ms)
+
     elapsed = round(time.monotonic() - t0, 3)
     return out["choices"][0]["text"].strip(), elapsed
+
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +314,7 @@ def _handle(conn: socket.socket) -> None:
                 "port":           PORT,
                 "vulcan":         _VULCAN_ACTIVE,
                 "vulcan_detail":  _VULCAN_MSG,
+                "boot_perf":      dict(_boot_perf),
                 "telemetry_hotspots": _telemetry_hotspots(),
             }
             return
@@ -449,6 +483,11 @@ class ServerCLI:
         if not resp.get("vulcan"):
             for line in resp.get("vulcan_detail", "").splitlines()[:4]:
                 print(f"               {line}")
+        boot_perf = resp.get("boot_perf", {})
+        if boot_perf:
+            print("  Boot perf:")
+            print(f"    - vulcan_boot_ms={boot_perf.get('vulcan_boot_ms', 0)}")
+            print(f"    - model_load_ms={boot_perf.get('model_load_ms', 0)}")
         hotspots = resp.get("telemetry_hotspots", [])
         if hotspots:
             print("  Telemetria (hotspots):")
