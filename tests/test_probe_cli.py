@@ -168,3 +168,22 @@ def test_orn_probe_human_compat_derives_ai_fields(monkeypatch) -> None:
     assert "total_tokens_per_s=" in result.output
     assert "last_llm_call=" in result.output
     assert "last_llm_share=" in result.output
+
+
+def test_orn_probe_human_includes_system_perf_block(monkeypatch) -> None:
+    payload = {
+        "status": "online",
+        "requests": 1,
+        "errors": 0,
+        "avg_elapsed_s": 1.0,
+        "system_perf": {"pid": 10, "threads": 4, "cpu_count": 8, "load_1m": 0.5, "rss_mb": 123.4},
+        "ai_perf": {"infer_calls": 1, "last_infer_s": 1.0, "last_tokens_per_s": 10.0},
+        "telemetry_hotspots": [],
+    }
+    monkeypatch.setattr(probe_cli, "query_server_status", lambda: payload)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["probe", "status"])
+    assert result.exit_code == 0
+    assert "System perf" in result.output
+    assert "pid/threads=10/4" in result.output

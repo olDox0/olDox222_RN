@@ -490,6 +490,13 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
         print(f"  - vulcan_boot={_fmt_ms(boot.get('vulcan_boot_ms', 0))}")
         print(f"  - model_load={_fmt_ms(boot.get('model_load_ms', 0))}")
 
+    system = payload.get("system_perf", {})
+    if system:
+        Display.info("System perf:")
+        print(f"  - pid/threads={system.get('pid', 0)}/{system.get('threads', 0)}")
+        print(f"  - cpu/load_1m={system.get('cpu_count', 0)}/{system.get('load_1m', 0)}")
+        print(f"  - rss_mb={system.get('rss_mb', 0)}")
+
     ai = payload.get("ai_perf", {})
     if ai:
         Display.info("IA perf (compat)" if inferred else "IA perf:")

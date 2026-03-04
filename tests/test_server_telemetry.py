@@ -48,6 +48,8 @@ def test_status_payload_includes_telemetry_hotspots(monkeypatch) -> None:
     assert "vulcan_boot_ms" in payload["boot_perf"]
     assert "ai_perf" in payload
     assert "infer_calls" in payload["ai_perf"]
+    assert "system_perf" in payload
+    assert "cpu_count" in payload["system_perf"]
 
 
 def test_infer_registers_phase_telemetry(monkeypatch) -> None:
@@ -113,3 +115,11 @@ def test_status_ai_perf_total_tps(monkeypatch) -> None:
 
     assert payload["ai_perf"]["total_tokens_per_s"] >= 0
     assert payload["ai_perf"]["avg_prompt_chars"] >= 0
+
+
+def test_system_perf_snapshot_shape() -> None:
+    snap = server._system_perf_snapshot()
+    assert "pid" in snap
+    assert "threads" in snap
+    assert "cpu_count" in snap
+    assert "python" in snap

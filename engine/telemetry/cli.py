@@ -100,6 +100,13 @@ def _print_human_status(payload: dict, *, limit: int = 5) -> None:
         print(f"  - vulcan_boot: {_fmt_ms(boot.get('vulcan_boot_ms', 0))}")
         print(f"  - model_load : {_fmt_ms(boot.get('model_load_ms', 0))}")
 
+    system = payload.get("system_perf", {})
+    if system:
+        print("system_perf:")
+        print(f"  - pid/threads : {system.get('pid', 0)} / {system.get('threads', 0)}")
+        print(f"  - cpu/load1m  : {system.get('cpu_count', 0)} / {system.get('load_1m', 0)}")
+        print(f"  - rss_mb      : {system.get('rss_mb', 0)}")
+
     ai = payload.get("ai_perf", {})
     if ai:
         title = "ai_perf (compat)" if inferred else "ai_perf"

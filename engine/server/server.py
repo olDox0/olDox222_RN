@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import socket
 import subprocess
 import sys
@@ -295,6 +296,37 @@ def _flush_telemetry_snapshot() -> None:
         pass
 
 
+def _system_perf_snapshot() -> dict:
+    """Snapshot leve de sistema/processo para contexto de gargalo."""
+    rss_mb = 0.0
+    try:
+        import resource  # Unix
+        rss_kb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # macOS entrega bytes, Linux KB; normalizamos aproximadamente.
+        if rss_kb > 10_000_000:
+            rss_mb = round(rss_kb / (1024.0 * 1024.0), 3)
+        else:
+            rss_mb = round(rss_kb / 1024.0, 3)
+    except Exception:
+        pass
+
+    load_1m = 0.0
+    try:
+        load_1m = round(float(os.getloadavg()[0]), 3)
+    except Exception:
+        pass
+
+    return {
+        "pid": os.getpid(),
+        "threads": threading.active_count(),
+        "cpu_count": os.cpu_count() or 0,
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "rss_mb": rss_mb,
+        "load_1m": load_1m,
+    }
+
+
 def _handle(conn: socket.socket) -> None:
     # OSL-7: resp sempre definida — cliente nunca fica pendurado sem resposta
     resp: dict = {"output": "", "elapsed_s": 0, "error": "internal error"}
@@ -342,6 +374,7 @@ def _handle(conn: socket.socket) -> None:
                 "vulcan":         _VULCAN_ACTIVE,
                 "vulcan_detail":  _VULCAN_MSG,
                 "boot_perf":      dict(_boot_perf),
+                "system_perf":    _system_perf_snapshot(),
                 "ai_perf": {
                     "infer_calls": infer_calls,
                     "last_infer_s": _stats["last_infer_s"],
@@ -540,6 +573,13 @@ class ServerCLI:
             print("  Boot perf:")
             print(f"    - vulcan_boot_ms={boot_perf.get('vulcan_boot_ms', 0)}")
             print(f"    - model_load_ms={boot_perf.get('model_load_ms', 0)}")
+
+        system_perf = resp.get("system_perf", {})
+        if system_perf:
+            print("  System perf:")
+            print(f"    - pid={system_perf.get('pid', 0)} threads={system_perf.get('threads', 0)}")
+            print(f"    - cpu_count={system_perf.get('cpu_count', 0)} load_1m={system_perf.get('load_1m', 0)}")
+            print(f"    - rss_mb={system_perf.get('rss_mb', 0)}")
 
         ai_perf = resp.get("ai_perf", {})
         if ai_perf:

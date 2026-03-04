@@ -70,6 +70,13 @@ Exemplo:
 ```json
 {
   "status": "online",
+  "system_perf": {
+    "pid": 8124,
+    "threads": 7,
+    "cpu_count": 8,
+    "rss_mb": 512.3,
+    "load_1m": 0.82
+  },
   "ai_perf": {
     "infer_calls": 124,
     "last_infer_s": 1.42,
@@ -116,3 +123,5 @@ echo %ERRORLEVEL%
 
 
 - Quando o servidor retorna schema antigo, `orn probe status` entra em modo `compat` e deriva alguns campos de `ai_perf` a partir de `telemetry_hotspots` (evita zeros enganosos).
+
+- `system_perf` fornece contexto do processo/sistema (threads, CPU, memória RSS, load), útil para correlacionar gargalos de IA com saturação do host.
