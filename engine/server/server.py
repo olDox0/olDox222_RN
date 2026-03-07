@@ -527,7 +527,7 @@ class ServerCLI:
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
             print(f"[SRV] Iniciado em background. Log: {LOG_FILE}")
-            print(f"[SRV] Aguarde ~5s e verifique: orn-server status")
+            print("[SRV] Aguarde ~5s e verifique: orn-server status")
         else:
             _load_model()
             _serve()
@@ -556,7 +556,7 @@ class ServerCLI:
         up = resp.get("uptime_s", 0)
         h, rem = divmod(int(up), 3600)
         m, s   = divmod(rem, 60)
-        print(f"  Status:      ONLINE")
+        print("  Status:      ONLINE")
         print(f"  Uptime:      {h:02d}:{m:02d}:{s:02d}")
         print(f"  Requests:    {resp['requests']}")
         print(f"  Errors:      {resp['errors']}")

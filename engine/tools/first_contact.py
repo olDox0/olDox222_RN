@@ -14,7 +14,7 @@ God: Hefesto — verifica se a forja está em condições antes de acender.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
+# [DOX-UNUSED] from pathlib import Path
 
 
 def check_environment() -> list[str]:

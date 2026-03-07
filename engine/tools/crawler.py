@@ -31,12 +31,12 @@ God: Hermes — mensageiro, veloz e ético.
 
 from __future__ import annotations
 
-import json
+# [DOX-UNUSED] import json
 import time
 import urllib.parse
 import urllib.robotparser
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 import re
 
@@ -310,7 +310,10 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
 
         if not body_text.strip():
             snippet
-
+    except Exception as e:
+        import traceback
+        print(f"\033[31m ■ Erro: {e}")
+        traceback.print_tb(e.__traceback__)
 
 def search_arxiv(query: str, max_results: int = 1,
                  session=None, max_chars: int = 2000) -> CrawlerResult:

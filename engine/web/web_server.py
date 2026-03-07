@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import os
 import socket
-import sys
+# [DOX-UNUSED] import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -740,6 +740,7 @@ def _run_crawler(query: str) -> tuple[str, str, str]:
         if result.ok:
             return result.to_prompt_block(), result.source, result.url
     except Exception as e:
+        import traceback
         print(f"\033[31m ■ Erro: {e}")
         traceback.print_tb(e.__traceback__)
         pass
@@ -918,6 +919,7 @@ class WebCLI:
             PID_FILE.unlink(missing_ok=True)
             print(f"[WEB] Encerrado (PID {pid}).")
         except Exception as e:
+            import traceback
             print(f"[WEB] Erro: {e}")
             print(f"\033[31m ■ Erro: {e}")
             traceback.print_tb(e.__traceback__)

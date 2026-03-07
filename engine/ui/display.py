@@ -91,7 +91,7 @@ class Display:
     @staticmethod
     def thinking(prompt: str) -> None:
         """Indica que o modelo está processando."""
-        print(warn(f"\n  [ORN] Processando: ") + info(f'"{prompt}"'))
+        print(warn("\n  [ORN] Processando: ") + info(f'"{prompt}"'))
         print(dimmed("  Aguarde..."))
 
     # ------------------------------------------------------------------

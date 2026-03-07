@@ -12,10 +12,10 @@ God: Hades — invisível, persistente, guarda o que foi pensado.
 TODO Fase 3: implementar post_hypothesis, add_causal_link.
 """
 
-import time
-from typing import Dict, List, Any, Optional
+# [DOX-UNUSED] import time
+from typing import Any
 #from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 @dataclass
 class Hypothesis:

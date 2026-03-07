@@ -24,7 +24,7 @@ import sys
 import subprocess
 import importlib.util
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # ---------------------------------------------------------------------------

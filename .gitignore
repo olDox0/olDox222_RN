@@ -35,6 +35,7 @@ config.json
 *.txt
 *.bkp
 *.bak
+*.pid
 *.dox
 *.pyx
 *.old_trash

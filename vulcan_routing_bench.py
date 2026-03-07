@@ -132,12 +132,12 @@ def run_direct_benchmark(module_name: str, pyd_path: Path, py_path: Path):
         with open(pyd_path, 'wb') as f:
             f.write(b"CORRUPTED_DLL_HEADER_VULCAN")
 
-        print(f"   -> Binário corrompido propositalmente injetado.")
+        print("   -> Binário corrompido propositalmente injetado.")
         
         sys.modules.pop(module_name, None)
         
         # USA O SEU SAFE LOADER DIRETAMENTE
-        print(f"   -> Acionando o SafeExtensionLoader...")
+        print("   -> Acionando o SafeExtensionLoader...")
         safe_loader = BenchmarkSafeLoader(module_name, str(pyd_path), str(py_path))
         spec_safe = importlib.util.spec_from_loader(module_name, safe_loader)
         mod_safe = importlib.util.module_from_spec(spec_safe)

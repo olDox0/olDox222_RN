@@ -51,7 +51,25 @@ class ColorManager:
         return self._cache.get(name.upper(), "")
 
     def __getattr__(self, name: str) -> str:
-        """Acesso por atributo: c.BRIGHT_GREEN, c.RESET, etc."""
+        """Acesso por atributo: c.BRIGHT_GREEN, c.RESET, etc.
+
+        VULCAN FIX: Não interceptar métodos/atributos reais da classe.
+        Cython compila __getattr__ como slot C que dispara antes do
+        mecanismo normal de resolução de atributos (tp_getattro).
+        Sem este guard, métodos como load_conf(), paint(), catalogar()
+        tornam-se inacessíveis no binário compilado.
+
+        Regra: só delegar para self.get() se o nome NÃO é um atributo
+        real definido na classe. Qualquer outro caso levanta AttributeError
+        para que o Python resolva normalmente via MRO.
+        """
+        # Nomes com underscore são internos — nunca são cores ANSI
+        if name.startswith("_"):
+            raise AttributeError(name)
+        # Se é um método/atributo real da classe, não interceptar
+        if callable(getattr(type(self), name, None)):
+            raise AttributeError(name)
+        # Caso contrário: trata como nome de cor ANSI
         return self.get(name)
 
     def paint(self, color_name: str):
