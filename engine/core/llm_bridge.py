@@ -97,6 +97,10 @@ class BridgeConfig:
     cache_type_k: str | None = None
     cache_type_v: str | None = None
 
+    # Parâmetros RoPE para ajuste de extrapolação/contexto
+    rope_freq_base: float | None = None
+    rope_freq_scale: float | None = None
+
     system_prompt: str = ("succinct assistant. tightening writing. PTBR.")  # era ~170 tokens, agora ~20 tokens
 
     def __post_init__(self) -> None:
@@ -114,6 +118,19 @@ class BridgeConfig:
             self.cache_type_k = env_cache_k
         if env_cache_v:
             self.cache_type_v = env_cache_v
+
+        env_rope_base = os.environ.get("ORN_ROPE_FREQ_BASE", "").strip()
+        env_rope_scale = os.environ.get("ORN_ROPE_FREQ_SCALE", "").strip()
+        if env_rope_base:
+            try:
+                self.rope_freq_base = float(env_rope_base)
+            except ValueError:
+                pass
+        if env_rope_scale:
+            try:
+                self.rope_freq_scale = float(env_rope_scale)
+            except ValueError:
+                pass
 
         if self.active_window <= 0:
             self.active_window = 1
@@ -314,8 +331,10 @@ class SiCDoxBridge:
                 "n_threads":     self._cfg.n_threads,
                 "n_gpu_layers":  self._cfg.n_gpu_layers,
                 "ttl_seconds":   self._cfg.ttl_seconds,
-                "cache_type_k":  self._cfg.cache_type_k,
-                "cache_type_v":  self._cfg.cache_type_v,
+                "cache_type_k":   self._cfg.cache_type_k,
+                "cache_type_v":   self._cfg.cache_type_v,
+                "rope_freq_base": self._cfg.rope_freq_base,
+                "rope_freq_scale": self._cfg.rope_freq_scale,
             },
         }
 
@@ -361,15 +380,20 @@ class SiCDoxBridge:
             kwargs["type_k"] = self._cfg.cache_type_k
         if self._cfg.cache_type_v:
             kwargs["type_v"] = self._cfg.cache_type_v
+        if self._cfg.rope_freq_base is not None:
+            kwargs["rope_freq_base"] = self._cfg.rope_freq_base
+        if self._cfg.rope_freq_scale is not None:
+            kwargs["rope_freq_scale"] = self._cfg.rope_freq_scale
 
         try:
             self._llm = Llama(**kwargs)
         except TypeError as exc:
             msg = str(exc)
-            if "type_k" not in msg and "type_v" not in msg:
+            unsupported = ("type_k", "type_v", "rope_freq_base", "rope_freq_scale")
+            if not any(token in msg for token in unsupported):
                 raise
-            kwargs.pop("type_k", None)
-            kwargs.pop("type_v", None)
+            for token in unsupported:
+                kwargs.pop(token, None)
             self._llm = Llama(**kwargs)
         self._load_time = time.monotonic()
 

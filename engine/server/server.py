@@ -527,12 +527,16 @@ class ServerCLI:
             cache_type_k = self._arg_value(start_args, "--cache-type-k")
             cache_type_v = self._arg_value(start_args, "--cache-type-v")
             active_window = self._arg_value(start_args, "--active-window")
+            rope_freq_base = self._arg_value(start_args, "--rope-freq-base")
+            rope_freq_scale = self._arg_value(start_args, "--rope-freq-scale")
 
             self._start(
                 background=background,
                 cache_type_k=cache_type_k,
                 cache_type_v=cache_type_v,
                 active_window=active_window,
+                rope_freq_base=rope_freq_base,
+                rope_freq_scale=rope_freq_scale,
             )
         elif args[0] == "stop":
             self._stop()
@@ -554,6 +558,8 @@ class ServerCLI:
         cache_type_k: str | None = None,
         cache_type_v: str | None = None,
         active_window: str | None = None,
+        rope_freq_base: str | None = None,
+        rope_freq_scale: str | None = None,
     ) -> None:
         if self._is_online():
             print(f"[SRV] Servidor ja rodando na porta {PORT}.")
@@ -569,11 +575,21 @@ class ServerCLI:
                 child_args += ["--cache-type-v", cache_type_v]
             if active_window:
                 child_args += ["--active-window", active_window]
+            if rope_freq_base:
+                child_args += ["--rope-freq-base", rope_freq_base]
+            if rope_freq_scale:
+                child_args += ["--rope-freq-scale", rope_freq_scale]
 
             subprocess.Popen(
                 child_args,
                 stdout=log, stderr=log,
-                env=self._start_env(cache_type_k, cache_type_v, active_window),
+                env=self._start_env(
+                    cache_type_k,
+                    cache_type_v,
+                    active_window,
+                    rope_freq_base,
+                    rope_freq_scale,
+                ),
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
             log.close()   # Bug fix: fecha o fd do processo pai após fork
@@ -588,7 +604,13 @@ class ServerCLI:
                 # Em alguns ambientes windows antigos ou embeded, signal pode levantar.
                 pass
 
-            self._apply_start_env(cache_type_k, cache_type_v, active_window)
+            self._apply_start_env(
+                cache_type_k,
+                cache_type_v,
+                active_window,
+                rope_freq_base,
+                rope_freq_scale,
+            )
             _load_model()
             _serve()
 
@@ -729,6 +751,8 @@ class ServerCLI:
         cache_type_k: str | None,
         cache_type_v: str | None,
         active_window: str | None,
+        rope_freq_base: str | None,
+        rope_freq_scale: str | None,
     ) -> dict[str, str]:
         env = os.environ.copy()
         if cache_type_k:
@@ -737,6 +761,10 @@ class ServerCLI:
             env["ORN_CACHE_TYPE_V"] = cache_type_v
         if active_window:
             env["ORN_ACTIVE_WINDOW"] = active_window
+        if rope_freq_base:
+            env["ORN_ROPE_FREQ_BASE"] = rope_freq_base
+        if rope_freq_scale:
+            env["ORN_ROPE_FREQ_SCALE"] = rope_freq_scale
         return env
 
     def _apply_start_env(
@@ -744,8 +772,16 @@ class ServerCLI:
         cache_type_k: str | None,
         cache_type_v: str | None,
         active_window: str | None,
+        rope_freq_base: str | None,
+        rope_freq_scale: str | None,
     ) -> None:
-        env = self._start_env(cache_type_k, cache_type_v, active_window)
+        env = self._start_env(
+            cache_type_k,
+            cache_type_v,
+            active_window,
+            rope_freq_base,
+            rope_freq_scale,
+        )
         os.environ.update(env)
 
     def _help(self) -> None:
@@ -754,6 +790,7 @@ class ServerCLI:
         print("  start --bg     inicia em background")
         print("  start --active-window 512")
         print("  start --cache-type-k q8_0 --cache-type-v q4_0")
+        print("  start --rope-freq-base 10000 --rope-freq-scale 1.0")
         print("  stop           para o servidor")
         print("  status         exibe uptime e estatisticas")
         print('  ask "prompt"   consulta direta ao modelo')
