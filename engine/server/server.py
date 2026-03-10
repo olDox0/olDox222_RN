@@ -244,16 +244,23 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
     with _lock:
         lock_wait_ms = (time.monotonic() - t_wait0) * 1000.0
         t_llm0 = time.monotonic()
-        out = _llm(
-            prompt_full,
-            max_tokens     = max_tokens,
-            stop           = ["<|im_end|>", "</s>"],
-            echo           = False,
-            temperature    = _cfg.temperature,
-            top_p          = _cfg.top_p,
-            top_k          = _cfg.top_k,
-            repeat_penalty = _cfg.repeat_penalty,
-        )
+        infer_kwargs = {
+            "max_tokens": max_tokens,
+            "stop": ["<|im_end|>", "</s>"],
+            "echo": False,
+            "temperature": _cfg.temperature,
+            "top_p": _cfg.top_p,
+            "top_k": _cfg.top_k,
+            "min_p": _cfg.min_p,
+            "repeat_penalty": _cfg.repeat_penalty,
+        }
+        try:
+            out = _llm(prompt_full, **infer_kwargs)
+        except TypeError as exc:
+            if "min_p" not in str(exc):
+                raise
+            infer_kwargs.pop("min_p", None)
+            out = _llm(prompt_full, **infer_kwargs)
         llm_call_ms = (time.monotonic() - t_llm0) * 1000.0
 
     _observe_telemetry("server.infer.lock_wait", lock_wait_ms)
@@ -530,6 +537,7 @@ class ServerCLI:
             rope_freq_base = self._arg_value(start_args, "--rope-freq-base")
             rope_freq_scale = self._arg_value(start_args, "--rope-freq-scale")
             flash_attn = self._arg_value(start_args, "--flash-attn")
+            min_p = self._arg_value(start_args, "--min-p")
             no_mmap = "--no-mmap" in start_args
             no_alloc = "--no-alloc" in start_args
 
@@ -541,6 +549,7 @@ class ServerCLI:
                 rope_freq_base=rope_freq_base,
                 rope_freq_scale=rope_freq_scale,
                 flash_attn=flash_attn,
+                min_p=min_p,
                 no_mmap=no_mmap,
                 no_alloc=no_alloc,
             )
@@ -567,6 +576,7 @@ class ServerCLI:
         rope_freq_base: str | None = None,
         rope_freq_scale: str | None = None,
         flash_attn: str | None = None,
+        min_p: str | None = None,
         no_mmap: bool = False,
         no_alloc: bool = False,
     ) -> None:
@@ -590,6 +600,8 @@ class ServerCLI:
                 child_args += ["--rope-freq-scale", rope_freq_scale]
             if flash_attn:
                 child_args += ["--flash-attn", flash_attn]
+            if min_p:
+                child_args += ["--min-p", min_p]
             if no_mmap:
                 child_args += ["--no-mmap"]
             if no_alloc:
@@ -605,6 +617,7 @@ class ServerCLI:
                     rope_freq_base,
                     rope_freq_scale,
                     flash_attn,
+                    min_p,
                     no_mmap,
                     no_alloc,
                 ),
@@ -629,6 +642,7 @@ class ServerCLI:
                 rope_freq_base,
                 rope_freq_scale,
                 flash_attn,
+                min_p,
                 no_mmap,
                 no_alloc,
             )
@@ -775,6 +789,7 @@ class ServerCLI:
         rope_freq_base: str | None,
         rope_freq_scale: str | None,
         flash_attn: str | None,
+        min_p: str | None,
         no_mmap: bool,
         no_alloc: bool,
     ) -> dict[str, str]:
@@ -791,6 +806,8 @@ class ServerCLI:
             env["ORN_ROPE_FREQ_SCALE"] = rope_freq_scale
         if flash_attn:
             env["ORN_FLASH_ATTN"] = flash_attn
+        if min_p:
+            env["ORN_MIN_P"] = min_p
         if no_mmap:
             env["ORN_USE_MMAP"] = "0"
         if no_alloc:
@@ -805,6 +822,7 @@ class ServerCLI:
         rope_freq_base: str | None,
         rope_freq_scale: str | None,
         flash_attn: str | None,
+        min_p: str | None,
         no_mmap: bool,
         no_alloc: bool,
     ) -> None:
@@ -815,6 +833,7 @@ class ServerCLI:
             rope_freq_base,
             rope_freq_scale,
             flash_attn,
+            min_p,
             no_mmap,
             no_alloc,
         )
@@ -830,6 +849,7 @@ class ServerCLI:
         print("  start --rope-freq-base 10000 --rope-freq-scale 1.0")
         print("  start --rope-freq-base none --rope-freq-scale null")
         print("  start --flash-attn on   # ou off/none")
+        print("  start --min-p 0.01")
         print("  start --no-mmap --no-alloc")
         print("  stop           para o servidor")
         print("  status         exibe uptime e estatisticas")

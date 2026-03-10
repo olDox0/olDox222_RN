@@ -93,6 +93,11 @@ class BridgeConfig:
     top_p:          float = 0.85
     top_k:          int   = 35
     repeat_penalty: float = 1.1
+    min_p:          float = 0.01
+
+    # Menemonização de repetições (com pruning LRU)
+    repetition_memo_enabled: bool = True
+    repetition_memo_size:    int  = 32
 
     # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
     cache_type_k: str | None = None
@@ -154,6 +159,9 @@ class BridgeConfig:
         # Normaliza bools de infra/memória.
         self.use_mmap = bool(self.use_mmap)
         self.no_alloc = bool(self.no_alloc)
+        self.repetition_memo_enabled = bool(self.repetition_memo_enabled)
+        if self.repetition_memo_size <= 0:
+            self.repetition_memo_size = 1
 
         # Overrides opcionais por ambiente para tuning sem alterar código.
         env_active_window = os.environ.get("ORN_ACTIVE_WINDOW", "").strip()
@@ -185,6 +193,25 @@ class BridgeConfig:
         parsed_no_alloc = self._normalize_optional_bool(env_no_alloc) if env_no_alloc is not None else None
         if parsed_no_alloc is not None:
             self.no_alloc = parsed_no_alloc
+
+        env_min_p = os.environ.get("ORN_MIN_P", "").strip()
+        if env_min_p:
+            try:
+                self.min_p = float(env_min_p)
+            except ValueError:
+                pass
+
+        env_memo = os.environ.get("ORN_REPETITION_MEMO")
+        parsed_memo = self._normalize_optional_bool(env_memo) if env_memo is not None else None
+        if parsed_memo is not None:
+            self.repetition_memo_enabled = parsed_memo
+
+        env_memo_size = os.environ.get("ORN_REPETITION_MEMO_SIZE", "").strip()
+        if env_memo_size:
+            try:
+                self.repetition_memo_size = max(1, int(env_memo_size))
+            except ValueError:
+                pass
 
         if self.active_window <= 0:
             self.active_window = 1
@@ -259,6 +286,8 @@ class SiCDoxBridge:
         self._llm: Any           = None
         self._ctx: ContextWindow = ContextWindow(self._cfg.active_window)
         self._load_time: Any     = None   # float | None — timestamp do load (OSL-12)
+        self._memo: dict[str, str] = {}
+        self._memo_order: list[str] = []
 
     # ------------------------------------------------------------------
     # API pública
@@ -272,6 +301,11 @@ class SiCDoxBridge:
         self._ctx.push("user", prompt)
 
         max_tokens = max_tokens or self._cfg.max_tokens
+
+        memo_answer = self._memo_get(prompt)
+        if memo_answer is not None:
+            self._ctx.push("assistant", memo_answer)
+            return memo_answer
 
         # marks
         t_start = time.perf_counter()
@@ -307,6 +341,7 @@ class SiCDoxBridge:
             raise RuntimeError("Modelo retornou resposta vazia.")
 
         self._ctx.push("assistant", text)
+        self._memo_put(prompt, text)
 
         # telemetry payload (consistent schema)
         telemetry = {
@@ -327,6 +362,7 @@ class SiCDoxBridge:
             "max_tokens": max_tokens,
             "system_prompt": self._cfg.system_prompt,
             "repeat_penalty": self._cfg.repeat_penalty,
+            "min_p": self._cfg.min_p,
             "temperature": self._cfg.temperature,
             "llm_call_ms": resp.get("llm_call_ms"),
         } 
@@ -346,6 +382,29 @@ class SiCDoxBridge:
 
         with path.open("a", encoding="utf8") as f:
             f.write(json.dumps(data) + "\n")
+
+
+    def _memo_key(self, prompt: str) -> str:
+        return " ".join(prompt.lower().split())
+
+    def _memo_get(self, prompt: str) -> str | None:
+        if not self._cfg.repetition_memo_enabled:
+            return None
+        key = self._memo_key(prompt)
+        return self._memo.get(key)
+
+    def _memo_put(self, prompt: str, answer: str) -> None:
+        if not self._cfg.repetition_memo_enabled:
+            return
+        key = self._memo_key(prompt)
+        if key in self._memo:
+            self._memo[key] = answer
+            return
+        self._memo[key] = answer
+        self._memo_order.append(key)
+        while len(self._memo_order) > self._cfg.repetition_memo_size:
+            oldest = self._memo_order.pop(0)
+            self._memo.pop(oldest, None)
 
     def shutdown(self) -> None:
         """Libera modelo da RAM. Idempotente. OSL-3.
@@ -392,6 +451,9 @@ class SiCDoxBridge:
                 "flash_attn": self._cfg.flash_attn,
                 "use_mmap": self._cfg.use_mmap,
                 "no_alloc": self._cfg.no_alloc,
+                "min_p": self._cfg.min_p,
+                "repetition_memo_enabled": self._cfg.repetition_memo_enabled,
+                "repetition_memo_size": self._cfg.repetition_memo_size,
             },
         }
 
@@ -480,16 +542,23 @@ class SiCDoxBridge:
         if self._llm is None:
             raise RuntimeError("Modelo não carregado.")
         t0 = time.perf_counter()
-        output = self._llm(
-            prompt,
-            max_tokens     = max_tokens,
-            stop           = ["<|im_end|>", "</s>"],
-            echo           = False,
-            temperature    = self._cfg.temperature,
-            top_p          = self._cfg.top_p,
-            top_k          = self._cfg.top_k,
-            repeat_penalty = self._cfg.repeat_penalty,
-        )
+        call_kwargs = {
+            "max_tokens": max_tokens,
+            "stop": ["<|im_end|>", "</s>"],
+            "echo": False,
+            "temperature": self._cfg.temperature,
+            "top_p": self._cfg.top_p,
+            "top_k": self._cfg.top_k,
+            "min_p": self._cfg.min_p,
+            "repeat_penalty": self._cfg.repeat_penalty,
+        }
+        try:
+            output = self._llm(prompt, **call_kwargs)
+        except TypeError as exc:
+            if "min_p" not in str(exc):
+                raise
+            call_kwargs.pop("min_p", None)
+            output = self._llm(prompt, **call_kwargs)
         llm_ms = (time.perf_counter() - t0) * 1000.0
         text = output["choices"][0]["text"]
         usage = output.get("usage", {}) or {}
