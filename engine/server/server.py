@@ -530,6 +530,8 @@ class ServerCLI:
             rope_freq_base = self._arg_value(start_args, "--rope-freq-base")
             rope_freq_scale = self._arg_value(start_args, "--rope-freq-scale")
             flash_attn = self._arg_value(start_args, "--flash-attn")
+            no_mmap = "--no-mmap" in start_args
+            no_alloc = "--no-alloc" in start_args
 
             self._start(
                 background=background,
@@ -539,6 +541,8 @@ class ServerCLI:
                 rope_freq_base=rope_freq_base,
                 rope_freq_scale=rope_freq_scale,
                 flash_attn=flash_attn,
+                no_mmap=no_mmap,
+                no_alloc=no_alloc,
             )
         elif args[0] == "stop":
             self._stop()
@@ -563,6 +567,8 @@ class ServerCLI:
         rope_freq_base: str | None = None,
         rope_freq_scale: str | None = None,
         flash_attn: str | None = None,
+        no_mmap: bool = False,
+        no_alloc: bool = False,
     ) -> None:
         if self._is_online():
             print(f"[SRV] Servidor ja rodando na porta {PORT}.")
@@ -584,6 +590,10 @@ class ServerCLI:
                 child_args += ["--rope-freq-scale", rope_freq_scale]
             if flash_attn:
                 child_args += ["--flash-attn", flash_attn]
+            if no_mmap:
+                child_args += ["--no-mmap"]
+            if no_alloc:
+                child_args += ["--no-alloc"]
 
             subprocess.Popen(
                 child_args,
@@ -595,6 +605,8 @@ class ServerCLI:
                     rope_freq_base,
                     rope_freq_scale,
                     flash_attn,
+                    no_mmap,
+                    no_alloc,
                 ),
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
@@ -617,6 +629,8 @@ class ServerCLI:
                 rope_freq_base,
                 rope_freq_scale,
                 flash_attn,
+                no_mmap,
+                no_alloc,
             )
             _load_model()
             _serve()
@@ -761,6 +775,8 @@ class ServerCLI:
         rope_freq_base: str | None,
         rope_freq_scale: str | None,
         flash_attn: str | None,
+        no_mmap: bool,
+        no_alloc: bool,
     ) -> dict[str, str]:
         env = os.environ.copy()
         if cache_type_k:
@@ -775,6 +791,10 @@ class ServerCLI:
             env["ORN_ROPE_FREQ_SCALE"] = rope_freq_scale
         if flash_attn:
             env["ORN_FLASH_ATTN"] = flash_attn
+        if no_mmap:
+            env["ORN_USE_MMAP"] = "0"
+        if no_alloc:
+            env["ORN_NO_ALLOC"] = "1"
         return env
 
     def _apply_start_env(
@@ -785,6 +805,8 @@ class ServerCLI:
         rope_freq_base: str | None,
         rope_freq_scale: str | None,
         flash_attn: str | None,
+        no_mmap: bool,
+        no_alloc: bool,
     ) -> None:
         env = self._start_env(
             cache_type_k,
@@ -793,6 +815,8 @@ class ServerCLI:
             rope_freq_base,
             rope_freq_scale,
             flash_attn,
+            no_mmap,
+            no_alloc,
         )
         os.environ.update(env)
 
@@ -806,6 +830,7 @@ class ServerCLI:
         print("  start --rope-freq-base 10000 --rope-freq-scale 1.0")
         print("  start --rope-freq-base none --rope-freq-scale null")
         print("  start --flash-attn on   # ou off/none")
+        print("  start --no-mmap --no-alloc")
         print("  stop           para o servidor")
         print("  status         exibe uptime e estatisticas")
         print('  ask "prompt"   consulta direta ao modelo')

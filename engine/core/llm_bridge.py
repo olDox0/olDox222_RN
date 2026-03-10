@@ -75,8 +75,9 @@ class BridgeConfig:
     n_threads_batch: int = 2
     n_gpu_layers:    int = 0      # CPU-only (sem GPU no N2808)
 
-    use_mmap: bool = True   # Desliga lazy loading (traz tudo pra RAM de uma vez)
+    use_mmap: bool = True   # mmap para pesos (carregamento preguiçoso)
     use_mlock: bool = True # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
+    no_alloc: bool = False # Evita alocação interna inicial quando suportado pelo backend
     # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
 
     # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
@@ -150,6 +151,10 @@ class BridgeConfig:
         self.rope_freq_scale = self._normalize_optional_float(str(self.rope_freq_scale)) if self.rope_freq_scale is not None else None
         self.flash_attn = self._normalize_optional_bool(self.flash_attn)
 
+        # Normaliza bools de infra/memória.
+        self.use_mmap = bool(self.use_mmap)
+        self.no_alloc = bool(self.no_alloc)
+
         # Overrides opcionais por ambiente para tuning sem alterar código.
         env_active_window = os.environ.get("ORN_ACTIVE_WINDOW", "").strip()
         if env_active_window:
@@ -170,6 +175,16 @@ class BridgeConfig:
 
         env_flash_attn = os.environ.get("ORN_FLASH_ATTN")
         self.flash_attn = self._normalize_optional_bool(env_flash_attn) if env_flash_attn is not None else self.flash_attn
+
+        env_use_mmap = os.environ.get("ORN_USE_MMAP")
+        parsed_use_mmap = self._normalize_optional_bool(env_use_mmap) if env_use_mmap is not None else None
+        if parsed_use_mmap is not None:
+            self.use_mmap = parsed_use_mmap
+
+        env_no_alloc = os.environ.get("ORN_NO_ALLOC")
+        parsed_no_alloc = self._normalize_optional_bool(env_no_alloc) if env_no_alloc is not None else None
+        if parsed_no_alloc is not None:
+            self.no_alloc = parsed_no_alloc
 
         if self.active_window <= 0:
             self.active_window = 1
@@ -375,6 +390,8 @@ class SiCDoxBridge:
                 "rope_freq_base": self._cfg.rope_freq_base,
                 "rope_freq_scale": self._cfg.rope_freq_scale,
                 "flash_attn": self._cfg.flash_attn,
+                "use_mmap": self._cfg.use_mmap,
+                "no_alloc": self._cfg.no_alloc,
             },
         }
 
@@ -413,7 +430,8 @@ class SiCDoxBridge:
             "n_threads_batch": self._cfg.n_threads_batch,
             "n_gpu_layers": self._cfg.n_gpu_layers,
             "n_batch": self._cfg.n_batch,
-            "use_mlock": True,
+            "use_mmap": self._cfg.use_mmap,
+            "use_mlock": self._cfg.use_mlock,
             "verbose": False,
         }
         if self._cfg.cache_type_k:
@@ -426,12 +444,14 @@ class SiCDoxBridge:
             kwargs["rope_freq_scale"] = self._cfg.rope_freq_scale
         if self._cfg.flash_attn is not None:
             kwargs["flash_attn"] = self._cfg.flash_attn
+        if self._cfg.no_alloc:
+            kwargs["no_alloc"] = True
 
         try:
             self._llm = Llama(**kwargs)
         except TypeError as exc:
             msg = str(exc)
-            unsupported = ("type_k", "type_v", "rope_freq_base", "rope_freq_scale", "flash_attn")
+            unsupported = ("type_k", "type_v", "rope_freq_base", "rope_freq_scale", "flash_attn", "no_alloc", "use_mmap")
             if not any(token in msg for token in unsupported):
                 raise
             for token in unsupported:
