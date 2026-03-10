@@ -336,6 +336,7 @@ def _show_config() -> None:
     Display.kv("cache_type_v",  str(cfg.cache_type_v))
     Display.kv("rope_freq_base",str(cfg.rope_freq_base))
     Display.kv("rope_freq_scale",str(cfg.rope_freq_scale))
+    Display.kv("flash_attn",    str(cfg.flash_attn))
     Display.kv("max_tokens",    str(cfg.max_tokens))
     Display.kv("n_threads",     str(cfg.n_threads))
     Display.kv("n_gpu_layers",  str(cfg.n_gpu_layers))

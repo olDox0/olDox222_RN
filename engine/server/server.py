@@ -529,6 +529,7 @@ class ServerCLI:
             active_window = self._arg_value(start_args, "--active-window")
             rope_freq_base = self._arg_value(start_args, "--rope-freq-base")
             rope_freq_scale = self._arg_value(start_args, "--rope-freq-scale")
+            flash_attn = self._arg_value(start_args, "--flash-attn")
 
             self._start(
                 background=background,
@@ -537,6 +538,7 @@ class ServerCLI:
                 active_window=active_window,
                 rope_freq_base=rope_freq_base,
                 rope_freq_scale=rope_freq_scale,
+                flash_attn=flash_attn,
             )
         elif args[0] == "stop":
             self._stop()
@@ -560,6 +562,7 @@ class ServerCLI:
         active_window: str | None = None,
         rope_freq_base: str | None = None,
         rope_freq_scale: str | None = None,
+        flash_attn: str | None = None,
     ) -> None:
         if self._is_online():
             print(f"[SRV] Servidor ja rodando na porta {PORT}.")
@@ -579,6 +582,8 @@ class ServerCLI:
                 child_args += ["--rope-freq-base", rope_freq_base]
             if rope_freq_scale:
                 child_args += ["--rope-freq-scale", rope_freq_scale]
+            if flash_attn:
+                child_args += ["--flash-attn", flash_attn]
 
             subprocess.Popen(
                 child_args,
@@ -589,6 +594,7 @@ class ServerCLI:
                     active_window,
                     rope_freq_base,
                     rope_freq_scale,
+                    flash_attn,
                 ),
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
@@ -610,6 +616,7 @@ class ServerCLI:
                 active_window,
                 rope_freq_base,
                 rope_freq_scale,
+                flash_attn,
             )
             _load_model()
             _serve()
@@ -753,6 +760,7 @@ class ServerCLI:
         active_window: str | None,
         rope_freq_base: str | None,
         rope_freq_scale: str | None,
+        flash_attn: str | None,
     ) -> dict[str, str]:
         env = os.environ.copy()
         if cache_type_k:
@@ -765,6 +773,8 @@ class ServerCLI:
             env["ORN_ROPE_FREQ_BASE"] = rope_freq_base
         if rope_freq_scale:
             env["ORN_ROPE_FREQ_SCALE"] = rope_freq_scale
+        if flash_attn:
+            env["ORN_FLASH_ATTN"] = flash_attn
         return env
 
     def _apply_start_env(
@@ -774,6 +784,7 @@ class ServerCLI:
         active_window: str | None,
         rope_freq_base: str | None,
         rope_freq_scale: str | None,
+        flash_attn: str | None,
     ) -> None:
         env = self._start_env(
             cache_type_k,
@@ -781,6 +792,7 @@ class ServerCLI:
             active_window,
             rope_freq_base,
             rope_freq_scale,
+            flash_attn,
         )
         os.environ.update(env)
 
@@ -793,6 +805,7 @@ class ServerCLI:
         print("  start --cache-type-k none --cache-type-v off   # desativa KV cache quantizado")
         print("  start --rope-freq-base 10000 --rope-freq-scale 1.0")
         print("  start --rope-freq-base none --rope-freq-scale null")
+        print("  start --flash-attn on   # ou off/none")
         print("  stop           para o servidor")
         print("  status         exibe uptime e estatisticas")
         print('  ask "prompt"   consulta direta ao modelo')

@@ -101,6 +101,9 @@ class BridgeConfig:
     rope_freq_base: float | None = None
     rope_freq_scale: float | None = None
 
+    # Flash Attention (quando suportado pelo backend/llama.cpp)
+    flash_attn: bool | None = None
+
     system_prompt: str = ("succinct assistant. tightening writing. PTBR.")  # era ~170 tokens, agora ~20 tokens
 
     @staticmethod
@@ -124,12 +127,28 @@ class BridgeConfig:
         except ValueError:
             return None
 
+    @staticmethod
+    def _normalize_optional_bool(value: str | bool | None) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        cleaned = value.strip().strip('"').strip("'").lower()
+        if cleaned in {"", "none", "null", "off", "disable", "disabled"}:
+            return None
+        if cleaned in {"1", "true", "yes", "on", "enable", "enabled"}:
+            return True
+        if cleaned in {"0", "false", "no"}:
+            return False
+        return None
+
     def __post_init__(self) -> None:
         # Normaliza valores opcionais recebidos no construtor.
         self.cache_type_k = self._normalize_optional_text(self.cache_type_k)
         self.cache_type_v = self._normalize_optional_text(self.cache_type_v)
         self.rope_freq_base = self._normalize_optional_float(str(self.rope_freq_base)) if self.rope_freq_base is not None else None
         self.rope_freq_scale = self._normalize_optional_float(str(self.rope_freq_scale)) if self.rope_freq_scale is not None else None
+        self.flash_attn = self._normalize_optional_bool(self.flash_attn)
 
         # Overrides opcionais por ambiente para tuning sem alterar código.
         env_active_window = os.environ.get("ORN_ACTIVE_WINDOW", "").strip()
@@ -148,6 +167,9 @@ class BridgeConfig:
         env_rope_scale = os.environ.get("ORN_ROPE_FREQ_SCALE")
         self.rope_freq_base = self._normalize_optional_float(env_rope_base) if env_rope_base is not None else self.rope_freq_base
         self.rope_freq_scale = self._normalize_optional_float(env_rope_scale) if env_rope_scale is not None else self.rope_freq_scale
+
+        env_flash_attn = os.environ.get("ORN_FLASH_ATTN")
+        self.flash_attn = self._normalize_optional_bool(env_flash_attn) if env_flash_attn is not None else self.flash_attn
 
         if self.active_window <= 0:
             self.active_window = 1
@@ -352,6 +374,7 @@ class SiCDoxBridge:
                 "cache_type_v":   self._cfg.cache_type_v,
                 "rope_freq_base": self._cfg.rope_freq_base,
                 "rope_freq_scale": self._cfg.rope_freq_scale,
+                "flash_attn": self._cfg.flash_attn,
             },
         }
 
@@ -401,12 +424,14 @@ class SiCDoxBridge:
             kwargs["rope_freq_base"] = self._cfg.rope_freq_base
         if self._cfg.rope_freq_scale is not None:
             kwargs["rope_freq_scale"] = self._cfg.rope_freq_scale
+        if self._cfg.flash_attn is not None:
+            kwargs["flash_attn"] = self._cfg.flash_attn
 
         try:
             self._llm = Llama(**kwargs)
         except TypeError as exc:
             msg = str(exc)
-            unsupported = ("type_k", "type_v", "rope_freq_base", "rope_freq_scale")
+            unsupported = ("type_k", "type_v", "rope_freq_base", "rope_freq_scale", "flash_attn")
             if not any(token in msg for token in unsupported):
                 raise
             for token in unsupported:
