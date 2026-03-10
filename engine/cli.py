@@ -339,6 +339,8 @@ def _show_config() -> None:
     Display.kv("flash_attn",    str(cfg.flash_attn))
     Display.kv("use_mmap",      str(cfg.use_mmap))
     Display.kv("no_alloc",      str(cfg.no_alloc))
+    Display.kv("pin_threads",   str(cfg.pin_threads))
+    Display.kv("cont_batching", str(cfg.cont_batching))
     Display.kv("min_p",         str(cfg.min_p))
     Display.kv("repetition_memo",str(cfg.repetition_memo_enabled))
     Display.kv("memo_size",     str(cfg.repetition_memo_size))
@@ -430,10 +432,21 @@ def server() -> None:
 @server.command("start")
 @click.option("--bg", is_flag=True, default=False,
               help="Inicia em background (log em server.log).")
-def server_start(bg: bool) -> None:
+@click.option("--pin-threads", is_flag=True, default=False,
+              help="Ativa pinagem de threads quando suportado pelo backend.")
+@click.option("--cont-batching", is_flag=True, default=False,
+              help="Ativa continuous batching quando suportado pelo backend.")
+def server_start(bg: bool, pin_threads: bool, cont_batching: bool) -> None:
     """Inicia o servidor de inferencia."""
     from engine.server.server import ServerCLI   # noqa
-    ServerCLI().run(["start"] + (["--bg"] if bg else []))
+    args = ["start"]
+    if bg:
+        args.append("--bg")
+    if pin_threads:
+        args.append("--pin-threads")
+    if cont_batching:
+        args.append("--cont-batching")
+    ServerCLI().run(args)
 
 
 @server.command("stop")

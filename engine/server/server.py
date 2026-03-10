@@ -214,13 +214,46 @@ def _load_model() -> None:
     print(f"[BOOT] n_threads={_cfg.n_threads}  n_ctx={_cfg.n_ctx}", flush=True)
 
     t0   = time.monotonic()
-    _llm = Llama(
-        model_path   = str(_cfg.model_path),
-        n_ctx        = _cfg.n_ctx,
-        n_threads    = _cfg.n_threads,
-        n_gpu_layers = _cfg.n_gpu_layers,
-        verbose      = False,
-    )
+    kwargs = {
+        "model_path": str(_cfg.model_path),
+        "n_ctx": _cfg.n_ctx,
+        "n_threads": _cfg.n_threads,
+        "n_gpu_layers": _cfg.n_gpu_layers,
+        "verbose": False,
+        "use_mmap": _cfg.use_mmap,
+        "use_mlock": _cfg.use_mlock,
+        "n_batch": _cfg.n_batch,
+        "n_threads_batch": _cfg.n_threads_batch,
+    }
+    if _cfg.cache_type_k:
+        kwargs["type_k"] = _cfg.cache_type_k
+    if _cfg.cache_type_v:
+        kwargs["type_v"] = _cfg.cache_type_v
+    if _cfg.rope_freq_base is not None:
+        kwargs["rope_freq_base"] = _cfg.rope_freq_base
+    if _cfg.rope_freq_scale is not None:
+        kwargs["rope_freq_scale"] = _cfg.rope_freq_scale
+    if _cfg.flash_attn is not None:
+        kwargs["flash_attn"] = _cfg.flash_attn
+    if _cfg.no_alloc:
+        kwargs["no_alloc"] = True
+    if _cfg.pin_threads:
+        kwargs["pin_threads"] = True
+    if _cfg.cont_batching:
+        kwargs["cont_batching"] = True
+
+    try:
+        _llm = Llama(**kwargs)
+    except TypeError as exc:
+        unsupported = (
+            "type_k", "type_v", "rope_freq_base", "rope_freq_scale", "flash_attn",
+            "no_alloc", "use_mmap", "pin_threads", "cont_batching",
+        )
+        if not any(tok in str(exc) for tok in unsupported):
+            raise
+        for tok in unsupported:
+            kwargs.pop(tok, None)
+        _llm = Llama(**kwargs)
     elapsed = round(time.monotonic() - t0, 1)
     _boot_perf["model_load_ms"] = round(elapsed * 1000.0, 3)
     _observe_telemetry("server.boot.model_load", _boot_perf["model_load_ms"], category="boot")
@@ -538,6 +571,8 @@ class ServerCLI:
             rope_freq_scale = self._arg_value(start_args, "--rope-freq-scale")
             flash_attn = self._arg_value(start_args, "--flash-attn")
             min_p = self._arg_value(start_args, "--min-p")
+            pin_threads = "--pin-threads" in start_args
+            cont_batching = "--cont-batching" in start_args
             no_mmap = "--no-mmap" in start_args
             no_alloc = "--no-alloc" in start_args
 
@@ -550,6 +585,8 @@ class ServerCLI:
                 rope_freq_scale=rope_freq_scale,
                 flash_attn=flash_attn,
                 min_p=min_p,
+                pin_threads=pin_threads,
+                cont_batching=cont_batching,
                 no_mmap=no_mmap,
                 no_alloc=no_alloc,
             )
@@ -577,6 +614,8 @@ class ServerCLI:
         rope_freq_scale: str | None = None,
         flash_attn: str | None = None,
         min_p: str | None = None,
+        pin_threads: bool = False,
+        cont_batching: bool = False,
         no_mmap: bool = False,
         no_alloc: bool = False,
     ) -> None:
@@ -602,6 +641,10 @@ class ServerCLI:
                 child_args += ["--flash-attn", flash_attn]
             if min_p:
                 child_args += ["--min-p", min_p]
+            if pin_threads:
+                child_args += ["--pin-threads"]
+            if cont_batching:
+                child_args += ["--cont-batching"]
             if no_mmap:
                 child_args += ["--no-mmap"]
             if no_alloc:
@@ -618,6 +661,8 @@ class ServerCLI:
                     rope_freq_scale,
                     flash_attn,
                     min_p,
+                    pin_threads,
+                    cont_batching,
                     no_mmap,
                     no_alloc,
                 ),
@@ -643,6 +688,8 @@ class ServerCLI:
                 rope_freq_scale,
                 flash_attn,
                 min_p,
+                pin_threads,
+                cont_batching,
                 no_mmap,
                 no_alloc,
             )
@@ -790,6 +837,8 @@ class ServerCLI:
         rope_freq_scale: str | None,
         flash_attn: str | None,
         min_p: str | None,
+        pin_threads: bool,
+        cont_batching: bool,
         no_mmap: bool,
         no_alloc: bool,
     ) -> dict[str, str]:
@@ -808,6 +857,10 @@ class ServerCLI:
             env["ORN_FLASH_ATTN"] = flash_attn
         if min_p:
             env["ORN_MIN_P"] = min_p
+        if pin_threads:
+            env["ORN_PIN_THREADS"] = "1"
+        if cont_batching:
+            env["ORN_CONT_BATCHING"] = "1"
         if no_mmap:
             env["ORN_USE_MMAP"] = "0"
         if no_alloc:
@@ -823,6 +876,8 @@ class ServerCLI:
         rope_freq_scale: str | None,
         flash_attn: str | None,
         min_p: str | None,
+        pin_threads: bool,
+        cont_batching: bool,
         no_mmap: bool,
         no_alloc: bool,
     ) -> None:
@@ -834,6 +889,8 @@ class ServerCLI:
             rope_freq_scale,
             flash_attn,
             min_p,
+            pin_threads,
+            cont_batching,
             no_mmap,
             no_alloc,
         )
@@ -850,6 +907,7 @@ class ServerCLI:
         print("  start --rope-freq-base none --rope-freq-scale null")
         print("  start --flash-attn on   # ou off/none")
         print("  start --min-p 0.01")
+        print("  start --pin-threads --cont-batching")
         print("  start --no-mmap --no-alloc")
         print("  stop           para o servidor")
         print("  status         exibe uptime e estatisticas")

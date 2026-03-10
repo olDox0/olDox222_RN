@@ -78,6 +78,8 @@ class BridgeConfig:
     use_mmap: bool = True   # mmap para pesos (carregamento preguiçoso)
     use_mlock: bool = True # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
     no_alloc: bool = False # Evita alocação interna inicial quando suportado pelo backend
+    pin_threads: bool = False # Fixa threads em núcleos quando suportado
+    cont_batching: bool = False # Continuous batching quando suportado
     # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
 
     # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
@@ -159,6 +161,8 @@ class BridgeConfig:
         # Normaliza bools de infra/memória.
         self.use_mmap = bool(self.use_mmap)
         self.no_alloc = bool(self.no_alloc)
+        self.pin_threads = bool(self.pin_threads)
+        self.cont_batching = bool(self.cont_batching)
         self.repetition_memo_enabled = bool(self.repetition_memo_enabled)
         if self.repetition_memo_size <= 0:
             self.repetition_memo_size = 1
@@ -193,6 +197,16 @@ class BridgeConfig:
         parsed_no_alloc = self._normalize_optional_bool(env_no_alloc) if env_no_alloc is not None else None
         if parsed_no_alloc is not None:
             self.no_alloc = parsed_no_alloc
+
+        env_pin_threads = os.environ.get("ORN_PIN_THREADS")
+        parsed_pin_threads = self._normalize_optional_bool(env_pin_threads) if env_pin_threads is not None else None
+        if parsed_pin_threads is not None:
+            self.pin_threads = parsed_pin_threads
+
+        env_cont_batching = os.environ.get("ORN_CONT_BATCHING")
+        parsed_cont_batching = self._normalize_optional_bool(env_cont_batching) if env_cont_batching is not None else None
+        if parsed_cont_batching is not None:
+            self.cont_batching = parsed_cont_batching
 
         env_min_p = os.environ.get("ORN_MIN_P", "").strip()
         if env_min_p:
@@ -451,6 +465,8 @@ class SiCDoxBridge:
                 "flash_attn": self._cfg.flash_attn,
                 "use_mmap": self._cfg.use_mmap,
                 "no_alloc": self._cfg.no_alloc,
+                "pin_threads": self._cfg.pin_threads,
+                "cont_batching": self._cfg.cont_batching,
                 "min_p": self._cfg.min_p,
                 "repetition_memo_enabled": self._cfg.repetition_memo_enabled,
                 "repetition_memo_size": self._cfg.repetition_memo_size,
@@ -508,12 +524,16 @@ class SiCDoxBridge:
             kwargs["flash_attn"] = self._cfg.flash_attn
         if self._cfg.no_alloc:
             kwargs["no_alloc"] = True
+        if self._cfg.pin_threads:
+            kwargs["pin_threads"] = True
+        if self._cfg.cont_batching:
+            kwargs["cont_batching"] = True
 
         try:
             self._llm = Llama(**kwargs)
         except TypeError as exc:
             msg = str(exc)
-            unsupported = ("type_k", "type_v", "rope_freq_base", "rope_freq_scale", "flash_attn", "no_alloc", "use_mmap")
+            unsupported = ("type_k", "type_v", "rope_freq_base", "rope_freq_scale", "flash_attn", "no_alloc", "use_mmap", "pin_threads", "cont_batching")
             if not any(token in msg for token in unsupported):
                 raise
             for token in unsupported:
