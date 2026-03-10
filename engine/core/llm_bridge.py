@@ -103,7 +103,34 @@ class BridgeConfig:
 
     system_prompt: str = ("succinct assistant. tightening writing. PTBR.")  # era ~170 tokens, agora ~20 tokens
 
+    @staticmethod
+    def _normalize_optional_text(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().strip('"').strip("'")
+        if not cleaned:
+            return None
+        if cleaned.lower() in {"none", "null", "off", "disable", "disabled", "false"}:
+            return None
+        return cleaned
+
+    @classmethod
+    def _normalize_optional_float(cls, value: str | None) -> float | None:
+        cleaned = cls._normalize_optional_text(value)
+        if cleaned is None:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+
     def __post_init__(self) -> None:
+        # Normaliza valores opcionais recebidos no construtor.
+        self.cache_type_k = self._normalize_optional_text(self.cache_type_k)
+        self.cache_type_v = self._normalize_optional_text(self.cache_type_v)
+        self.rope_freq_base = self._normalize_optional_float(str(self.rope_freq_base)) if self.rope_freq_base is not None else None
+        self.rope_freq_scale = self._normalize_optional_float(str(self.rope_freq_scale)) if self.rope_freq_scale is not None else None
+
         # Overrides opcionais por ambiente para tuning sem alterar código.
         env_active_window = os.environ.get("ORN_ACTIVE_WINDOW", "").strip()
         if env_active_window:
@@ -112,25 +139,15 @@ class BridgeConfig:
             except ValueError:
                 pass
 
-        env_cache_k = os.environ.get("ORN_CACHE_TYPE_K", "").strip()
-        env_cache_v = os.environ.get("ORN_CACHE_TYPE_V", "").strip()
-        if env_cache_k:
-            self.cache_type_k = env_cache_k
-        if env_cache_v:
-            self.cache_type_v = env_cache_v
+        env_cache_k = os.environ.get("ORN_CACHE_TYPE_K")
+        env_cache_v = os.environ.get("ORN_CACHE_TYPE_V")
+        self.cache_type_k = self._normalize_optional_text(env_cache_k) if env_cache_k is not None else self.cache_type_k
+        self.cache_type_v = self._normalize_optional_text(env_cache_v) if env_cache_v is not None else self.cache_type_v
 
-        env_rope_base = os.environ.get("ORN_ROPE_FREQ_BASE", "").strip()
-        env_rope_scale = os.environ.get("ORN_ROPE_FREQ_SCALE", "").strip()
-        if env_rope_base:
-            try:
-                self.rope_freq_base = float(env_rope_base)
-            except ValueError:
-                pass
-        if env_rope_scale:
-            try:
-                self.rope_freq_scale = float(env_rope_scale)
-            except ValueError:
-                pass
+        env_rope_base = os.environ.get("ORN_ROPE_FREQ_BASE")
+        env_rope_scale = os.environ.get("ORN_ROPE_FREQ_SCALE")
+        self.rope_freq_base = self._normalize_optional_float(env_rope_base) if env_rope_base is not None else self.rope_freq_base
+        self.rope_freq_scale = self._normalize_optional_float(env_rope_scale) if env_rope_scale is not None else self.rope_freq_scale
 
         if self.active_window <= 0:
             self.active_window = 1

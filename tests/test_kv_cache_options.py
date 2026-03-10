@@ -88,3 +88,48 @@ def test_bridge_config_ignores_invalid_rope_values(monkeypatch) -> None:
 
     assert cfg.rope_freq_base is None
     assert cfg.rope_freq_scale is None
+
+
+def test_bridge_config_disables_cache_and_rope_with_none_tokens(monkeypatch) -> None:
+    monkeypatch.setenv("ORN_CACHE_TYPE_K", "none")
+    monkeypatch.setenv("ORN_CACHE_TYPE_V", "OFF")
+    monkeypatch.setenv("ORN_ROPE_FREQ_BASE", "disable")
+    monkeypatch.setenv("ORN_ROPE_FREQ_SCALE", "null")
+
+    cfg = BridgeConfig(cache_type_k="q8_0", cache_type_v="q4_0", rope_freq_base=10000.0, rope_freq_scale=1.0)
+
+    assert cfg.cache_type_k is None
+    assert cfg.cache_type_v is None
+    assert cfg.rope_freq_base is None
+    assert cfg.rope_freq_scale is None
+
+
+def test_bridge_config_strips_quotes_from_cache_type(monkeypatch) -> None:
+    monkeypatch.setenv("ORN_CACHE_TYPE_K", '"q8_0"')
+
+    cfg = BridgeConfig()
+
+    assert cfg.cache_type_k == "q8_0"
+
+
+def test_server_cli_allows_disable_tokens(monkeypatch) -> None:
+    cli = ServerCLI()
+    called = {}
+
+    def fake_start(**kwargs):
+        called.update(kwargs)
+
+    monkeypatch.setattr(cli, "_start", fake_start)
+
+    cli.run([
+        "start",
+        "--cache-type-k", "none",
+        "--cache-type-v", "off",
+        "--rope-freq-base", "disable",
+        "--rope-freq-scale", "null",
+    ])
+
+    assert called["cache_type_k"] == "none"
+    assert called["cache_type_v"] == "off"
+    assert called["rope_freq_base"] == "disable"
+    assert called["rope_freq_scale"] == "null"
