@@ -93,7 +93,32 @@ class BridgeConfig:
     top_k:          int   = 35
     repeat_penalty: float = 1.1
 
+    # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
+    cache_type_k: str | None = None
+    cache_type_v: str | None = None
+
     system_prompt: str = ("succinct assistant. tightening writing. PTBR.")  # era ~170 tokens, agora ~20 tokens
+
+    def __post_init__(self) -> None:
+        # Overrides opcionais por ambiente para tuning sem alterar código.
+        env_active_window = os.environ.get("ORN_ACTIVE_WINDOW", "").strip()
+        if env_active_window:
+            try:
+                self.active_window = int(env_active_window)
+            except ValueError:
+                pass
+
+        env_cache_k = os.environ.get("ORN_CACHE_TYPE_K", "").strip()
+        env_cache_v = os.environ.get("ORN_CACHE_TYPE_V", "").strip()
+        if env_cache_k:
+            self.cache_type_k = env_cache_k
+        if env_cache_v:
+            self.cache_type_v = env_cache_v
+
+        if self.active_window <= 0:
+            self.active_window = 1
+        if self.active_window > self.n_ctx:
+            self.active_window = self.n_ctx
 
 # ---------------------------------------------------------------------------
 # KV-cache — sliding window (Relatório §2.2)
@@ -289,6 +314,8 @@ class SiCDoxBridge:
                 "n_threads":     self._cfg.n_threads,
                 "n_gpu_layers":  self._cfg.n_gpu_layers,
                 "ttl_seconds":   self._cfg.ttl_seconds,
+                "cache_type_k":  self._cfg.cache_type_k,
+                "cache_type_v":  self._cfg.cache_type_v,
             },
         }
 
@@ -320,16 +347,30 @@ class SiCDoxBridge:
             )
 
         from llama_cpp import Llama  # noqa: PLC0415
-        self._llm = Llama(
-            model_path      = str(self._cfg.model_path),
-            n_ctx           = self._cfg.n_ctx,
-            n_threads       = self._cfg.n_threads,
-            n_threads_batch = self._cfg.n_threads_batch,
-            n_gpu_layers    = self._cfg.n_gpu_layers,
-            n_batch         = self._cfg.n_batch,   # ADICIONAR
-            use_mlock       = True,
-            verbose         = False,
-        )
+        kwargs = {
+            "model_path": str(self._cfg.model_path),
+            "n_ctx": self._cfg.n_ctx,
+            "n_threads": self._cfg.n_threads,
+            "n_threads_batch": self._cfg.n_threads_batch,
+            "n_gpu_layers": self._cfg.n_gpu_layers,
+            "n_batch": self._cfg.n_batch,
+            "use_mlock": True,
+            "verbose": False,
+        }
+        if self._cfg.cache_type_k:
+            kwargs["type_k"] = self._cfg.cache_type_k
+        if self._cfg.cache_type_v:
+            kwargs["type_v"] = self._cfg.cache_type_v
+
+        try:
+            self._llm = Llama(**kwargs)
+        except TypeError as exc:
+            msg = str(exc)
+            if "type_k" not in msg and "type_v" not in msg:
+                raise
+            kwargs.pop("type_k", None)
+            kwargs.pop("type_v", None)
+            self._llm = Llama(**kwargs)
         self._load_time = time.monotonic()
 
     def _build_prompt(self) -> str:

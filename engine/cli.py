@@ -332,6 +332,8 @@ def _show_config() -> None:
     Display.kv("model_exists",  str(cfg.model_path.exists()))
     Display.kv("n_ctx",         str(cfg.n_ctx))
     Display.kv("active_window", str(cfg.active_window))
+    Display.kv("cache_type_k",  str(cfg.cache_type_k))
+    Display.kv("cache_type_v",  str(cfg.cache_type_v))
     Display.kv("max_tokens",    str(cfg.max_tokens))
     Display.kv("n_threads",     str(cfg.n_threads))
     Display.kv("n_gpu_layers",  str(cfg.n_gpu_layers))

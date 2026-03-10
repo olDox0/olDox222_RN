@@ -521,7 +521,19 @@ class ServerCLI:
 
     def run(self, args: list[str]) -> None:
         if not args or args[0] == "start":
-            self._start(background="--bg" in args)
+            start_args = args[1:] if args else []
+            background = "--bg" in start_args
+
+            cache_type_k = self._arg_value(start_args, "--cache-type-k")
+            cache_type_v = self._arg_value(start_args, "--cache-type-v")
+            active_window = self._arg_value(start_args, "--active-window")
+
+            self._start(
+                background=background,
+                cache_type_k=cache_type_k,
+                cache_type_v=cache_type_v,
+                active_window=active_window,
+            )
         elif args[0] == "stop":
             self._stop()
         elif args[0] == "status":
@@ -536,7 +548,13 @@ class ServerCLI:
         else:
             self._help()
 
-    def _start(self, background: bool = False) -> None:
+    def _start(
+        self,
+        background: bool = False,
+        cache_type_k: str | None = None,
+        cache_type_v: str | None = None,
+        active_window: str | None = None,
+    ) -> None:
         if self._is_online():
             print(f"[SRV] Servidor ja rodando na porta {PORT}.")
             return
@@ -544,9 +562,18 @@ class ServerCLI:
             # Context manager não aplicável aqui — o processo filho herda o fd.
             # Mas garantimos que o handle do pai seja fechado após o Popen.
             log = open(LOG_FILE, "w")
+            child_args = [sys.executable, "-m", "engine.server", "start"]
+            if cache_type_k:
+                child_args += ["--cache-type-k", cache_type_k]
+            if cache_type_v:
+                child_args += ["--cache-type-v", cache_type_v]
+            if active_window:
+                child_args += ["--active-window", active_window]
+
             subprocess.Popen(
-                [sys.executable, "-m", "engine.server", "start"],
+                child_args,
                 stdout=log, stderr=log,
+                env=self._start_env(cache_type_k, cache_type_v, active_window),
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
             log.close()   # Bug fix: fecha o fd do processo pai após fork
@@ -561,6 +588,7 @@ class ServerCLI:
                 # Em alguns ambientes windows antigos ou embeded, signal pode levantar.
                 pass
 
+            self._apply_start_env(cache_type_k, cache_type_v, active_window)
             _load_model()
             _serve()
 
@@ -686,10 +714,46 @@ class ServerCLI:
             print(resp["output"])
             print(f"\n[{resp['elapsed_s']}s]")
 
+    @staticmethod
+    def _arg_value(args: list[str], flag: str) -> str | None:
+        if flag not in args:
+            return None
+        idx = args.index(flag)
+        if idx + 1 >= len(args):
+            return None
+        value = args[idx + 1].strip()
+        return value or None
+
+    @staticmethod
+    def _start_env(
+        cache_type_k: str | None,
+        cache_type_v: str | None,
+        active_window: str | None,
+    ) -> dict[str, str]:
+        env = os.environ.copy()
+        if cache_type_k:
+            env["ORN_CACHE_TYPE_K"] = cache_type_k
+        if cache_type_v:
+            env["ORN_CACHE_TYPE_V"] = cache_type_v
+        if active_window:
+            env["ORN_ACTIVE_WINDOW"] = active_window
+        return env
+
+    def _apply_start_env(
+        self,
+        cache_type_k: str | None,
+        cache_type_v: str | None,
+        active_window: str | None,
+    ) -> None:
+        env = self._start_env(cache_type_k, cache_type_v, active_window)
+        os.environ.update(env)
+
     def _help(self) -> None:
         print("orn-server <comando> [opcoes]")
         print("  start          inicia servidor (foreground)")
         print("  start --bg     inicia em background")
+        print("  start --active-window 512")
+        print("  start --cache-type-k q8_0 --cache-type-v q4_0")
         print("  stop           para o servidor")
         print("  status         exibe uptime e estatisticas")
         print('  ask "prompt"   consulta direta ao modelo')
