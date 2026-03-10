@@ -29,18 +29,17 @@ for _doxo_base in [_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve
     _doxo_project_root = str(_doxo_base)
     break
 
-# 1. Instala MetaFinder primeiro — redireciona imports Python → PYD automaticamente
+# 1. Instala MetaFinder primeiro
 if callable(_doxo_install_meta_finder) and _doxo_project_root:
     _doxo_t = _doxo_time.monotonic()
     try:
         _doxo_install_meta_finder(_doxo_project_root)
     except Exception:
-        # não falha a execução do bootstrap — metas podem já estar instalados
         pass
     finally:
         _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
 
-# 2. Tenta usar o loader "embedded" (safe wrapper com safe_call + checagem de assinatura)
+# 2. Tenta usar o loader "embedded"
 try:
     _doxo_t = _doxo_time.monotonic()
     if _doxo_project_root:
@@ -55,13 +54,9 @@ try:
                 _doxo_safe_call = getattr(_doxo_mod2, "safe_call", None)
                 if callable(_doxo_activate_embedded):
                     try:
-                        # activate_embedded aplica safe_call e valida assinaturas — preferível
                         _doxo_activate_embedded(globals(), __file__, _doxo_project_root)
                     except Exception:
                         pass
-
-                # Se safe_call está exposto, aplicamos um pass de segurança a MÓDULOS JÁ CARREGADOS
-                # Isso resolve o caso em que o .pyd já foi importado antes do bootstrap
                 if callable(_doxo_safe_call):
                     try:
                         import sys as _d_sys
@@ -72,9 +67,7 @@ try:
                                 if not mfile:
                                     continue
                                 mpath = _doxo_path(mfile)
-                                # só módulos que residem na foundry bin
                                 if _bin_dir in mpath.parents:
-                                    # iterar sobre atributos nativos e aplicar safe_call
                                     for attr in dir(mod):
                                         if not attr.endswith("_vulcan_optimized"):
                                             continue
@@ -85,7 +78,6 @@ try:
                                         try:
                                             setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
                                         except Exception:
-                                            # não falha a importação; continuamos
                                             continue
                             except Exception:
                                 continue
@@ -96,19 +88,17 @@ except Exception:
 finally:
     _doxo_embedded_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
 
-# 3. Fallback: runtime.activate_vulcan (mantém compatibilidade retroativa)
-# Chamamos em try/except para não interromper o fluxo caso o runtime injete de forma insegura.
+# 3. Fallback: runtime.activate_vulcan
 if callable(_doxo_activate_vulcan):
     _doxo_t = _doxo_time.monotonic()
     try:
         _doxo_activate_vulcan(globals(), __file__)
     except Exception:
-        # não propaga erro — se falhar, o projeto seguirá com implementações Python originais
         pass
     finally:
         _doxo_fallback_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
 
-# 4. Diagnóstico opcional (útil para startup lento em servidores externos)
+# 4. Diagnóstico opcional
 if callable(_doxo_probe_embedded):
     try:
         __doxoade_vulcan_probe__ = _doxo_probe_embedded(_doxo_project_root)

@@ -20,16 +20,20 @@ God: Hefesto — fornalha continua; a forja nao apaga entre pecas.
 
 from __future__ import annotations
 
-import json
-import os
-import platform
-import socket
-import subprocess
-import sys
-import threading
-import time
 import traceback
+import time
+import threading
+import sys
+import subprocess
+import socket
+import signal
+import psutil
+import platform
+import os
+import json
+
 from pathlib import Path
+from dataclasses import dataclass, field
 
 from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
 
@@ -61,7 +65,7 @@ def _vulcan_boot() -> tuple[bool, str]:
             sys.path.insert(0, env_path)
 
     # Caso 2: pasta local — sobe a arvore a partir deste arquivo
-    if not env_root:
+    else:
         here = Path(__file__).resolve()
         for parent in [here, *here.parents]:
             if (parent / "doxoade" / "__init__.py").exists():
@@ -128,6 +132,14 @@ else:
 # Configuracao
 # ---------------------------------------------------------------------------
 
+# Importado no nível de módulo — evita reimport a cada chamada STATUS
+try:
+    import resource as _resource   # Unix only
+    _HAS_RESOURCE = True
+except ImportError:
+    _HAS_RESOURCE = False
+
+
 HOST     = "127.0.0.1"
 PORT     = 8371
 BACKLOG  = 4
@@ -144,23 +156,24 @@ LOG_FILE = Path("server.log")
 _llm   = None
 _cfg   = None
 _stats = {
-    "requests":        0,
-    "errors":          0,
-    "total_tokens":    0,
-    "total_elapsed_s": 0.0,
-    "start":           None,
-    "infer_calls":     0,
-    "last_infer_s":    0.0,
+    "requests":          0,
+    "errors":            0,
+    "total_tokens":      0,
+    "total_elapsed_s":   0.0,
+    "start":             None,
+    "infer_calls":       0,
+    "last_infer_s":      0.0,
     "last_prompt_chars": 0,
     "last_output_chars": 0,
-    "last_max_tokens": 0,
-    "sum_prompt_chars": 0,
-    "sum_output_chars": 0,
-    "last_llm_call_ms": 0.0,
+    "last_max_tokens":   0,
+    "sum_prompt_chars":  0,
+    "sum_output_chars":  0,
+    "last_llm_call_ms":  0.0,
     "last_lock_wait_ms": 0.0,
-    "sum_llm_call_ms": 0.0,
-    "sum_lock_wait_ms": 0.0,
+    "sum_llm_call_ms":   0.0,
+    "sum_lock_wait_ms":  0.0,
 }
+
 _boot_perf = {
     "vulcan_boot_ms": _VULCAN_BOOT_MS,
     "model_load_ms": 0.0,
@@ -171,7 +184,6 @@ _lock = threading.Lock()
 # ---------------------------------------------------------------------------
 # Boot do modelo
 # ---------------------------------------------------------------------------
-
 
 def _observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") -> None:
     """Registro fail-silent de métricas para fases internas do servidor."""
@@ -186,7 +198,6 @@ def _observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") 
         )
     except Exception:
         pass
-
 
 def _load_model() -> None:
     global _llm, _cfg
@@ -228,8 +239,8 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
         f"<|im_start|>user\n{prompt}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )
-    t0 = time.monotonic()
-    t_wait0 = time.monotonic()
+    t0 = time.monotonic()       # tempo total da inferência
+    t_wait0 = t0                # lock wait começa no mesmo instante
     with _lock:
         lock_wait_ms = (time.monotonic() - t_wait0) * 1000.0
         t_llm0 = time.monotonic()
@@ -257,11 +268,9 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
     return out["choices"][0]["text"].strip(), elapsed
 
 
-
 # ---------------------------------------------------------------------------
 # Handler de conexao
 # ---------------------------------------------------------------------------
-
 
 def _telemetry_hotspots(limit: int = 3) -> list[dict]:
     """Resumo de gargalos de telemetria para endpoint STATUS."""
@@ -287,7 +296,6 @@ def _telemetry_hotspots(limit: int = 3) -> list[dict]:
     rows.sort(key=lambda x: x["total_ms"], reverse=True)
     return rows[: max(1, limit)]
 
-
 def _flush_telemetry_snapshot() -> None:
     try:
         GLOBAL_TELEMETRY.flush_json(Path("telemetry") / "server_runtime.json")
@@ -295,18 +303,17 @@ def _flush_telemetry_snapshot() -> None:
         # Telemetria nunca pode derrubar o servidor.
         pass
 
-
 def _system_perf_snapshot() -> dict:
     """Snapshot leve de sistema/processo para contexto de gargalo."""
     rss_mb = 0.0
     try:
-        import resource  # Unix
-        rss_kb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-        # macOS entrega bytes, Linux KB; normalizamos aproximadamente.
-        if rss_kb > 10_000_000:
-            rss_mb = round(rss_kb / (1024.0 * 1024.0), 3)
-        else:
-            rss_mb = round(rss_kb / 1024.0, 3)
+        if _HAS_RESOURCE:
+            rss_kb = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
+            # macOS entrega bytes, Linux KB; normalizamos aproximadamente.
+            if rss_kb > 10_000_000:
+                rss_mb = round(rss_kb / (1024.0 * 1024.0), 3)
+            else:
+                rss_mb = round(rss_kb / 1024.0, 3)
     except Exception:
         pass
 
@@ -325,7 +332,6 @@ def _system_perf_snapshot() -> dict:
         "rss_mb": rss_mb,
         "load_1m": load_1m,
     }
-
 
 def _handle(conn: socket.socket) -> None:
     # OSL-7: resp sempre definida — cliente nunca fica pendurado sem resposta
@@ -404,18 +410,24 @@ def _handle(conn: socket.socket) -> None:
         if not prompt:
             resp = {"output": "", "elapsed_s": 0, "error": "prompt vazio"}
         else:
-            _stats["requests"] += 1
+            with _lock:
+                _stats["requests"] += 1
+#            _stats["requests"] += 1
             try:
                 output, elapsed = _infer(prompt, max_tokens)
-                _stats["total_tokens"]    += max_tokens
-                _stats["total_elapsed_s"] += elapsed
-                _stats["infer_calls"]     += 1
-                _stats["last_infer_s"]    = elapsed
-                _stats["last_prompt_chars"] = len(prompt)
-                _stats["last_output_chars"] = len(output)
-                _stats["last_max_tokens"] = max_tokens
-                _stats["sum_prompt_chars"] += len(prompt)
-                _stats["sum_output_chars"] += len(output)
+                # Bug fix: _stats é compartilhado entre threads — protegido com _lock.
+                # Sem o lock, operações += (read-modify-write) em threads concorrentes
+                # causam race condition silenciosa nos contadores.
+                with _lock:
+                    _stats["total_tokens"]      += max_tokens
+                    _stats["total_elapsed_s"]   += elapsed
+                    _stats["infer_calls"]        += 1
+                    _stats["last_infer_s"]        = elapsed
+                    _stats["last_prompt_chars"]   = len(prompt)
+                    _stats["last_output_chars"]   = len(output)
+                    _stats["last_max_tokens"]     = max_tokens
+                    _stats["sum_prompt_chars"]   += len(prompt)
+                    _stats["sum_output_chars"]   += len(output)
                 resp = {"output": output, "elapsed_s": elapsed, "error": None}
             except Exception as e:
                 _stats["errors"] += 1
@@ -471,7 +483,6 @@ def _serve() -> None:
             print(f"[SRV] accept error: {e}", flush=True)
             traceback.print_exc()
 
-
 def _shutdown() -> None:
     global _llm
     if _llm is not None:
@@ -489,6 +500,16 @@ def _shutdown() -> None:
     _flush_telemetry_snapshot()
     PID_FILE.unlink(missing_ok=True)
     print("[SRV] Modelo liberado.", flush=True)
+
+def _sigterm_handler(signum, frame):
+    """Handler local que garante shutdown ordenado quando o processo receber SIGTERM/SIGINT."""
+    print("[SRV] Sinal recebido — iniciando shutdown ordenado.", flush=True)
+    try:
+        _shutdown()
+    except Exception:
+        pass
+    # garante que o processo termine
+    sys.exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -520,15 +541,26 @@ class ServerCLI:
             print(f"[SRV] Servidor ja rodando na porta {PORT}.")
             return
         if background:
+            # Context manager não aplicável aqui — o processo filho herda o fd.
+            # Mas garantimos que o handle do pai seja fechado após o Popen.
             log = open(LOG_FILE, "w")
             subprocess.Popen(
                 [sys.executable, "-m", "engine.server", "start"],
                 stdout=log, stderr=log,
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
+            log.close()   # Bug fix: fecha o fd do processo pai após fork
             print(f"[SRV] Iniciado em background. Log: {LOG_FILE}")
             print("[SRV] Aguarde ~5s e verifique: orn-server status")
         else:
+            # Registra handlers para SIGINT/SIGTERM **no processo servidor** (main thread).
+            try:
+#                signal.signal(signal.SIGTERM, _sigterm_handler)
+                signal.signal(signal.SIGINT, _sigterm_handler)
+            except Exception:
+                # Em alguns ambientes windows antigos ou embeded, signal pode levantar.
+                pass
+
             _load_model()
             _serve()
 
@@ -536,10 +568,43 @@ class ServerCLI:
         if not PID_FILE.exists():
             print("[SRV] Nenhum servidor ativo (server.pid nao encontrado).")
             return
-        pid = int(PID_FILE.read_text().strip())
+
         try:
-            import signal
-            os.kill(pid, signal.SIGTERM)
+            pid = int(PID_FILE.read_text().strip())
+        except Exception:
+            print("[SRV] PID file corrupto.")
+            PID_FILE.unlink(missing_ok=True)
+            return
+
+        try:
+            # Tenta sinalizar o processo para terminar
+            if os.name == "nt":
+                # Windows fallback: taskkill força a finalização por PID
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                os.kill(pid, signal.SIGTERM)
+
+            # Aguarda o processo encerrar (timeout curto)
+            wait_timeout = 5.0
+            waited = 0.0
+            interval = 0.1
+            while waited < wait_timeout:
+                try:
+                    # envio de signal 0 verifica existência do processo (Unix)
+                    os.kill(pid, 0)
+                    time.sleep(interval)
+                    waited += interval
+                except OSError:
+                    # processo não existe mais
+                    break
+            else:
+                # ainda vivo → tenta SIGKILL (Unix)
+                try:
+                    if os.name != "nt":
+                        os.kill(pid, signal.SIGKILL)
+                except Exception:
+                    pass
+
             PID_FILE.unlink(missing_ok=True)
             print(f"[SRV] Encerrado (PID {pid}).")
         except ProcessLookupError:
@@ -653,14 +718,76 @@ class ServerCLI:
                 s.connect((HOST, PORT))
                 s.settimeout(None)
                 s.sendall(payload)
-                data = b""
+                # bytearray em vez de bytes — cada `+= chunk` em bytes cria um novo
+                # objeto copiando tudo (O(N²) para respostas longas do modelo).
+                # bytearray é mutável: extend é O(chunk) amortizado.
+                data = bytearray()
                 while True:
                     chunk = s.recv(65536)
                     if not chunk:
                         break
-                    data += chunk
+                    data.extend(chunk)
                     if data.endswith(b"\n"):
                         break
             return json.loads(data.decode("utf-8").strip())
         except Exception:
             return None
+            
+            
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Telemetry:
+
+    start_time: float = field(default_factory=time.perf_counter)
+
+    marks: dict = field(default_factory=dict)
+
+    prompt_tokens: int = 0
+    generated_tokens: int = 0
+
+    first_token_latency: float | None = None
+
+    def mark(self, name):
+        self.marks[name] = time.perf_counter()
+
+    def set_prompt_tokens(self, n):
+        self.prompt_tokens = n
+
+    def add_generated(self):
+        self.generated_tokens += 1
+
+        if self.generated_tokens == 1:
+            self.first_token_latency = (
+                time.perf_counter() - self.marks["generation_start"]
+            )
+
+    def report(self):
+
+        end = time.perf_counter()
+
+        def diff(a, b):
+            return self.marks[b] - self.marks[a]
+
+        gen_time = diff("generation_start", "generation_end")
+
+        tok_s = 0
+        if self.generated_tokens > 0:
+            tok_s = self.generated_tokens / gen_time
+
+        proc = psutil.Process(os.getpid())
+
+        return {
+            "total_time": end - self.start_time,
+            "model_load": diff("model_load_start", "model_load_end"),
+            "prompt_eval": diff("prompt_eval_start", "prompt_eval_end"),
+            "generation": gen_time,
+            "first_token_latency": self.first_token_latency,
+            "prompt_tokens": self.prompt_tokens,
+            "generated_tokens": self.generated_tokens,
+            "tokens_per_second": tok_s,
+            "cpu_percent": psutil.cpu_percent(),
+            "ram_used_mb": proc.memory_info().rss / 1024 / 1024,
+        }

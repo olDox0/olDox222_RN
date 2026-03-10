@@ -20,11 +20,14 @@ Comandos futuros:
   gen     → geração de código                    [Fase 4]
 """
 
+import os
 import sys
 import json
+from pathlib import Path
 import click
 
 from engine.ui.display import Display
+from engine.telemetry.runtime import record, system_stats
 
 
 def _fmt_ms(value: float) -> str:
@@ -67,11 +70,18 @@ def cli(ctx: click.Context) -> None:
               help="Busca contexto online. Ex: 'asyncio' ou 'pypi:requests'")
 @click.option("--no-auto", is_flag=True, default=False,
               help="Desativa busca autônoma (two-pass) nesta chamada.")
+@click.option("--telemetry", is_flag=True, default=False,
+              help="Ativa telemetria detalhada para modo direto (grava telemetry/direct_runtime.jsonl).")
 def think(prompt: tuple[str, ...], context_file: str | None,
           raw: bool, tokens: int | None, direct: bool,
-          search: str | None, no_auto: bool) -> None:
+          search: str | None, no_auto: bool, telemetry: bool) -> None:
     """Pergunta livre ao Qwen. Ex: orn think 'como faço X em Python?'"""
+    from engine.telemetry.runtime import record, system_stats
     import time
+    import os
+
+    # permitir também via env var
+    telemetry_enabled = telemetry or (os.environ.get("ORN_TELEMETRY", "") == "1")
 
     # Pergunta pura — imutável durante toda a montagem do prompt
     question   = " ".join(prompt)
@@ -103,7 +113,8 @@ def think(prompt: tuple[str, ...], context_file: str | None,
     # --file: lê arquivo e acumula bloco
     if context_file:
         try:
-            ctx_text = open(context_file, encoding="utf-8", errors="replace").read(3000)
+            with open(context_file, encoding="utf-8", errors="replace") as _cf:
+                ctx_text = _cf.read(3000)
             context_blocks.append(
                 f"[CTX-BEGIN]\n"
                 f"scope: {context_file}\n"
@@ -200,17 +211,35 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         Display.info("Modo direto — carregando modelo (~80s no N2808)...")
         Display.separator()
 
-        from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
-        ex = SiCDoxExecutive()
+        # instrumentacao de telemetria local (minima, fail-safe)
+        t_start = time.perf_counter()
+        model_load_s = None
+        infer_s = None
+        total_s = None
 
         try:
-            result = ex.process_goal(
-                intent  = "think",
-                payload = full_prompt,
-                context = {"context_file": None, "max_tokens": max_tokens},
-            )
+            # tempo de criação (modelo carregado dentro do Executive)
+            t_ml0 = time.perf_counter()
+            from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
+            ex = SiCDoxExecutive()
+            t_ml1 = time.perf_counter()
+            model_load_s = round(t_ml1 - t_ml0, 3)
+
+            try:
+                t_inf0 = time.perf_counter()
+                result = ex.process_goal(
+                    intent  = "think",
+                    payload = full_prompt,
+                    context = {"context_file": None, "max_tokens": max_tokens},
+                )
+                t_inf1 = time.perf_counter()
+                infer_s = round(t_inf1 - t_inf0, 3)
+            finally:
+                ex.shutdown()
+
         finally:
-            ex.shutdown()
+            t_end = time.perf_counter()
+            total_s = round(t_end - t_start, 3)
 
         if not result.success:
             for err in result.errors:
@@ -223,7 +252,32 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         else:
             Display.code_block(result.output)
         Display.separator()
-        Display.info(f"Tempo: {result.metadata.get('elapsed_s', '?')}s  [direto]")
+
+        # metadata do resultado pode conter elapsed (mantemos se existir)
+        reported_elapsed = result.metadata.get("elapsed_s") if getattr(result, "metadata", None) else None
+        Display.info(f"Tempo: {reported_elapsed or infer_s or '?'}s  [direto]")
+
+        # se telemetria ativada -> gravar e registrar em GLOBAL_TELEMETRY
+        if telemetry_enabled:
+            try:
+                # registro leve: cria payload e delega para core (fail-safe)
+                from engine.telemetry.core import record_direct_telemetry  # noqa: PLC0415
+                payload = {
+                    "captured_at_unix": int(time.time()),
+                    "mode": "direct",
+                    "model_load_s": model_load_s,
+                    "infer_s": infer_s,
+                    "total_s": total_s,
+                    "reported_elapsed": reported_elapsed,
+                    "prompt_chars": len(full_prompt) if full_prompt else 0,
+                    "max_tokens": max_tokens,
+                }
+                record_direct_telemetry(payload)
+                Display.info(f"Telemetria gravada: telemetry/direct_runtime.jsonl")
+            except Exception as _te:
+                Display.warn(f"Telemetria falhou: {_te}")
+
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -448,8 +502,7 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
         if json_output:
             payload_text = json.dumps({"status": "offline", "error": "server_unreachable"}, ensure_ascii=False, indent=2)
             if out:
-                from pathlib import Path as _p  # noqa: PLC0415
-                t = _p(out)
+                t = Path(out)
                 t.parent.mkdir(parents=True, exist_ok=True)
                 t.write_text(payload_text + "\n", encoding="utf-8")
                 Display.info(f"JSON salvo em: {t}")
@@ -467,8 +520,7 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
             trimmed["telemetry_hotspots"] = trimmed["telemetry_hotspots"][:max(1, limit)]
         payload_text = json.dumps(trimmed, ensure_ascii=False, indent=2)
         if out:
-            from pathlib import Path as _p  # noqa: PLC0415
-            t = _p(out)
+            t = Path(out)
             t.parent.mkdir(parents=True, exist_ok=True)
             t.write_text(payload_text + "\n", encoding="utf-8")
             Display.info(f"JSON salvo em: {t}")

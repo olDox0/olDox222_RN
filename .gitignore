@@ -69,8 +69,10 @@ opt/w64devkit/
 models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF
 
 # Exceções (Auto-fixed pelo Doxoade)
+# permitir versionamento de testes automatizados
+
+# Exceções (Auto-fixed pelo Doxoade)
 !requirements.txt
 !PipelineHelp.txt
-# permitir versionamento de testes automatizados
 !tests/
 !tests/**

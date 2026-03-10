@@ -34,10 +34,15 @@ ARCHAEOLOGY NOTE (2026-02-01 layer 1) — recuperar na Fase 4:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+import time
+import os
+import json
 
+from typing import Any
+from pathlib import Path
+from dataclasses import dataclass
+
+from engine.telemetry.runtime import record_direct  # noqa: PLC0415
 
 # ---------------------------------------------------------------------------
 # Configuração de memória
@@ -57,37 +62,38 @@ class BridgeConfig:
 
     model_path:    Path = Path(
         "models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF"
-        "/qwen2.5-coder-0.5b-instruct-q2_k.gguf"
+        "/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
         #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
-    n_ctx:         int  = 1024   # era 2048 — reduz KV-cache pela metade
-    active_window: int  = 512    # era 1024 — proporcional
-    n_batch:       int  = 32     # NOVO — era 512 (default llama.cpp)
+    n_ctx:         int  = 256   # era 2048 — reduz KV-cache pela metade
+    active_window: int  = 256    # era 1024 — proporcional
+    n_batch:       int  = 256     # NOVO — era 512 (default llama.cpp)
                                   # 64 = menos pressão de memória no N2808
                                   
     # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
-    n_threads:     int  = 2
-    n_gpu_layers:  int  = 0      # CPU-only (sem GPU no N2808)
+    n_threads:       int = 2
+    n_threads_batch: int = 2
+    n_gpu_layers:    int = 0      # CPU-only (sem GPU no N2808)
+
+    use_mmap: bool = True   # Desliga lazy loading (traz tudo pra RAM de uma vez)
+    use_mlock: bool = True # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
+    # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
 
     # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
-    ttl_seconds:   int  = 3600   # 1 hora (era 300s — inadequado para N2808)
+    ttl_seconds:   int  = 400   # 1 hora (era 300s — inadequado para N2808)
 
     # max_tokens reduzido para testes — 679s foi causado por resposta gigante
     # Regra: 128 para testes rápidos, 512 para uso normal
-    max_tokens:    int   = 512
+    max_tokens:    int   = 32
 
     # Parâmetros de sampling (doc ORN_up — seção 3)
     # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
     temperature:    float = 0.45
     top_p:          float = 0.85
-    top_k:          int   = 40
+    top_k:          int   = 35
     repeat_penalty: float = 1.1
 
-    system_prompt: str = (
-        "Code assistant. Be direct and concise. "
-        "No intro. Portuguese. Python/C/C++/batch."
-    )  # era ~170 tokens, agora ~20 tokens
-
+    system_prompt: str = ("succinct assistant. tightening writing. PTBR.")  # era ~170 tokens, agora ~20 tokens
 
 # ---------------------------------------------------------------------------
 # KV-cache — sliding window (Relatório §2.2)
@@ -163,32 +169,87 @@ class SiCDoxBridge:
     # ------------------------------------------------------------------
 
     def ask(self, prompt: str, max_tokens: int | None = None) -> str:
-        """Envia *prompt* ao modelo e retorna texto gerado.
-
-        OSL-5.1: prompt não pode ser vazio.
-        OSL-7: Resposta verificada antes de retornar ao Executive.
-
-        Raises:
-            ValueError:        prompt vazio.
-            RuntimeError:      resposta vazia do modelo.
-            FileNotFoundError: .gguf não encontrado.
-        """
         if not prompt:
             raise ValueError("prompt não pode ser vazio.")
 
         self._ensure_loaded()
         self._ctx.push("user", prompt)
 
-        texto = self._call_engine(
-            self._build_prompt(),
-            max_tokens or self._cfg.max_tokens
-        )
+        max_tokens = max_tokens or self._cfg.max_tokens
 
-        if not texto.strip():
+        # marks
+        t_start = time.perf_counter()
+        # optional: mark model load time elsewhere if needed
+
+        # prompt eval isn't synchronous in llama.cpp — but keep a metric for completeness
+        t_prompt_eval_start = time.perf_counter()
+        built = self._build_prompt()
+        t_prompt_eval_end = time.perf_counter()
+
+        t_gen_start = time.perf_counter()
+        resp = self._call_engine(built, max_tokens)
+        t_gen_end = time.perf_counter()
+
+        text = resp["text"]
+        usage = resp.get("usage", {})
+
+        # computed metrics
+        infer_elapsed = t_gen_end - t_gen_start
+        prompt_eval = t_prompt_eval_end - t_prompt_eval_start
+        total_elapsed = time.perf_counter() - t_start
+
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens))
+
+        tokens_per_second = 0.0
+        if infer_elapsed > 0:
+            tokens_per_second = completion_tokens / infer_elapsed
+
+        # push assistant turn and return
+        if text is None or not text.strip():
             raise RuntimeError("Modelo retornou resposta vazia.")
 
-        self._ctx.push("assistant", texto)
-        return texto
+        self._ctx.push("assistant", text)
+
+        # telemetry payload (consistent schema)
+        telemetry = {
+            "mode": "direct",
+            "model": self._cfg.model_path.name,
+            "n_ctx": self._cfg.n_ctx,
+            "n_threads": self._cfg.n_threads,
+            "n_threads_batch": self._cfg.n_threads_batch,
+            "prompt_chars": len(prompt),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "prompt_eval_s": round(prompt_eval, 3),
+            "infer_s": round(infer_elapsed, 3),
+            "total_s": round(total_elapsed, 3),
+            "tokens_per_second": round(tokens_per_second, 3),
+            "context_turns": len(self._ctx.get_turns()),
+            "max_tokens": max_tokens,
+            "system_prompt": self._cfg.system_prompt,
+            "repeat_penalty": self._cfg.repeat_penalty,
+            "temperature": self._cfg.temperature,
+            "llm_call_ms": resp.get("llm_call_ms"),
+        } 
+        # "": self._cfg.,
+
+        try:
+            record_direct(telemetry)
+        except Exception:
+            # never fail user flow: telemetry write must be fail-silent
+            pass
+
+        return text
+
+    def _log_runtime(self, data: dict):
+
+        path = Path("telemetry/direct_runtime.jsonl")
+
+        with path.open("a", encoding="utf8") as f:
+            f.write(json.dumps(data) + "\n")
 
     def shutdown(self) -> None:
         """Libera modelo da RAM. Idempotente. OSL-3.
@@ -260,13 +321,14 @@ class SiCDoxBridge:
 
         from llama_cpp import Llama  # noqa: PLC0415
         self._llm = Llama(
-            model_path   = str(self._cfg.model_path),
-            n_ctx        = self._cfg.n_ctx,
-            n_threads    = self._cfg.n_threads,
-            n_gpu_layers = self._cfg.n_gpu_layers,
-            n_batch      = self._cfg.n_batch,   # ADICIONAR
-            use_mlock    = True,
-            verbose      = False,
+            model_path      = str(self._cfg.model_path),
+            n_ctx           = self._cfg.n_ctx,
+            n_threads       = self._cfg.n_threads,
+            n_threads_batch = self._cfg.n_threads_batch,
+            n_gpu_layers    = self._cfg.n_gpu_layers,
+            n_batch         = self._cfg.n_batch,   # ADICIONAR
+            use_mlock       = True,
+            verbose         = False,
         )
         self._load_time = time.monotonic()
 
@@ -286,14 +348,11 @@ class SiCDoxBridge:
         partes.append("<|im_start|>assistant\n")
         return "\n".join(partes)
 
-    def _call_engine(self, prompt: str, max_tokens: int) -> str:
-        """Chama o runtime Llama e retorna texto cru.
-
-        OSL-7: Chamador (ask) verifica o retorno — este método só chama.
-        """
+    def _call_engine(self, prompt: str, max_tokens: int) -> dict:
+        """Chama o runtime Llama e retorna dict: {'text': str, 'usage': {...}}"""
         if self._llm is None:
             raise RuntimeError("Modelo não carregado.")
-
+        t0 = time.perf_counter()
         output = self._llm(
             prompt,
             max_tokens     = max_tokens,
@@ -304,4 +363,15 @@ class SiCDoxBridge:
             top_k          = self._cfg.top_k,
             repeat_penalty = self._cfg.repeat_penalty,
         )
-        return output["choices"][0]["text"]
+        llm_ms = (time.perf_counter() - t0) * 1000.0
+        text = output["choices"][0]["text"]
+        usage = output.get("usage", {}) or {}
+
+        # normalize usage keys for compat
+        usage = {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", usage.get("completion_tokens", 0) or usage.get("completion_tokens")),
+            "total_tokens": usage.get("total_tokens", usage.get("total_tokens", 0)),
+        }
+
+        return {"text": text, "usage": usage, "llm_call_ms": round(llm_ms, 3)}

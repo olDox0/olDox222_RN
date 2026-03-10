@@ -29,20 +29,19 @@ for _doxo_base in [_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve
     _doxo_project_root = str(_doxo_base)
     break
 
-# 1. Instala MetaFinder primeiro — redireciona imports Python → PYD automaticamente
+# 1. Instala MetaFinder primeiro
 if callable(_doxo_install_meta_finder) and _doxo_project_root:
     _doxo_t = _doxo_time.monotonic()
     try:
         _doxo_install_meta_finder(_doxo_project_root)
     except Exception:
-        # não falha a execução do bootstrap — metas podem já estar instalados
         pass
     finally:
         _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
 
-# 2. Tenta usar o loader "embedded" (safe wrapper com safe_call + checagem de assinatura)
+# 2. Tenta usar o loader "embedded"
 try:
-    _doxo_t = _doxo_time.monotonic()
+    _doxo_t = _doxo_time.monotonic()   # inicializado ANTES do if — evita NameError no finally
     if _doxo_project_root:
         _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
         if _embedded_path.exists():
@@ -55,38 +54,35 @@ try:
                 _doxo_safe_call = getattr(_doxo_mod2, "safe_call", None)
                 if callable(_doxo_activate_embedded):
                     try:
-                        # activate_embedded aplica safe_call e valida assinaturas — preferível
                         _doxo_activate_embedded(globals(), __file__, _doxo_project_root)
                     except Exception:
                         pass
-
-                # Se safe_call está exposto, aplicamos um pass de segurança a MÓDULOS JÁ CARREGADOS
-                # Isso resolve o caso em que o .pyd já foi importado antes do bootstrap
                 if callable(_doxo_safe_call):
                     try:
                         import sys as _d_sys
                         _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
+                        # sys.intern no sufixo — a comparação endswith é feita N_módulos×N_attrs vezes
+                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
+                        _suffix_len    = len(_vulcan_suffix)
                         for mname, mod in list(_d_sys.modules.items()):
                             try:
-                                mfile = getattr(mod, "__file__", "")
+                                mfile = getattr(mod, "__file__", None)
                                 if not mfile:
-                                    continue
+                                    continue  # saída antecipada — evita construir Path para módulos builtin
                                 mpath = _doxo_path(mfile)
-                                # só módulos que residem na foundry bin
-                                if _bin_dir in mpath.parents:
-                                    # iterar sobre atributos nativos e aplicar safe_call
-                                    for attr in dir(mod):
-                                        if not attr.endswith("_vulcan_optimized"):
-                                            continue
-                                        native_obj = getattr(mod, attr, None)
-                                        if not callable(native_obj):
-                                            continue
-                                        base = attr[: -len("_vulcan_optimized")]
-                                        try:
-                                            setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
-                                        except Exception:
-                                            # não falha a importação; continuamos
-                                            continue
+                                if _bin_dir not in mpath.parents:
+                                    continue
+                                for attr in dir(mod):
+                                    if not attr.endswith(_vulcan_suffix):
+                                        continue
+                                    native_obj = getattr(mod, attr, None)
+                                    if not callable(native_obj):
+                                        continue
+                                    base = attr[: -_suffix_len]
+                                    try:
+                                        setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
+                                    except Exception:
+                                        continue
                             except Exception:
                                 continue
                     except Exception:
@@ -96,19 +92,17 @@ except Exception:
 finally:
     _doxo_embedded_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
 
-# 3. Fallback: runtime.activate_vulcan (mantém compatibilidade retroativa)
-# Chamamos em try/except para não interromper o fluxo caso o runtime injete de forma insegura.
+# 3. Fallback: runtime.activate_vulcan
 if callable(_doxo_activate_vulcan):
     _doxo_t = _doxo_time.monotonic()
     try:
         _doxo_activate_vulcan(globals(), __file__)
     except Exception:
-        # não propaga erro — se falhar, o projeto seguirá com implementações Python originais
         pass
     finally:
         _doxo_fallback_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
 
-# 4. Diagnóstico opcional (útil para startup lento em servidores externos)
+# 4. Diagnóstico opcional
 if callable(_doxo_probe_embedded):
     try:
         __doxoade_vulcan_probe__ = _doxo_probe_embedded(_doxo_project_root)
@@ -150,24 +144,27 @@ def _load_python_cli_fallback():
     return module.cli
 
 
+# Frozensets de nível de módulo — criados uma vez, lookup O(1) em _is_wrapper_signature_type_error.
+# Antes eram tuple literals recriados a cada chamada da função.
+_WRAPPER_SIGNATURE_TOKENS = frozenset({
+    "positional argument",
+    "required positional argument",
+    "unexpected keyword argument",
+})
+_WRAPPER_NAME_TOKENS = frozenset({
+    "cli_vulcan_optimized",
+    "v_cli_",
+    "_vulcan_optimized",
+    "cli()",
+})
+
+
 def _is_wrapper_signature_type_error(exc: TypeError) -> bool:
     """Retorna True quando o TypeError parece ser de assinatura do wrapper compilado."""
     msg = str(exc)
-    signature_tokens = (
-        "positional argument",
-        "required positional argument",
-        "unexpected keyword argument",
-    )
-    # Evita falso positivo: só fazemos fallback quando a mensagem aponta
-    # explicitamente para wrapper/entrypoint de CLI otimizado.
-    wrapper_tokens = (
-        "cli_vulcan_optimized",
-        "v_cli_",
-        "_vulcan_optimized",
-        "cli()",
-    )
-    return any(token in msg for token in signature_tokens) and any(
-        token in msg for token in wrapper_tokens
+    return (
+        any(token in msg for token in _WRAPPER_SIGNATURE_TOKENS)
+        and any(token in msg for token in _WRAPPER_NAME_TOKENS)
     )
 
 

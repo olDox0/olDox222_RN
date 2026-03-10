@@ -10,8 +10,9 @@ Opcoes:
   python install.py --fix       tenta corrigir problemas encontrados
 
 HARDWARE ALVO: Celeron N2808 (REP.INFRA.20260209.GOLD)
-  - llama-cpp-python compilado com SSE4.2 via w64devkit (GCC 15.2)
-  - n_threads=2, n_gpu_layers=0, OpenMP desativado
+  - llama-cpp-python compilado com SSE4.1 via w64devkit (GCC)
+  - GGML_NATIVE=ON, GGML_OPENMP=ON, GGML_LTO=ON, sem BLAS
+  - n_threads=2, n_gpu_layers=0
 
 OSL-18: stdlib apenas (sys, os, subprocess, pathlib, importlib).
 OSL-7:  cada verificacao retorna (bool, str) -- sem excecoes silenciosas.
@@ -35,7 +36,6 @@ def _c(code: str, texto: str) -> str:
     """Cor ANSI simples. Retorna texto puro se nao-TTY."""
     if not sys.stdout.isatty():
         return texto
-    # Ativa ANSI no Windows sem colorama
     if os.name == "nt" and not getattr(_c, "_activated", False):
         try:
             import ctypes
@@ -56,6 +56,24 @@ HEAD  = lambda t: _c("1;36", t)
 
 
 # ---------------------------------------------------------------------------
+# Flags de build do llama-cpp-python para N2808
+# Centralizado aqui para ficar facil de ajustar futuramente.
+# ---------------------------------------------------------------------------
+
+LLAMA_CMAKE_ARGS = " ".join([
+    "-DGGML_BLAS=OFF",
+    "-DGGML_OPENMP=ON",
+    "-DGGML_LTO=OFF",
+    "-DGGML_NATIVE=OFF",
+    "-DBUILD_SHARED_LIBS=OFF",
+    '-G "MinGW Makefiles"',
+    "-DCMAKE_C_COMPILER=gcc",
+    "-DCMAKE_CXX_COMPILER=g++",
+])
+
+CFLAGS_OPT = "-O3 -march=silvermont -ffast-math -funroll-loops"
+
+# ---------------------------------------------------------------------------
 # Resultado de verificacao (OSL-7)
 # ---------------------------------------------------------------------------
 
@@ -65,6 +83,7 @@ class CheckResult:
     ok:      bool
     detalhe: str
     fix_cmd: str = ""   # comando sugerido para corrigir, se aplicavel
+    fix_fn:  object = None  # callable opcional para --fix (nao serializado)
 
 
 # ---------------------------------------------------------------------------
@@ -89,10 +108,8 @@ def check_llama_cpp() -> CheckResult:
             nome    = "llama-cpp-python",
             ok      = False,
             detalhe = "modulo nao encontrado",
-            fix_cmd = (
-                "Ver docs/Internals/vol20_infrastructure_report.md\n"
-                "  Protocolo Vulcan (w64devkit + MinGW Makefiles)"
-            )
+            fix_cmd = "pip install llama-cpp-python  (com CMAKE_ARGS -- use --fix)",
+            fix_fn  = install_llama_cpp,
         )
     try:
         import llama_cpp
@@ -103,12 +120,12 @@ def check_llama_cpp() -> CheckResult:
             nome    = "llama-cpp-python",
             ok      = False,
             detalhe = f"importado mas falhou: {e}",
-            fix_cmd = "Recompilar via Protocolo Vulcan"
+            fix_cmd = "Recompilar via --fix (w64devkit + CMAKE_ARGS otimizado)",
+            fix_fn  = install_llama_cpp,
         )
 
 
 def check_model() -> CheckResult:
-    # Importa BridgeConfig se o engine/ estiver no path
     model_path = Path(
         "models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF"
         "/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
@@ -118,7 +135,7 @@ def check_model() -> CheckResult:
         from engine.core.llm_bridge import BridgeConfig
         model_path = BridgeConfig().model_path
     except ImportError:
-        pass  # engine/ nao instalado ainda -- usa path padrao
+        pass
 
     if not model_path.exists():
         return CheckResult(
@@ -149,11 +166,7 @@ def check_model() -> CheckResult:
 
 
 def _check_venv_active() -> None:
-    """Avisa se install.py esta rodando fora do venv do ORN.
-
-    Problema real: dois Pythons no sistema (venv do ORN vs Python do sistema).
-    llama_cpp so existe no venv -- rodar com 'python' errado da falso negativo.
-    """
+    """Avisa se install.py esta rodando fora do venv do ORN."""
     in_venv = (
         hasattr(sys, "real_prefix") or
         (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix)
@@ -196,11 +209,10 @@ def check_numpy() -> CheckResult:
     import numpy as np
     ver = np.__version__
     major = int(ver.split(".")[0])
-    # Aviso ABI: REP.INFRA §5.1
     if major >= 3:
         return CheckResult(
             nome    = "numpy",
-            ok      = True,   # funciona, mas merece atencao
+            ok      = True,
             detalhe = f"{ver} [AVISO: ABI com llama-cpp-python — testar]",
         )
     return CheckResult(nome="numpy", ok=True, detalhe=ver)
@@ -223,7 +235,6 @@ def check_llama_load() -> CheckResult:
     """Testa um load real e basico do llama_cpp (sem modelo)."""
     try:
         import llama_cpp
-        # Verifica que a classe Llama existe e e importavel
         assert hasattr(llama_cpp, "Llama"), "classe Llama nao encontrada"
         return CheckResult(
             nome    = "llama_cpp.Llama",
@@ -235,8 +246,70 @@ def check_llama_load() -> CheckResult:
             nome    = "llama_cpp.Llama",
             ok      = False,
             detalhe = str(e),
-            fix_cmd = "Recompilar via Protocolo Vulcan (w64devkit)"
+            fix_cmd = "Recompilar via --fix (w64devkit + CMAKE_ARGS otimizado)",
+            fix_fn  = install_llama_cpp,
         )
+
+
+# ---------------------------------------------------------------------------
+# Instalacao otimizada do llama-cpp-python (N2808 / w64devkit)
+# ---------------------------------------------------------------------------
+
+def install_llama_cpp() -> bool:
+    """
+    Instala llama-cpp-python.
+
+    Estrategia:
+      1) tenta wheel binaria (rapido)
+      2) se falhar, compila otimizado para Silvermont
+    """
+
+    print(INFO("  Tentando instalar wheel binaria..."))
+
+    ret = subprocess.run([
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "llama-cpp-python",
+        "--prefer-binary",
+    ])
+
+    if ret.returncode == 0:
+        print(OK("  Wheel instalada com sucesso."))
+        return True
+
+    print(WARN("  Wheel nao disponivel. Compilando localmente..."))
+
+    W64_BIN = (
+        r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto OADE\doxoade\thirdparty\w64devkit\bin"
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = W64_BIN + os.pathsep + env.get("PATH", "")
+    env["CMAKE_ARGS"] = LLAMA_CMAKE_ARGS
+    env["FORCE_CMAKE"] = "1"
+    env["CFLAGS"] = CFLAGS_OPT
+
+    print(DIM(f"  CFLAGS: {CFLAGS_OPT}"))
+    print(DIM(f"  CMAKE_ARGS: {LLAMA_CMAKE_ARGS}"))
+    print(WARN("  Compilando llama.cpp otimizado..."))
+    print()
+
+    ret = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "llama-cpp-python",
+            "--force-reinstall",
+            "--no-cache-dir",
+        ],
+        env=env,
+    )
+
+    return ret.returncode == 0
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +346,22 @@ def run_checks(verbose: bool = False) -> list[CheckResult]:
             print(WARN(f"         -> {r.fix_cmd.splitlines()[0]}"))
     return results
 
+def check_openmp():
+    try:
+        import llama_cpp
+        info = getattr(llama_cpp, "__file__", "")
+        print("  llama_cpp path:", info)
+        return True
+    except Exception:
+        return False
+
+def check_llama_backend():
+    try:
+        from llama_cpp import llama_cpp
+        print("  backend carregado")
+        return True
+    except Exception:
+        return False
 
 def print_banner() -> None:
     print()
@@ -281,7 +370,7 @@ def print_banner() -> None:
     print(HEAD("  Celeron N2808 / Windows / Python 3.12"))
     print(SEP_M)
     print()
-    _check_venv_active()   # avisa imediatamente se fora do venv
+    _check_venv_active()
 
 
 def print_summary(results: list[CheckResult]) -> None:
@@ -303,15 +392,36 @@ def print_summary(results: list[CheckResult]) -> None:
 
 
 def try_fix(results: list[CheckResult]) -> None:
-    """Tenta corrigir automaticamente o que for seguro."""
-    fixable = [r for r in results if not r.ok and "pip install" in r.fix_cmd]
+    """
+    Tenta corrigir automaticamente problemas encontrados.
+
+    Ordem de prioridade:
+      1. fix_fn definido no CheckResult (ex: install_llama_cpp)
+      2. fix_cmd comecando com 'pip install' (instalacao simples)
+    """
+    fixable = [r for r in results if not r.ok and (r.fix_fn or "pip install" in r.fix_cmd)]
     if not fixable:
         print(INFO("  Nada a corrigir automaticamente."))
         return
+
     for r in fixable:
+        print()
+        print(HEAD(f"  [{r.nome}]"))
+
+        # Caso especial: fix_fn definido (ex: llama-cpp-python com CMAKE_ARGS)
+        if r.fix_fn is not None:
+            ok = r.fix_fn()
+            if ok:
+                print(OK(f"  [{r.nome}] instalado com sucesso."))
+            else:
+                print(ERRO(f"  [{r.nome}] falhou. Verifique o log acima."))
+                print(WARN("  Dica: confirme que gcc (w64devkit) e cmake estao no PATH."))
+            continue
+
+        # Caso padrao: pip install simples
         cmd = r.fix_cmd.strip().splitlines()[0]
         if cmd.startswith("pip install"):
-            print(WARN(f"  Corrigindo: {cmd}"))
+            print(WARN(f"  Executando: {cmd}"))
             ret = subprocess.run(
                 [sys.executable, "-m"] + cmd.split(),
                 capture_output=True, text=True
@@ -333,10 +443,25 @@ def main() -> None:
     check   = "--check"   in args
 
     print_banner()
-
+    print(HEAD("  Celeron N2808 / Windows / Python 3.12"))
+    print(DIM("  Flags: --check | --verbose | --fix | --recompile"))
+    
     if check or not fix:
         results = run_checks(verbose=verbose)
         print_summary(results)
+
+    recompile = "--recompile" in args
+
+    if recompile:
+        print(HEAD("  [RECOMPILE] Recompilando llama-cpp-python com flags otimizadas...\n"))
+        print(DIM(f"  CMAKE_ARGS: {LLAMA_CMAKE_ARGS}"))
+        ok = install_llama_cpp()
+        if ok:
+            print(OK("  llama-cpp-python recompilado com sucesso."))
+        else:
+            print(ERRO("  Falhou. Verifique gcc/cmake no PATH."))
+        print()
+
 
     if fix:
         print(HEAD("  [FIX] Tentando correcoes automaticas...\n"))
@@ -347,7 +472,6 @@ def main() -> None:
         results = run_checks(verbose=verbose)
         print_summary(results)
 
-    # Codigo de saida: 0 se tudo OK, 1 se houver falhas criticas
     criticos = [r for r in results if not r.ok and r.nome != "Modelo GGUF"]
     sys.exit(0 if not criticos else 1)
 

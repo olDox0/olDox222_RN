@@ -1,3 +1,4 @@
+# engine/telemetry/cli.py
 # -*- coding: utf-8 -*-
 """CLI utilitário para telemetria do ORN."""
 
@@ -5,9 +6,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 from pathlib import Path
-
+from typing import Optional
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8371
@@ -37,8 +39,6 @@ def query_server_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, time
         return json.loads(data.decode("utf-8").strip())
     except Exception:
         return None
-
-
 
 
 def _hotspot_by_name(payload: dict, name: str) -> dict | None:
@@ -87,6 +87,7 @@ def normalize_status_payload(payload: dict) -> tuple[dict, bool]:
 
     norm["ai_perf"] = ai
     return norm, inferred
+
 
 def _print_human_status(payload: dict, *, limit: int = 5) -> None:
     payload, inferred = normalize_status_payload(payload)
@@ -146,8 +147,32 @@ def _emit_output(content: str, *, out: str | None = None) -> None:
     print(content)
 
 
+def _try_local_runtime(limit: int) -> tuple[Optional[dict], Optional[str]]:
+    """
+    Tenta obter telemetria local:
+     - primeiro, via engine.telemetry.core.get_runtime_status
+     - depois, via arquivo telemetry/server_runtime.json (snapshot do servidor)
+    Retorna (payload, mode) onde mode é 'local' / 'file' / None
+    """
+    try:
+        # import local function from the telemetry core (safe, fail-silent)
+        from engine.telemetry.core import get_runtime_status  # type: ignore
+        payload = get_runtime_status(limit=limit)
+        return payload, "local"
+    except Exception:
+        # fallback: check for snapshot file (written by server flush)
+        try:
+            p = Path("engine/telemetry") / "server_runtime.json"
+            if p.exists():
+                payload = json.loads(p.read_text(encoding="utf-8"))
+                return payload, "file"
+        except Exception:
+            pass
+    return None, None
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="orn-probe", description="Consulta telemetria do ORN server.")
+    parser = argparse.ArgumentParser(prog="orn-probe", description="Consulta telemetria do ORN server / runtime.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--json", dest="as_json", action="store_true", help="Saída JSON bruta")
@@ -156,12 +181,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     payload = query_server_status(host=args.host, port=args.port)
+    mode = "server" if payload is not None else None
+
+    if payload is None:
+        payload, mode = _try_local_runtime(limit=max(1, args.limit))
+    # Final: se payload ainda None -> sem telemetria
     if payload is None:
         if args.as_json:
-            _emit_output(json.dumps({"status": "offline", "error": "server_unreachable"}, ensure_ascii=False, indent=2), out=args.out)
+            _emit_output(json.dumps({"status": "offline", "error": "no_telemetry_available"}, ensure_ascii=False, indent=2), out=args.out)
         else:
-            _emit_output("[probe] servidor offline", out=args.out)
+            _emit_output("[probe] nenhuma telemetria disponível (server/runtime/file)", out=args.out)
         return 1
+
+    # human header: show mode so user knows where data came from
+    if not args.as_json:
+        _emit_output(f"[probe] mode: {mode}", out=args.out)
 
     if args.as_json:
         trimmed = dict(payload)
