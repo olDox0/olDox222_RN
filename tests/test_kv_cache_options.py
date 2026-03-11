@@ -264,3 +264,12 @@ def test_bridge_config_context_rotation_env(monkeypatch) -> None:
 
     assert cfg.context_rotation is False
     assert cfg.context_compact_ratio == 0.6
+
+
+def test_server_cli_start_env_sets_doxoade_root_when_discovered(monkeypatch) -> None:
+    cli = ServerCLI()
+    monkeypatch.setattr("engine.server.server._discover_doxoade_root", lambda: "/tmp/doxoade-root")
+
+    env = cli._start_env(None, None, None, None, None, None, None, False, False, False, False)
+
+    assert env["DOXOADE_ROOT"] == "/tmp/doxoade-root"

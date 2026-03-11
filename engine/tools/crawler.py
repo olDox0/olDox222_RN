@@ -712,7 +712,7 @@ class OrnCrawler:
                      ["lib", "library", "package", "pip", "pypi", "module", "modulo"])
         if is_single or is_lib:
             result = search_pypi(query.split()[0], session=self._session)
-            if result.ok:
+            if result is not None and result.ok:
                 return result
 
         is_code = (
@@ -727,7 +727,7 @@ class OrnCrawler:
             self._rate_wait("api.stackexchange.com")
             result = search_stackoverflow(query, session=self._session,
                                           max_chars=self._context_limit)
-            if result.ok:
+            if result is not None and result.ok:
                 return result
 
         if any(kw in q for kw in
@@ -735,7 +735,7 @@ class OrnCrawler:
             self._rate_wait("api.github.com")
             result = search_github(query, token=self.github_token,
                                    session=self._session)
-            if result.ok:
+            if result is not None and result.ok:
                 return result
 
         if any(kw in q for kw in [
@@ -745,19 +745,19 @@ class OrnCrawler:
             self._rate_wait("arxiv.org")
             result = search_arxiv(query, session=self._session,
                                   max_chars=self._context_limit)
-            if result.ok:
+            if result is not None and result.ok:
                 return result
 
         self._rate_wait("wikipedia.org")
         result = search_wikipedia(query, lang=lang, session=self._session)
-        if result.ok:
+        if result is not None and result.ok:
             return result
 
         if not is_code:
             self._rate_wait("api.stackexchange.com")
             result = search_stackoverflow(query, session=self._session,
                                           max_chars=self._context_limit)
-            if result.ok:
+            if result is not None and result.ok:
                 return result
 
         return CrawlerResult("auto", query,

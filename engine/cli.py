@@ -407,9 +407,27 @@ def gen(description: tuple[str, ...], lang: str, out: str | None) -> None:
 @click.option("--clear", is_flag=True, default=False,
               help="Limpa o blackboard da sessão atual.")
 def brain(clear: bool) -> None:
-    """[Fase 3] Exibe estado do blackboard e memória de sessão."""
+    """Exibe/limpa a lousa (blackboard) persistente da sessão."""
+    from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
+
     Display.section("BRAIN", "Estado interno")
-    Display.not_implemented("brain")
+    ex = SiCDoxExecutive()
+    try:
+        if clear:
+            ex.clear_board()
+            Display.success("Blackboard limpo.")
+            return
+        summary = ex.board_summary()
+        Display.kv("hypotheses", str(summary.get("items", 0)))
+        for h in summary.get("hypotheses", [])[-8:]:
+            print(f"  - [{h.get('source', '?')}] {h.get('content', '')}")
+        links = summary.get("causal_links", [])
+        if links:
+            Display.info("Causal links:")
+            for a, b in links[-5:]:
+                print(f"  - {a[:60]} -> {b[:60]}")
+    finally:
+        ex.shutdown()
 
 
 @cli.command()
@@ -420,6 +438,27 @@ def graph(target: str, rebuild: bool) -> None:
     Display.section("GRAPH", target)
     Display.not_implemented("graph")
 
+
+@cli.command()
+@click.option("--prompt", default="qual é o kernel?", show_default=True, help="Prompt usado no benchmark.")
+@click.option("--runs", type=int, default=2, show_default=True, help="Execuções por configuração (após warm-up).")
+@click.option("--tokens", type=int, default=96, show_default=True, help="Max tokens por execução.")
+def bench(prompt: str, runs: int, tokens: int) -> None:
+    """Auto-tuning: varre configurações e escolhe menor tempo médio."""
+    from engine.tools.benchmark_tuner import autotune  # noqa: PLC0415
+
+    Display.section("BENCH", "Auto-tuning de latência")
+    report = autotune(prompt=prompt, runs=max(1, runs), max_tokens=max(8, tokens))
+    for row in report.get("candidates", []):
+        print(
+            f"  - n_ctx={row['n_ctx']:<4} min_p={row['min_p']:<4} "
+            f"repeat_penalty={row['repeat_penalty']:<4} avg={row['avg_s']}s"
+        )
+    best = report.get("best")
+    if best:
+        Display.success(
+            f"Melhor: n_ctx={best['n_ctx']} min_p={best['min_p']} repeat_penalty={best['repeat_penalty']} avg={best['avg_s']}s"
+        )
 
 # ---------------------------------------------------------------------------
 # server — grupo de subcomandos para orn-server

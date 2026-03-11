@@ -135,6 +135,14 @@ class SiCDoxExecutive:
             return {"model_loaded": False}
         return self._bridge.stats()
 
+    def board_summary(self) -> dict[str, Any]:
+        """Resumo do blackboard persistente da sessão."""
+        return self._get_board().get_summary()
+
+    def clear_board(self) -> None:
+        """Limpa a lousa persistente."""
+        self._get_board().clear()
+
     # ------------------------------------------------------------------
     # Dispatcher central
     # ------------------------------------------------------------------
@@ -181,6 +189,9 @@ class SiCDoxExecutive:
 
         # 1. Contexto de arquivo opcional (--file)
         full_prompt = prompt
+        board_block = board.build_context_block(prompt)
+        if board_block:
+            full_prompt = board_block + "\n[TASK]\n" + prompt
         if context.get("context_file"):
             file_content = _read_file_safe(context["context_file"])
             if file_content:
@@ -210,11 +221,9 @@ class SiCDoxExecutive:
             )
 
         # 4. Registra no Blackboard (Hades)
-        board.post_hypothesis(
-            source="think",
-            content=f"Q: {prompt[:80]}...",
-            confidence=1.0,
-        )
+        board.post_hypothesis(source="think:q", content=f"Pergunta: {prompt[:180]}", confidence=0.9)
+        board.post_hypothesis(source="think:a", content=f"Resposta: {output[:220]}", confidence=0.8)
+        board.add_causal_link(prompt[:96], output[:96])
 
         return GoalResult(success=True, intent="think", output=output)
 

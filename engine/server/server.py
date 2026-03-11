@@ -49,6 +49,28 @@ from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
 #      — caso tipico quando doxoade esta em site-packages
 # ---------------------------------------------------------------------------
 
+def _looks_like_doxoade_root(path_str: str | None) -> bool:
+    if not path_str:
+        return False
+    try:
+        p = Path(path_str).resolve()
+    except Exception:
+        return False
+    return (p / "doxoade" / "__init__.py").exists()
+
+
+def _discover_doxoade_root() -> str | None:
+    # 1) env explícita válida
+    env_root = os.environ.get("DOXOADE_ROOT")
+    if _looks_like_doxoade_root(env_root):
+        return str(Path(env_root).resolve())
+    # 2) sobe árvore procurando pacote local
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / "doxoade" / "__init__.py").exists():
+            return str(parent)
+    return None
+
 def _vulcan_boot() -> tuple[bool, str]:
     """
     Garante que doxoade seja importavel e instala o VulcanMetaFinder.
@@ -57,24 +79,13 @@ def _vulcan_boot() -> tuple[bool, str]:
     """
     # ── Etapa 1: injetar sys.path se necessario ──────────────────────────────
 
-    # Caso 1: variavel de ambiente explicita (deploy / CI)
-    env_root = os.environ.get("DOXOADE_ROOT")
-    if env_root:
-        env_path = str(Path(env_root).resolve())
-        if env_path not in sys.path:
-            sys.path.insert(0, env_path)
+    root = _discover_doxoade_root()
+    if root:
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        os.environ["DOXOADE_ROOT"] = root
 
-    # Caso 2: pasta local — sobe a arvore a partir deste arquivo
-    else:
-        here = Path(__file__).resolve()
-        for parent in [here, *here.parents]:
-            if (parent / "doxoade" / "__init__.py").exists():
-                root_str = str(parent)
-                if root_str not in sys.path:
-                    sys.path.insert(0, root_str)
-                break
-
-    # Caso 3: pacote instalado no venv → ja importavel, nada a fazer
+    # pacote instalado no venv também é aceito sem sys.path extra
 
     # ── Etapa 2: verificar se o import funciona ──────────────────────────────
     try:
@@ -865,6 +876,9 @@ class ServerCLI:
             env["ORN_USE_MMAP"] = "0"
         if no_alloc:
             env["ORN_NO_ALLOC"] = "1"
+        root = _discover_doxoade_root()
+        if root:
+            env["DOXOADE_ROOT"] = root
         return env
 
     def _apply_start_env(
