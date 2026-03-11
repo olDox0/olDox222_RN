@@ -254,3 +254,13 @@ def test_bridge_memoization_prunes_old_entries() -> None:
     assert b._memo_get("a") is None
     assert b._memo_get("b") == "2"
     assert b._memo_get("c") == "3"
+
+
+def test_bridge_config_context_rotation_env(monkeypatch) -> None:
+    monkeypatch.setenv("ORN_CONTEXT_ROTATION", "0")
+    monkeypatch.setenv("ORN_CONTEXT_COMPACT_RATIO", "0.6")
+
+    cfg = BridgeConfig()
+
+    assert cfg.context_rotation is False
+    assert cfg.context_compact_ratio == 0.6

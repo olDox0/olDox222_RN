@@ -344,6 +344,8 @@ def _show_config() -> None:
     Display.kv("min_p",         str(cfg.min_p))
     Display.kv("repetition_memo",str(cfg.repetition_memo_enabled))
     Display.kv("memo_size",     str(cfg.repetition_memo_size))
+    Display.kv("ctx_rotation",  str(cfg.context_rotation))
+    Display.kv("ctx_compact_ratio", str(cfg.context_compact_ratio))
     Display.kv("max_tokens",    str(cfg.max_tokens))
     Display.kv("n_threads",     str(cfg.n_threads))
     Display.kv("n_gpu_layers",  str(cfg.n_gpu_layers))

@@ -606,6 +606,26 @@ class OrnCrawler:
             time.sleep(limit - elapsed)
         self._last_request[domain] = time.time()
 
+    @staticmethod
+    def _cache_key(source: str, query: str, lang: str = "pt") -> str:
+        if source == "wikipedia":
+            return f"wiki:{lang}:{query}"
+        if source == "stackoverflow":
+            return f"so:stackoverflow:{query}"
+        if source == "pypi":
+            return f"pypi:{query}"
+        if source == "arxiv":
+            return f"arxiv:{query}"
+        if source == "github":
+            return f"github:{query}"
+        return ""
+
+    def _cached(self, source: str, query: str, lang: str = "pt") -> CrawlerResult | None:
+        key = self._cache_key(source, query, lang)
+        if not key:
+            return None
+        return _session_cache.get(key)
+
     def search(self, query: str, source: str = "auto",
                lang: str = "pt") -> CrawlerResult:
         """
@@ -627,27 +647,42 @@ class OrnCrawler:
             return self._auto_search(query, lang)
 
         if source == "wikipedia":
+            cached = self._cached("wikipedia", query, lang)
+            if cached is not None:
+                return cached
             self._rate_wait("wikipedia.org")
             return search_wikipedia(query, lang=lang,
                                     session=self._session,
                                     max_chars=self._context_limit)
 
         if source == "stackoverflow":
+            cached = self._cached("stackoverflow", query, lang)
+            if cached is not None:
+                return cached
             self._rate_wait("api.stackexchange.com")
             return search_stackoverflow(query,
                                         session=self._session,
                                         max_chars=self._context_limit)
 
         if source == "pypi":
+            cached = self._cached("pypi", query, lang)
+            if cached is not None:
+                return cached
             self._rate_wait("pypi.org")
             return search_pypi(query, session=self._session)
 
         if source == "arxiv":
+            cached = self._cached("arxiv", query, lang)
+            if cached is not None:
+                return cached
             self._rate_wait("arxiv.org")
             return search_arxiv(query, session=self._session,
                                 max_chars=self._context_limit)
 
         if source == "github":
+            cached = self._cached("github", query, lang)
+            if cached is not None:
+                return cached
             self._rate_wait("api.github.com")
             return search_github(query, token=self.github_token,
                                  session=self._session)
@@ -665,6 +700,12 @@ class OrnCrawler:
         Estratégia auto: tenta fontes por prioridade até encontrar resultado útil.
         """
         q = query.lower()
+
+        # Fast path: evita rate-wait e rede quando já existe cache útil.
+        for src in ("wikipedia", "stackoverflow", "pypi", "arxiv", "github"):
+            cached = self._cached(src, query, lang)
+            if cached is not None and cached.ok:
+                return cached
 
         is_single = len(query.split()) == 1
         is_lib = any(kw in q for kw in
