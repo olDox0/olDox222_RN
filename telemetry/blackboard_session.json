@@ -1,0 +1,21 @@
+{
+  "hypotheses": [
+    {
+      "source": "think:q",
+      "content": "Pergunta: qual é o kernel?",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: O kernel é o software que controla a execução de programas em um computador. Ele é responsável por executar tarefas, monitorar o estado do sistema e gerenciar recursos.",
+      "confidence": 0.8
+    }
+  ],
+  "causal_links": [
+    [
+      "qual é o kernel?",
+      "O kernel é o software que controla a execução de programas em um computador. Ele é responsável p"
+    ]
+  ],
+  "items": 2
+}

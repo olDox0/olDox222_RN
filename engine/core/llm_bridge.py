@@ -53,20 +53,19 @@ class BridgeConfig:
         "/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
         #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
-    n_ctx:         int  = 256   # era 2048 — reduz KV-cache pela metade
+    n_ctx:         int  = 1024   # era 2048 — reduz KV-cache pela metade
     active_window: int  = 256    # era 1024 — proporcional
     n_batch:       int  = 256     # NOVO — era 512 (default llama.cpp)
                                   # 64 = menos pressão de memória no N2808
-                                  
     # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
     n_threads:       int = 2
     n_threads_batch: int = 2
     n_gpu_layers:    int = 0      # CPU-only (sem GPU no N2808)
     use_mmap: bool = True   # mmap para pesos (carregamento preguiçoso)
     use_mlock: bool = True # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
-    no_alloc: bool = False # Evita alocação interna inicial quando suportado pelo backend
-    pin_threads: bool = False # Fixa threads em núcleos quando suportado
-    cont_batching: bool = False # Continuous batching quando suportado
+    no_alloc: bool = True # Evita alocação interna inicial quando suportado pelo backend
+    pin_threads: bool = True # Fixa threads em núcleos quando suportado
+    cont_batching: bool = True # Continuous batching quando suportado
     # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
     # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
     ttl_seconds:   int  = 400   # 1 hora (era 300s — inadequado para N2808)
@@ -79,21 +78,21 @@ class BridgeConfig:
     top_p:          float = 0.85
     top_k:          int   = 35
     repeat_penalty: float = 1.1
-    min_p:          float = 0.01
+    min_p:          float = 0.1
     # Menemonização de repetições (com pruning LRU)
     repetition_memo_enabled: bool = True
-    repetition_memo_size:    int  = 32
+    repetition_memo_size:    int  = 128
     # Context rotation + compactação para conversas longas
     context_rotation: bool = True
     context_compact_ratio: float = 0.5
     # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
-    cache_type_k: str | None = None
-    cache_type_v: str | None = None
+    cache_type_k: "q4_0" | None = None
+    cache_type_v: "q4_0" | None = None
     # Parâmetros RoPE para ajuste de extrapolação/contexto
-    rope_freq_base: float | None = None
-    rope_freq_scale: float | None = None
+    rope_freq_base: 500000.0 | None = None
+    rope_freq_scale: 0.7 | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
-    flash_attn: bool | None = None
+    flash_attn: True | None = None
     system_prompt: str = ("succinct assistant. tightening writing. PTBR.")  # era ~170 tokens, agora ~20 tokens
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
