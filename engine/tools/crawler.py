@@ -57,6 +57,13 @@ def _get_bs4():
     except ImportError:
         return None
 
+def _get_local_index():
+    try:
+        from engine.tools.local_index import search_local, index_info
+        return search_local, index_info
+    except ImportError:
+        return None, None
+
 
 # ---------------------------------------------------------------------------
 # Resultado de busca
@@ -149,6 +156,18 @@ class _EthicalScraper:
 # ---------------------------------------------------------------------------
 
 _session_cache: dict[str, CrawlerResult] = {}
+
+# Mapeamento apelido → source_id real (stem do .db em data/index/)
+# Adicione entradas ao baixar novos ZIMs.
+LOCAL_SOURCES: dict[str, str] = {
+    "wikipedia":     "wikipedia_pt_computer_maxi_2026_01",
+    "stackexchange": "softwareengineering_stackexchange_com_en_all_2026_02",
+}
+
+# Máximo de chars de contexto injetado no prompt.
+# N2808: ~0.25 token/char, ~0.75s/token → 400 chars ≈ 75 tokens ≈ 56s prompt eval.
+# Aumente para melhor qualidade; reduza para menor latência.
+CTX_MAX_CHARS: int = 400
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +711,29 @@ class OrnCrawler:
             return search_generic(url, session=self._session,
                                   max_chars=self._context_limit)
 
+        if source in ("local", "wikipedia-local", "stackexchange-local",
+                      "stackoverflow-local"):
+            search_local, _ = _get_local_index()
+            if search_local is None:
+                return CrawlerResult(source, query,
+                                     error="local_index não disponível")
+            if "stack" in source:
+                src_id = LOCAL_SOURCES.get("stackexchange", "stackexchange")
+            else:
+                src_id = LOCAL_SOURCES.get("wikipedia", "wikipedia")
+            results = search_local(query, source_id=src_id, limit=1)
+            if results:
+                ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
+                return CrawlerResult(
+                    source  = f"{src_id}-local",
+                    query   = query,
+                    title   = results[0].title,
+                    context = ctx,
+                )
+            return CrawlerResult(source, query,
+                                 error=f"nada no índice local: {query!r}")
+
+
         return CrawlerResult(source, query,
                              error=f"fonte desconhecida: {source!r}")
 
@@ -706,6 +748,26 @@ class OrnCrawler:
             cached = self._cached(src, query, lang)
             if cached is not None and cached.ok:
                 return cached
+
+        # Busca local primeiro — sem rede, <5ms
+        search_local, index_info = _get_local_index()
+        if search_local is not None:
+            for alias, src_id in LOCAL_SOURCES.items():
+                info = index_info(src_id)
+                if not info["exists"] or info.get("articles", 0) == 0:
+                    continue
+                results = search_local(query, source_id=src_id, limit=1)
+                if results and results[0].ok:
+                    # 1 resultado, truncado em CTX_MAX_CHARS — controla prompt eval time
+                    ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
+                    cached = CrawlerResult(
+                        source  = f"{src_id}-local",
+                        query   = query,
+                        title   = results[0].title,
+                        context = ctx,
+                    )
+                    _session_cache[f"local:{src_id}:{query}"] = cached
+                    return cached
 
         is_single = len(query.split()) == 1
         is_lib = any(kw in q for kw in
@@ -770,10 +832,17 @@ class OrnCrawler:
 
     def check_deps(self) -> dict[str, bool]:
         """Verifica dependências disponíveis."""
-        requests, _, _ = _get_requests()
-        BS4 = _get_bs4()
+        requests, _, _  = _get_requests()
+        BS4             = _get_bs4()
+        search_local, _ = _get_local_index()
+        local_indexes   = {
+            alias: __import__("pathlib").Path(f"data/index/{src_id}.db").exists()
+            for alias, src_id in LOCAL_SOURCES.items()
+        } if search_local else {}
         return {
-            "requests":       requests is not None,
-            "beautifulsoup4": BS4 is not None,
+            "requests":           requests is not None,
+            "beautifulsoup4":     BS4 is not None,
+            "local_index":        search_local is not None,
+            "local_indexes":      local_indexes,
             "urllib.robotparser": True,
         }

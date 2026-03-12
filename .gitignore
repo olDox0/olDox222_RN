@@ -25,6 +25,7 @@ tmp/
 .dox_agent_workspace/
 .dox_lab/
 tests/
+telemetry/
 regression_tests/canon/
 recovery_zone/
 credentials.json
@@ -35,15 +36,18 @@ config.json
 *.txt
 *.bkp
 *.bak
-*.pid
 *.dox
+*.patch
 *.pyx
+*.zim
+*.pid
 *.old_trash
 .nppBackup
 nppBackup/
 ./nppBackup/
 pytest_temp_dir/
 .doxoade/vulcan/foundry/
+data/
 
 # --- Arquivos de Configuração de IDE ---
 .vscode/

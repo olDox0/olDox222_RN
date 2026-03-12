@@ -13,7 +13,7 @@ _doxo_install_ms = 0
 _doxo_embedded_ms = 0
 _doxo_fallback_ms = 0
 
-for _doxo_base in [_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
+for _doxo_base in[_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
     _doxo_runtime_file = _doxo_base / ".doxoade" / "vulcan" / "runtime.py"
     if not _doxo_runtime_file.exists():
         continue
@@ -41,7 +41,7 @@ if callable(_doxo_install_meta_finder) and _doxo_project_root:
 
 # 2. Tenta usar o loader "embedded"
 try:
-    _doxo_t = _doxo_time.monotonic()
+    _doxo_t = _doxo_time.monotonic()   # inicializado ANTES do if — evita NameError no finally
     if _doxo_project_root:
         _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
         if _embedded_path.exists():
@@ -61,24 +61,28 @@ try:
                     try:
                         import sys as _d_sys
                         _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
+                        # sys.intern no sufixo — a comparação endswith é feita N_módulos×N_attrs vezes
+                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
+                        _suffix_len    = len(_vulcan_suffix)
                         for mname, mod in list(_d_sys.modules.items()):
                             try:
-                                mfile = getattr(mod, "__file__", "")
+                                mfile = getattr(mod, "__file__", None)
                                 if not mfile:
-                                    continue
+                                    continue  # saída antecipada — evita construir Path para módulos builtin
                                 mpath = _doxo_path(mfile)
-                                if _bin_dir in mpath.parents:
-                                    for attr in dir(mod):
-                                        if not attr.endswith("_vulcan_optimized"):
-                                            continue
-                                        native_obj = getattr(mod, attr, None)
-                                        if not callable(native_obj):
-                                            continue
-                                        base = attr[: -len("_vulcan_optimized")]
-                                        try:
-                                            setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
-                                        except Exception:
-                                            continue
+                                if _bin_dir not in mpath.parents:
+                                    continue
+                                for attr in dir(mod):
+                                    if not attr.endswith(_vulcan_suffix):
+                                        continue
+                                    native_obj = getattr(mod, attr, None)
+                                    if not callable(native_obj):
+                                        continue
+                                    base = attr[: -_suffix_len]
+                                    try:
+                                        setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
+                                    except Exception:
+                                        continue
                             except Exception:
                                 continue
                     except Exception:

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# engine\core\llm_bridge.py
 """
 ORN — LLM Bridge (Hefesto) — Fase 1: ATIVO
 Interface com Qwen2.5-Coder via llama-cpp-python.
@@ -49,13 +50,12 @@ class BridgeConfig:
       - ttl_seconds=3600: recarregar custa 80s, manter em RAM o máximo possível
     """
     model_path:    Path = Path(
-        "models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF"
-        "/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+        "models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
         #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
     n_ctx:         int  = 1024   # era 2048 — reduz KV-cache pela metade
-    active_window: int  = 256    # era 1024 — proporcional
-    n_batch:       int  = 256     # NOVO — era 512 (default llama.cpp)
+    active_window: int  = 512    # era 1024 — proporcional
+    n_batch:       int  = 512     # NOVO — era 512 (default llama.cpp)
                                   # 64 = menos pressão de memória no N2808
     # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
     n_threads:       int = 2
@@ -77,8 +77,8 @@ class BridgeConfig:
     temperature:    float = 0.45
     top_p:          float = 0.85
     top_k:          int   = 35
-    repeat_penalty: float = 1.1
-    min_p:          float = 0.1
+    repeat_penalty: float = 1.05
+    min_p:          float = 0.05
     # Menemonização de repetições (com pruning LRU)
     repetition_memo_enabled: bool = True
     repetition_memo_size:    int  = 128
@@ -93,7 +93,7 @@ class BridgeConfig:
     rope_freq_scale: 0.7 | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
     flash_attn: True | None = None
-    system_prompt: str = ("succinct assistant. tightening writing. PTBR.")  # era ~170 tokens, agora ~20 tokens
+    system_prompt: str = ("succinct assistant. tightening writing. portuguese response.")  # era ~170 tokens, agora ~20 tokens
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
         if value is None:
@@ -240,6 +240,7 @@ class ContextWindow:
         if not content:
             raise ValueError("content não pode ser vazio.")
         est = len(content.split())
+        #= max(1, int(len(content) / 3.8))
         self._turns.append({"role": role, "content": content})
         self._count += est
         while self._count > self._max and len(self._turns) > 1:
@@ -248,7 +249,7 @@ class ContextWindow:
                     break
                 continue
             removed = self._turns.pop(0)
-            self._count -= len(removed["content"].split())
+            self._count -= max(1, len(removed["content"]) // 4)     # self._count -= len(removed["content"].split())
     def _compact_old_turns(self) -> bool:
         if not self._rotation:
             return False
@@ -260,14 +261,15 @@ class ContextWindow:
             return False
         bullets: list[str] = []
         for t in old[-4:]:
-            snippet = " ".join(t["content"].split()[:8]).strip()
+            snippet = t["content"][:80].replace("\n", " ")  # snippet = " ".join(t["content"].split()[:8]).strip()
             if snippet:
                 bullets.append(f"- {t['role']}: {snippet}")
         if not bullets:
             return False
         summary = "[CTX-ROTATION] Resumo compacto de turns antigos:\n" + "\n".join(bullets)
         self._turns = [{"role": "system", "content": summary}] + self._turns[-keep:]
-        self._count = sum(len(t["content"].split()) for t in self._turns)
+        self._count = sum(max(1, len(t["content"]) // 4) for t in self._turns)  # self._count = sum(len(t["content"].split()) for t in self._turns)
+        
         return True
     def get_turns(self) -> list[dict[str, str]]:
         return list(self._turns)
@@ -277,6 +279,7 @@ class ContextWindow:
     def stats(self) -> dict[str, int]:
         return {"turns": len(self._turns), "token_est": self._count,
                 "max_tokens": self._max}
+
 # ---------------------------------------------------------------------------
 # Bridge principal — Fase 1 ATIVO
 # ---------------------------------------------------------------------------
@@ -501,20 +504,27 @@ class SiCDoxBridge:
                 kwargs.pop(token, None)
             self._llm = Llama(**kwargs)
         self._load_time = time.monotonic()
+        
     def _build_prompt(self) -> str:
-        """Monta prompt ChatML com a janela de contexto ativa.
-        Formato Qwen: <|im_start|>role\\ncontent<|im_end|>
-        OSL-4: separado de ask() para facilitar variações de formato.
-        """
-        partes: list[str] = [
-            f"<|im_start|>system\n{self._cfg.system_prompt}<|im_end|>"
-        ]
-        for turn in self._ctx.get_turns():
-            partes.append(
-                f"<|im_start|>{turn['role']}\n{turn['content']}<|im_end|>"
-            )
-        partes.append("<|im_start|>assistant\n")
-        return "\n".join(partes)
+
+        turns = self._ctx._view_turns()
+
+        parts = []
+        parts_append = parts.append
+
+        parts_append(self._system_prefix)
+
+        for t in turns:
+            parts_append("<|im_start|>")
+            parts_append(t["role"])
+            parts_append("\n")
+            parts_append(t["content"])
+            parts_append("<|im_end|>\n")
+
+        parts_append("<|im_start|>assistant\n")
+
+        return "".join(parts)
+        
     def _call_engine(self, prompt: str, max_tokens: int) -> dict:
         """Chama o runtime Llama e retorna dict: {'text': str, 'usage': {...}}"""
         if self._llm is None:

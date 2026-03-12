@@ -13,7 +13,7 @@ _doxo_install_ms = 0
 _doxo_embedded_ms = 0
 _doxo_fallback_ms = 0
 
-for _doxo_base in [_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
+for _doxo_base in[_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
     _doxo_runtime_file = _doxo_base / ".doxoade" / "vulcan" / "runtime.py"
     if not _doxo_runtime_file.exists():
         continue

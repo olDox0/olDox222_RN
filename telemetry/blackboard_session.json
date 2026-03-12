@@ -9,13 +9,307 @@
       "source": "think:a",
       "content": "Resposta: O kernel é o software que controla a execução de programas em um computador. Ele é responsável por executar tarefas, monitorar o estado do sistema e gerenciar recursos.",
       "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: Explique o que é Dependency Injection e dê um pequeno exemplo.",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependency Injection é um conceito em programação que permite que uma classe dependa de outra classe para realizar tarefas específicas. Aqui está um pequeno exemplo de Dependency Injection:\n\nImagine que você tem uma apli",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: [BLACKBOARD]\nMemórias relevantes:\n- (think:q) Pergunta: Explique o que é Dependency Injection e dê um pequeno exemplo.\n- (think:a) Resposta: O kernel é o software que controla a execução de programas em um computador. El",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: ### Explicação do que é Dependency Injection e um pequeno exemplo em Python\n\n#### Definição de Dependência Injeção\n\nA **Dependency Injection** é um conceito fundamental na programação, especialmente no desenvolvimento de",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Isso significa que as dependências entre os módulos não são definidas programaticamente, ma",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: stackoverflow-local | questions/tagged/dependency-injection_page=5\nurl: \n[CTX-BEGIN]\nscope: stackoverflow-local | questions/tagged/dependency-injection_page=5\nHi",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependency Injection é um design pattern que permite que uma classe dependa de outras classes, independentemente do momento em que ela é instanciada. Isso pode ser útil para implementar injeções de dependência, onde as c",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje%C3%A7%C3%A3o_de_depend%C3%AAncia\nInjeção de dependência é um padrão de desenvolvime",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de dependências em módulos de um sistema. Essa técnica se relaciona com o padrão Inversão de Controle, mas não pode ser considerada u",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\n(/`\u0003",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependency injection é uma técnica de programação que permite que você injeção de dependências em um objeto, facilitando a reutilização de código e tornando o código mais modular.",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\n(/`\u0003",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependency injection é uma técnica de programação que permite que você injeção de dependências em um objeto, tornando-o mais fácil de testar e manter.",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\n(/`\u0003",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependency injection é uma técnica de programação que permite que você injeção de dependências em um objeto, tornando-o mais fácil de testar e manter.",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\n(/`\u0003",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependency injection é uma técnica de programação que permite que você encapsule a dependência de um objeto em uma classe, independentemente do objeto que o depende. Isso significa que você pode mudar a implementação da",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: [CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\n(/`\u0003",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: Dependency injection é uma técnica de programação que permite que você encapsule a dependência de um objeto em uma classe, independentemente do objeto que o depende. Isso significa que você pode mudar a implementação da",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: qual é o kernel?",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: O kernel é o componente fundamental da arquitetura de software, responsável por gerenciar a execução dos programas. Ele é responsável por criar e manter o ambiente de execução do programa, incluindo a inicialização, arma",
+      "confidence": 0.8
+    },
+    {
+      "source": "think:q",
+      "content": "Pergunta: qual é o kernel?",
+      "confidence": 0.9
+    },
+    {
+      "source": "think:a",
+      "content": "Resposta: O kernel é o componente fundamental da arquitetura de software, responsável por gerenciar a execução dos programas. Ele é responsável por criar e manter o ambiente de execução do programa, incluindo a inicialização, arma",
+      "confidence": 0.8
     }
   ],
   "causal_links": [
     [
       "qual é o kernel?",
       "O kernel é o software que controla a execução de programas em um computador. Ele é responsável p"
+    ],
+    [
+      "Explique o que é Dependency Injection e dê um pequeno exemplo.",
+      "Dependency Injection é um conceito em programação que permite que uma classe dependa de outra cl"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "[BLACKBOARD]\nMemórias relevantes:\n- (think:q) Pergunta: Explique o que é Dependency Injection e"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "### Explicação do que é Dependency Injection e um pequeno exemplo em Python\n\n#### Definição de D"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: stackoverflow-local | questions/tagged/dependency-injection_page=5\nurl: \n[CTX",
+      "Dependency Injection é um design pattern que permite que uma classe dependa de outras classes, i"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia-pt | Injeção de dependência\nurl: https://pt.wikipedia.org/wiki/Inje",
+      "Dependência Injection é um padrão de desenvolvimento de sistemas que permite a injeção de depend"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-",
+      "Dependency injection é uma técnica de programação que permite que você injeção de dependências e"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-",
+      "Dependency injection é uma técnica de programação que permite que você injeção de dependências e"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-",
+      "Dependency injection é uma técnica de programação que permite que você injeção de dependências e"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-",
+      "Dependency injection é uma técnica de programação que permite que você encapsule a dependência d"
+    ],
+    [
+      "[CTX-BEGIN]\nscope: wikipedia_pt_computer_maxi_2026_01-local | Injeção de dependência\nurl: \n[CTX-",
+      "Dependency injection é uma técnica de programação que permite que você encapsule a dependência d"
+    ],
+    [
+      "qual é o kernel?",
+      "O kernel é o componente fundamental da arquitetura de software, responsável por gerenciar a exec"
+    ],
+    [
+      "qual é o kernel?",
+      "O kernel é o componente fundamental da arquitetura de software, responsável por gerenciar a exec"
     ]
   ],
-  "items": 2
+  "items": 44
 }
