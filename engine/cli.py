@@ -260,8 +260,8 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         # se telemetria ativada -> gravar e registrar em GLOBAL_TELEMETRY
         if telemetry_enabled:
             try:
-                # registro leve: cria payload e delega para core (fail-safe)
                 from engine.telemetry.core import record_direct_telemetry  # noqa: PLC0415
+                board_meta = result.metadata.get("board", {}) if getattr(result, "metadata", None) else {}
                 payload = {
                     "captured_at_unix": int(time.time()),
                     "mode": "direct",
@@ -271,6 +271,10 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                     "reported_elapsed": reported_elapsed,
                     "prompt_chars": len(full_prompt) if full_prompt else 0,
                     "max_tokens": max_tokens,
+                    # blackboard
+                    "board_drafts":     board_meta.get("draft_count", 0),
+                    "board_by_role":    board_meta.get("by_role", {}),
+                    "board_token_hint": board_meta.get("token_hint"),
                 }
                 record_direct_telemetry(payload)
                 Display.info(f"Telemetria gravada: telemetry/direct_runtime.jsonl")
@@ -403,11 +407,85 @@ def gen(description: tuple[str, ...], lang: str, out: str | None) -> None:
     Display.not_implemented("gen")
 
 
+def _display_profile(last: int) -> None:
+    """Lê telemetry/profiler.jsonl e exibe breakdown de spans."""
+    prof_path = Path("telemetry/profiler.jsonl")
+    if not prof_path.exists():
+        Display.warn("profiler.jsonl ausente — rode `orn think ... --telemetry` primeiro.")
+        return
+
+    entries: list[dict] = []
+    for line in prof_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+
+    recent = [e for e in entries if e.get("v") == 1][-last:]
+    if not recent:
+        Display.warn("Nenhuma entrada v1 no profiler.jsonl.")
+        return
+
+    n = len(recent)
+    Display.info(f"Profiler — breakdown de spans ({n} execuções):")
+
+    # Span names em ordem de exibição
+    span_names = ["load_check", "ctx_push", "prompt_build",
+                  "llm_call", "text_parse", "memo_lookup", "memo_store"]
+
+    # Agrega médias por span
+    for sname in span_names:
+        vals = [e["spans_ms"].get(sname, 0.0) for e in recent if "spans_ms" in e]
+        if not vals:
+            continue
+        avg = sum(vals) / len(vals)
+        mx  = max(vals)
+        # barra proporcional ao max (max = 40 chars)
+        total_avg = sum(
+            e["spans_ms"].get("total", 1) for e in recent if "spans_ms" in e
+        ) / max(1, n)
+        bar_len = int(avg / max(1.0, total_avg) * 40)
+        bar = "█" * bar_len + "░" * (40 - bar_len)
+        print(f"  {sname:<14} avg={avg:>8.1f}ms  max={mx:>8.1f}ms  |{bar}|")
+
+    # Derivados médios
+    Display.info("Derivados (médias):")
+    for key, label in [
+        ("overhead_ms",           "overhead Python"),
+        ("overhead_pct",          "overhead %"),
+        ("ms_per_token",          "ms/token"),
+        ("ttft_est_ms",           "TTFT estimado"),
+        ("prompt_eval_share_pct", "prompt_eval share%"),
+        ("tokens_per_second",     "tok/s"),
+    ]:
+        vals = [e["derived"].get(key, 0.0) for e in recent if "derived" in e]
+        if vals:
+            avg = round(sum(vals) / len(vals), 2)
+            print(f"  {label:<22} {avg}")
+
+    # active_window
+    aw_vals = [e["counters"].get("active_window_used", 0) for e in recent if "counters" in e]
+    aw_cfg  = recent[-1].get("counters", {}).get("active_window_cfg", "?") if recent else "?"
+    if aw_vals:
+        avg_aw = round(sum(aw_vals) / len(aw_vals))
+        Display.info(f"active_window: cfg={aw_cfg}  usado médio={avg_aw}  "
+                     f"(economia={round(100*(1-avg_aw/max(1,int(aw_cfg))),1)}%)")
+
+
 @cli.command()
 @click.option("--clear", is_flag=True, default=False,
-              help="Limpa o blackboard da sessão atual.")
-def brain(clear: bool) -> None:
-    """Exibe/limpa a lousa (blackboard) persistente da sessão."""
+              help="Descarta a sessão corrente da lousa.")
+@click.option("--last", "-n", type=int, default=10, show_default=True,
+              help="Quantas entradas de telemetria exibir.")
+@click.option("--json-output", "json_output", is_flag=True, default=False,
+              help="Exibe dados brutos em JSON.")
+@click.option("--profile", is_flag=True, default=False,
+              help="Exibe breakdown de spans do profiler (telemetry/profiler.jsonl).")
+def brain(clear: bool, last: int, json_output: bool, profile: bool) -> None:
+    """Estado interno: telemetria do blackboard + bridge."""
     from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
 
     Display.section("BRAIN", "Estado interno")
@@ -415,17 +493,101 @@ def brain(clear: bool) -> None:
     try:
         if clear:
             ex.clear_board()
-            Display.success("Blackboard limpo.")
+            Display.success("Sessão da lousa descartada.")
             return
-        summary = ex.board_summary()
-        Display.kv("hypotheses", str(summary.get("items", 0)))
-        for h in summary.get("hypotheses", [])[-8:]:
-            print(f"  - [{h.get('source', '?')}] {h.get('content', '')}")
-        links = summary.get("causal_links", [])
-        if links:
-            Display.info("Causal links:")
-            for a, b in links[-5:]:
-                print(f"  - {a[:60]} -> {b[:60]}")
+
+        # ── Telemetria em disco ──────────────────────────────────────────
+        tele_path = Path("telemetry/direct_runtime.jsonl")
+        entries: list[dict] = []
+        if tele_path.exists():
+            for line in tele_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+        # Filtra por tipo de entrada — bridge e CLI escrevem linhas distintas
+        infer_entries = [e for e in entries if "prompt_tokens" in e and "infer_s" in e]
+        board_entries = [e for e in entries if "board_drafts" in e]
+        recent_infer  = infer_entries[-last:]
+        recent_board  = board_entries[-last:]
+
+        if json_output:
+            out = {
+                "board": ex.board_summary(),
+                "bridge": ex.bridge_stats(),
+                "telemetry_infer": infer_entries[-last:],
+                "telemetry_board": board_entries[-last:],
+            }
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+            return
+
+        # ── Bridge ──────────────────────────────────────────────────────
+        bridge = ex.bridge_stats()
+        Display.info("Bridge (Hefesto):")
+        print(f"  - modelo carregado: {bridge.get('model_loaded', False)}")
+        if bridge.get("model_loaded"):
+            print(f"  - uptime:           {bridge.get('loaded_since_s', '?')}s")
+            ctx = bridge.get("context", {})
+            print(f"  - ctx turns/est:    {ctx.get('turns', 0)}/{ctx.get('token_est', 0)} tk")
+
+        # ── Lousa (sessão corrente) ──────────────────────────────────────
+        board = ex.board_summary()
+        Display.info("Lousa (sessão corrente):")
+        print(f"  - aberta:     {board.get('open', False)}")
+        print(f"  - query:      {board.get('query_preview', '(vazia)') or '(vazia)'}")
+        print(f"  - drafts:     {board.get('draft_count', 0)}")
+        by_role = board.get("by_role", {})
+        if by_role:
+            print(f"  - por role:   {by_role}")
+
+        # ── Telemetria agregada ──────────────────────────────────────────
+        if not recent_infer and not recent_board:
+            Display.warn("Sem telemetria gravada. Use `orn think ... --telemetry`.")
+            return
+
+        if recent_infer:
+            n = len(recent_infer)
+            total_infer   = sum(float(e.get("infer_s", 0)) for e in recent_infer)
+            total_ptok    = sum(int(e.get("prompt_tokens", 0)) for e in recent_infer)
+            total_ctok    = sum(int(e.get("completion_tokens", 0)) for e in recent_infer)
+            total_tps_sum = sum(float(e.get("tokens_per_second", 0)) for e in recent_infer)
+            Display.info(f"Telemetria de inferência (últimas {n}):")
+            print(f"  - infer médio:     {round(total_infer / n, 2)}s")
+            print(f"  - prompt tk médio: {round(total_ptok / n, 1)}")
+            print(f"  - output tk médio: {round(total_ctok / n, 1)}")
+            print(f"  - tok/s médio:     {round(total_tps_sum / n, 3)}")
+
+        if recent_board:
+            nb = len(recent_board)
+            avg_drafts = sum(e.get("board_drafts", 0) for e in recent_board) / nb
+            avg_hint   = sum(e.get("board_token_hint") or 0 for e in recent_board) / nb
+            role_totals: dict[str, int] = {}
+            for e in recent_board:
+                for role, cnt in (e.get("board_by_role") or {}).items():
+                    role_totals[role] = role_totals.get(role, 0) + cnt
+            Display.info(f"Lousa (histórico agregado, últimas {nb}):")
+            print(f"  - drafts médio:     {round(avg_drafts, 1)}")
+            print(f"  - token_hint médio: {round(avg_hint, 1)}")
+            if role_totals:
+                print(f"  - roles acum.:      {role_totals}")
+
+        # ── Últimas N execuções resumidas (inferência) ─────────────────
+        Display.info(f"Últimas execuções (inferência):")
+        for e in recent_infer:
+            ts    = e.get("captured_at_unix", 0)
+            ptok  = e.get("prompt_tokens", "?")
+            ctok  = e.get("completion_tokens", "?")
+            infer = e.get("infer_s", "?")
+            print(f"  [{ts}] prompt={ptok}tk out={ctok}tk infer={infer}s")
+
+        # ── Profiler (spans finos) ──────────────────────────────────────
+        if profile:
+            _display_profile(last)
+
     finally:
         ex.shutdown()
 

@@ -136,12 +136,12 @@ class SiCDoxExecutive:
         return self._bridge.stats()
 
     def board_summary(self) -> dict[str, Any]:
-        """Resumo do blackboard persistente da sessão."""
-        return self._get_board().get_summary()
+        """Estado da sessão corrente da lousa (OSL-12)."""
+        return self._get_board().session_info()
 
     def clear_board(self) -> None:
-        """Limpa a lousa persistente."""
-        self._get_board().clear()
+        """Fecha e descarta a sessão corrente da lousa."""
+        self._get_board().close_session()
 
     # ------------------------------------------------------------------
     # Dispatcher central
@@ -178,54 +178,73 @@ class SiCDoxExecutive:
         """Pipeline completo do comando `orn think`.
 
         Etapas:
-          1. Injeta contexto de arquivo (se fornecido).
-          2. Chama Bridge.ask().
-          3. Valida output via Validator.
-          4. Registra no Blackboard.
+          1. Abre sessão na lousa (workspace limpo).
+          2. Decompõe a query em rascunhos de raciocínio.
+          3. Injeta contexto de arquivo opcional (--file).
+          4. Constrói prompt = synthesis_block + [TASK].
+          5. Chama Bridge.ask().
+          6. Valida output via Validator.
+          7. Fecha sessão da lousa (descarta rascunhos).
+
+        OSL-7: sessão fechada em finally — sem vazamento entre queries.
         """
         bridge    = self._get_bridge()
         validator = self._get_validator()
         board     = self._get_board()
 
-        # 1. Contexto de arquivo opcional (--file)
-        full_prompt = prompt
-        board_block = board.build_context_block(prompt)
-        if board_block:
-            full_prompt = board_block + "\n[TASK]\n" + prompt
-        if context.get("context_file"):
-            file_content = _read_file_safe(context["context_file"])
-            if file_content:
-                full_prompt = (
-                    f"[CTX-BEGIN]\n"
-                    f"scope: {context['context_file']}\n"
-                    f"{file_content}\n"
-                    f"[CTX-END]\n\n"
-                    f"[TASK]\n{prompt}"
+        # 1. Workspace limpo para esta query
+        board.open_session(prompt)
+
+        try:
+            # 2. Popula lousa com rascunhos de raciocínio (rule-based, sem LLM)
+            _decompose_query(board, prompt, context)
+
+            # 3. Contexto de arquivo opcional (--file)
+            if context.get("context_file"):
+                file_content = _read_file_safe(context["context_file"])
+                if file_content:
+                    board.post_draft(
+                        source  = "context_file",
+                        content = f"Arquivo '{context['context_file']}': {file_content[:120]}",
+                        role    = "evidence",
+                        weight  = 0.95,
+                    )
+
+            # 4. Monta bloco de síntese (vai para system prompt, não para user turn)
+            synthesis = board.build_synthesis_block(compact=True)
+
+            # 5. Inferência
+            #    synthesis → system_hint (instruções, não ecoadas pelo modelo)
+            #    prompt    → user turn puro (apenas a query)
+            token_hint = len((synthesis or "") + prompt) // 3 + 30
+            max_tokens = context.get("max_tokens")
+            output = bridge.ask(
+                prompt,
+                max_tokens   = max_tokens,
+                token_hint   = token_hint,
+                system_hint  = synthesis,
+            )
+
+            # 6. Validação (OSL-7)
+            valid, motivo = validator.validar_output(output)
+            if not valid:
+                return GoalResult(
+                    success=False, intent="think",
+                    errors=[f"Output inválido: {motivo}"],
                 )
 
-        # 2. Inferência — max_tokens do contexto (CLI --tokens) ou None (usa config)
-        max_tokens = context.get("max_tokens")
-        output = bridge.ask(full_prompt, max_tokens=max_tokens)
+            # Captura estado da lousa antes de descartar (vai para metadata/telemetria)
+            board_snapshot = board.session_info()
+            board_snapshot["token_hint"]  = token_hint
+            board_snapshot["system_hint"] = bool(synthesis)   # registra se houve síntese
 
-        # 3. Validação (OSL-7)
-        valid, motivo = validator.validar_output(output)
-        if not valid:
-            board.post_hypothesis(
-                source="validator",
-                content=f"Output rejeitado: {motivo}",
-                confidence=0.9,
-            )
-            return GoalResult(
-                success=False, intent="think",
-                errors=[f"Output inválido: {motivo}"],
-            )
+            result = GoalResult(success=True, intent="think", output=output)
+            result.metadata["board"] = board_snapshot
+            return result
 
-        # 4. Registra no Blackboard (Hades)
-        board.post_hypothesis(source="think:q", content=f"Pergunta: {prompt[:180]}", confidence=0.9)
-        board.post_hypothesis(source="think:a", content=f"Resposta: {output[:220]}", confidence=0.8)
-        board.add_causal_link(prompt[:96], output[:96])
-
-        return GoalResult(success=True, intent="think", output=output)
+        finally:
+            # 7. OSL-3: descarta workspace — sem acúmulo entre queries
+            board.close_session()
 
     # ------------------------------------------------------------------
     # Fases futuras — stubs com NotImplementedError descritivo
@@ -244,7 +263,7 @@ class SiCDoxExecutive:
         raise NotImplementedError("gen — implementar na Fase 4.")
 
     def _run_brain(self, payload: str, context: dict[str, Any]) -> GoalResult:
-        """TODO Fase 3: DoxoBoard.get_summary() + VectorDB.stats()."""
+        """TODO Fase 3: DoxoBoard.session_info() + VectorDB.stats()."""
         raise NotImplementedError("brain — implementar na Fase 3.")
 
     def _run_graph(self, payload: str, context: dict[str, Any]) -> GoalResult:
@@ -287,8 +306,86 @@ class SiCDoxExecutive:
 
 
 # ---------------------------------------------------------------------------
-# Utilitário interno (OSL-18: stdlib only)
+# Utilitários internos (OSL-18: stdlib only)
 # ---------------------------------------------------------------------------
+
+def _decompose_query(board: Any, prompt: str, context: dict) -> None:
+    """Popula a lousa com rascunhos de raciocínio baseados em regras.
+
+    Orienta o modelo sobre o que é esperado sem custo extra de inferência.
+    Conteúdo dos drafts intencionalmente curto — cada char aqui custa token.
+
+    Args:
+        board:   DoxoBoard com sessão aberta.
+        prompt:  Query original do usuário.
+        context: Dict de contexto do Executive.
+    """
+    p = prompt.lower()
+
+    # Restrição de idioma (sempre presente, texto mínimo)
+    board.post_draft(
+        source  = "decomposer",
+        content = "PT.conciso.",
+        role    = "constraint",
+        weight  = 1.0,
+    )
+
+    # Detecção de linguagem de programação
+    _LANG_MAP: list[tuple[str, str]] = [
+        ("python", "python"), ("py ",    "python"),
+        ("c++",    "c++"),    ("cpp",    "c++"),
+        (" c ",    "C"),      ("em c,",  "C"), ("em c.", "C"),
+        ("batch",  "batch"),  ("bat ",   "batch"),
+    ]
+    for kw, lang in _LANG_MAP:
+        if kw in p:
+            board.post_draft(
+                source  = "decomposer",
+                content = f"lang:{lang}.",
+                role    = "constraint",
+                weight  = 0.95,
+            )
+            break
+
+    # Tipo de tarefa (texto curto — o modelo entende diretivas concisas)
+    if any(kw in p for kw in ("explique", "explica", "o que é", "como funciona", "define")):
+        board.post_draft(
+            source  = "decomposer",
+            content = "explicar.",
+            role    = "decomp",
+            weight  = 0.85,
+        )
+    elif any(kw in p for kw in ("crie", "escreva", "gere", "implemente", "faça", "cria")):
+        board.post_draft(
+            source  = "decomposer",
+            content = "gerar artefato.",
+            role    = "decomp",
+            weight  = 0.85,
+        )
+    elif any(kw in p for kw in ("corrija", "conserte", "bug", "erro", "fix")):
+        board.post_draft(
+            source  = "decomposer",
+            content = "corrigir:causa+fix.",
+            role    = "decomp",
+            weight  = 0.85,
+        )
+    elif any(kw in p for kw in ("liste", "quais são", "enumere", "mostre os")):
+        board.post_draft(
+            source  = "decomposer",
+            content = "lista numerada.",
+            role    = "format",
+            weight  = 0.8,
+        )
+
+    # Escopo de arquivo (se --file fornecido)
+    if context.get("context_file"):
+        board.post_draft(
+            source  = "decomposer",
+            content = f"file:{context['context_file']}",
+            role    = "angle",
+            weight  = 0.9,
+        )
+
 
 def _read_file_safe(path: str, max_chars: int = 3000) -> str:
     """Lê um arquivo de texto com limite de caracteres.

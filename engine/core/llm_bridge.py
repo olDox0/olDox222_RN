@@ -84,7 +84,7 @@ class BridgeConfig:
     repetition_memo_size:    int  = 128
     # Context rotation + compactação para conversas longas
     context_rotation: bool = True
-    context_compact_ratio: float = 0.5
+    context_compact_ratio: float = 0.7
     # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
     cache_type_k: "q4_0" | None = None
     cache_type_v: "q4_0" | None = None
@@ -239,7 +239,7 @@ class ContextWindow:
             raise ValueError(f"role inválido: '{role}'")
         if not content:
             raise ValueError("content não pode ser vazio.")
-        est = len(content.split())
+        est = max(1, len(content) // 4)
         #= max(1, int(len(content) / 3.8))
         self._turns.append({"role": role, "content": content})
         self._count += est
@@ -261,7 +261,7 @@ class ContextWindow:
             return False
         bullets: list[str] = []
         for t in old[-4:]:
-            snippet = t["content"][:80].replace("\n", " ")  # snippet = " ".join(t["content"].split()[:8]).strip()
+            snippet = self._turns[0]["content"][:80].replace("\n", " ") # snippet = " ".join(t["content"].split()[:8]).strip()
             if snippet:
                 bullets.append(f"- {t['role']}: {snippet}")
         if not bullets:
@@ -273,6 +273,8 @@ class ContextWindow:
         return True
     def get_turns(self) -> list[dict[str, str]]:
         return list(self._turns)
+    def _view_turns(self):
+        return self._turns
     def clear(self) -> None:
         self._turns.clear()
         self._count = 0
@@ -296,50 +298,170 @@ class SiCDoxBridge:
             rotation=self._cfg.context_rotation,
             compact_ratio=self._cfg.context_compact_ratio,
         )
-        self._load_time: Any     = None   # float | None — timestamp do load (OSL-12)
+        self._load_time: Any     = None
         self._memo: dict[str, str] = {}
         self._memo_order: list[str] = []
+        self._system_hint: str   = ""
+
+        self._system_prefix = (
+            "<|im_start|>system\n"
+            + self._cfg.system_prompt +
+            "<|im_end|>\n"
+        )
+
+        # Profiler de inferência fina (Cronos) — fail-silent por design
+        try:
+            from engine.telemetry.profiler import InferenceProfiler  # noqa: PLC0415
+            self._prof: Any = InferenceProfiler()
+        except Exception:
+            self._prof = None
+        
     # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
-    def ask(self, prompt: str, max_tokens: int | None = None) -> str:
+    def ask(self, prompt: str, max_tokens: int | None = None,
+            token_hint: int | None = None,
+            system_hint: str | None = None) -> str:
+        """Executa inferência.
+
+        Args:
+            prompt:      Texto do usuário (query pura — sem bloco de síntese).
+            max_tokens:  Limite de tokens de saída. Usa config se None.
+            token_hint:  Estimativa de tokens do prompt completo (chars//3).
+                         Ajusta active_window dinamicamente sem reload.
+            system_hint: Instruções extras para o system prompt desta chamada
+                         (ex: bloco de síntese da lousa). Não persiste entre
+                         chamadas — descartado após _build_prompt().
+                         Colocar aqui evita que o modelo ecoe as tags no output.
+        """
         if not prompt:
             raise ValueError("prompt não pode ser vazio.")
-        self._ensure_loaded()
-        self._ctx.push("user", prompt)
+
         max_tokens = max_tokens or self._cfg.max_tokens
-        memo_answer = self._memo_get(prompt)
-        if memo_answer is not None:
-            self._ctx.push("assistant", memo_answer)
-            return memo_answer
-        # marks
+        self._system_hint = system_hint or ""
+
+        # ── Profiler: inicia sessão de medição ─────────────────────────
+        prof = self._prof
+        if prof is not None:
+            prof.begin(
+                query_chars       = len(prompt),
+                system_hint_chars = len(self._system_hint),
+                token_hint        = token_hint,
+            )
+
+        # ── load_check ─────────────────────────────────────────────────
+        if prof is not None:
+            with prof.span("load_check"):
+                self._ensure_loaded()
+        else:
+            self._ensure_loaded()
+
         t_start = time.perf_counter()
-        # optional: mark model load time elsewhere if needed
-        # prompt eval isn't synchronous in llama.cpp — but keep a metric for completeness
-        t_prompt_eval_start = time.perf_counter()
-        built = self._build_prompt()
-        t_prompt_eval_end = time.perf_counter()
-        t_gen_start = time.perf_counter()
-        resp = self._call_engine(built, max_tokens)
-        t_gen_end = time.perf_counter()
-        text = resp["text"]
-        usage = resp.get("usage", {})
-        # computed metrics
-        infer_elapsed = t_gen_end - t_gen_start
-        prompt_eval = t_prompt_eval_end - t_prompt_eval_start
-        total_elapsed = time.perf_counter() - t_start
-        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
-        total_tokens = int(usage.get("total_tokens", prompt_tokens + completion_tokens))
-        tokens_per_second = 0.0
-        if infer_elapsed > 0:
-            tokens_per_second = completion_tokens / infer_elapsed
-        # push assistant turn and return
+
+        # ── memo_lookup ────────────────────────────────────────────────
+        memo_hit = False
+        if prof is not None:
+            with prof.span("memo_lookup"):
+                memo_answer = self._memo_get(prompt)
+        else:
+            memo_answer = self._memo_get(prompt)
+
+        # ── ctx_push (com active_window dinâmico) ─────────────────────
+        effective_window = self._ctx._max
+        if token_hint is not None and token_hint > 0:
+            needed   = token_hint + max_tokens + 32
+            effective_window = max(32, min(self._ctx._max, needed))
+            old_max  = self._ctx._max
+            self._ctx._max = effective_window
+            if prof is not None:
+                with prof.span("ctx_push"):
+                    self._ctx.push("user", prompt)
+            else:
+                self._ctx.push("user", prompt)
+            self._ctx._max = old_max
+        else:
+            if prof is not None:
+                with prof.span("ctx_push"):
+                    self._ctx.push("user", prompt)
+            else:
+                self._ctx.push("user", prompt)
+
+        if memo_answer is not None:
+            memo_hit = True
+            self._ctx.push("assistant", memo_answer)
+            if prof is not None:
+                prof.finish(
+                    usage               = {"prompt_tokens": 0, "completion_tokens": 0},
+                    active_window_used  = effective_window,
+                    active_window_cfg   = self._cfg.active_window,
+                    context_turns       = len(self._ctx.get_turns()),
+                    memo_hit            = True,
+                    hw                  = {"n_ctx": self._cfg.n_ctx,
+                                           "n_threads": self._cfg.n_threads,
+                                           "n_gpu_layers": self._cfg.n_gpu_layers},
+                )
+            return memo_answer
+
+        # ── prompt_build ───────────────────────────────────────────────
+        if prof is not None:
+            with prof.span("prompt_build"):
+                built = self._build_prompt()
+        else:
+            built = self._build_prompt()
+        self._system_hint = ""
+
+        # ── llm_call ───────────────────────────────────────────────────
+        if prof is not None:
+            with prof.span("llm_call"):
+                resp = self._call_engine(built, max_tokens)
+        else:
+            resp = self._call_engine(built, max_tokens)
+
+        # ── text_parse ─────────────────────────────────────────────────
+        if prof is not None:
+            with prof.span("text_parse"):
+                text  = resp["text"]
+                usage = resp.get("usage", {})
+        else:
+            text  = resp["text"]
+            usage = resp.get("usage", {})
+
         if text is None or not text.strip():
             raise RuntimeError("Modelo retornou resposta vazia.")
+
+        # computed metrics (mantidos para telemetria existente)
+        t_end             = time.perf_counter()
+        infer_elapsed     = t_end - t_start
+        prompt_tokens     = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        total_tokens      = int(usage.get("total_tokens", prompt_tokens + completion_tokens))
+        tokens_per_second = round(completion_tokens / infer_elapsed, 3) if infer_elapsed > 0 else 0.0
+
         self._ctx.push("assistant", text)
-        self._memo_put(prompt, text)
-        # telemetry payload (consistent schema)
+
+        # ── memo_store ─────────────────────────────────────────────────
+        if prof is not None:
+            with prof.span("memo_store"):
+                self._memo_put(prompt, text)
+        else:
+            self._memo_put(prompt, text)
+
+        # ── Profiler: finish ───────────────────────────────────────────
+        if prof is not None:
+            prof.finish(
+                usage               = usage,
+                prompt_built_chars  = len(built),
+                active_window_used  = effective_window,
+                active_window_cfg   = self._cfg.active_window,
+                context_turns       = len(self._ctx.get_turns()),
+                memo_hit            = memo_hit,
+                hw                  = {
+                    "n_ctx":        self._cfg.n_ctx,
+                    "n_threads":    self._cfg.n_threads,
+                    "n_gpu_layers": self._cfg.n_gpu_layers,
+                },
+            )
+        # ── Telemetria legada (direct_runtime.jsonl) ──────────────────
         telemetry = {
             "mode": "direct",
             "model": self._cfg.model_path.name,
@@ -350,10 +472,10 @@ class SiCDoxBridge:
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
-            "prompt_eval_s": round(prompt_eval, 3),
+            "prompt_eval_s": 0.0,
             "infer_s": round(infer_elapsed, 3),
-            "total_s": round(total_elapsed, 3),
-            "tokens_per_second": round(tokens_per_second, 3),
+            "total_s": round(infer_elapsed, 3),
+            "tokens_per_second": tokens_per_second,
             "context_turns": len(self._ctx.get_turns()),
             "max_tokens": max_tokens,
             "system_prompt": self._cfg.system_prompt,
@@ -361,12 +483,10 @@ class SiCDoxBridge:
             "min_p": self._cfg.min_p,
             "temperature": self._cfg.temperature,
             "llm_call_ms": resp.get("llm_call_ms"),
-        } 
-        # "": self._cfg.,
+        }
         try:
             record_direct(telemetry)
         except Exception:
-            # never fail user flow: telemetry write must be fail-silent
             pass
         return text
     def _log_runtime(self, data: dict):
@@ -506,13 +626,20 @@ class SiCDoxBridge:
         self._load_time = time.monotonic()
         
     def _build_prompt(self) -> str:
-
         turns = self._ctx._view_turns()
-
         parts = []
         parts_append = parts.append
 
-        parts_append(self._system_prefix)
+        # System turn: prompt base + hint da lousa (se houver)
+        if getattr(self, "_system_hint", ""):
+            parts_append(
+                "<|im_start|>system\n"
+                + self._cfg.system_prompt
+                + "\n" + self._system_hint
+                + "<|im_end|>\n"
+            )
+        else:
+            parts_append(self._system_prefix)
 
         for t in turns:
             parts_append("<|im_start|>")
@@ -522,7 +649,6 @@ class SiCDoxBridge:
             parts_append("<|im_end|>\n")
 
         parts_append("<|im_start|>assistant\n")
-
         return "".join(parts)
         
     def _call_engine(self, prompt: str, max_tokens: int) -> dict:

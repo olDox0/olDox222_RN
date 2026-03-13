@@ -33,6 +33,8 @@ import time
 from pathlib import Path
 from typing import Iterator
 
+from engine.tools.inverted_index import InvertedIndexBuilder, InvertedIndexSearcher
+
 ZIM_DIR   = Path("data/zim")
 INDEX_DIR = Path("data/index")
 
@@ -369,16 +371,6 @@ def _iter_zim_entries(
                 total_error += 1
                 continue
 
-        if verbose:
-            print(
-                f"  [ZIM] Resultado: {total_yielded} artigos | "
-                f"{total_redirect} redirects | "
-                f"{total_non_html} não-HTML | "
-                f"{total_empty} vazios | "
-                f"{total_error} erros",
-                flush=True,
-            )
-
 
 # ---------------------------------------------------------------------------
 # VULCAN BUILD (Indexador Tokenizado)
@@ -396,6 +388,9 @@ def build_index(zim_path: str, source_id: "str | None" = None, batch_size: int =
     db_path = str(_source_id_to_db(source_id))
 
     if verbose: print(f"\n  [SiCDox BUILD] Construindo Banco Tokenizado...\n  DB: {db_path}", flush=True)
+    # inicializa o builder do índice invertido no escopo correto
+    inv_builder = InvertedIndexBuilder()
+
     t0 = time.monotonic()
 
     con = sqlite3.connect(db_path, isolation_level=None)
@@ -407,14 +402,15 @@ def build_index(zim_path: str, source_id: "str | None" = None, batch_size: int =
     
     con.execute("CREATE TABLE content_pool (hash TEXT PRIMARY KEY, token_blob BLOB)")
     con.execute("CREATE TABLE pages (id INTEGER PRIMARY KEY, title TEXT, path TEXT, content_hash TEXT)")
-    con.execute("CREATE VIRTUAL TABLE articles_fts USING fts5(title, body, content='', content_rowid='id', tokenize='unicode61 remove_diacritics 1')")
+#    con.execute("CREATE VIRTUAL TABLE articles_fts USING fts5(title, body, content='', content_rowid='id', tokenize='unicode61 remove_diacritics 1')")
     con.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
     con.execute("INSERT INTO meta VALUES ('source_id', ?)", (source_id,))
     con.execute("INSERT INTO meta VALUES ('sicdox_ver', '6.0')",)
     con.execute("COMMIT")
 
     count = deduplicated = 0
-    buf_pages, buf_fts, seen_hashes = [],[], set()
+    buf_pages, seen_hashes = [], set()
+#    buf_pages, buf_fts, seen_hashes = [],[], set()
 
     con.execute("BEGIN")
     for title, path, html in _iter_zim_entries(zim_path, verbose=verbose):
@@ -425,6 +421,10 @@ def build_index(zim_path: str, source_id: "str | None" = None, batch_size: int =
         try: payload = TokenizerBridge.text_to_bytes(body)
         except Exception: continue
 
+        # Tokens para índice invertido
+        tokens = array.array("i")
+        tokens.frombytes(payload)
+
         h = hashlib.md5(payload).hexdigest()
 
         if h not in seen_hashes:
@@ -434,22 +434,39 @@ def build_index(zim_path: str, source_id: "str | None" = None, batch_size: int =
 
         count += 1
         buf_pages.append((count, title, path, h))
-        buf_fts.append((count, title, body)) # SQLite FTS5 precisa do texto puro para a árvore de busca
+#        buf_fts.append((count, title, body)) # SQLite FTS5 precisa do texto puro para a árvore de busca
+
+        # adiciona ao inverted index
+        inv_builder.add_document(count, tokens)
 
         if len(buf_pages) >= batch_size:
             con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
-            con.executemany("INSERT INTO articles_fts (rowid, title, body) VALUES (?,?,?)", buf_fts)
+#            con.executemany("INSERT INTO articles_fts (rowid, title, body) VALUES (?,?,?)", buf_fts)
             con.execute("COMMIT")
             con.execute("BEGIN")
-            buf_pages.clear(); buf_fts.clear()
+            buf_pages.clear()
+#            buf_fts.clear()
             if verbose: print(f"  [BUILD] {count} artigos tokenizados...", end="\r", flush=True)
 
     if buf_pages:
         con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
-        con.executemany("INSERT INTO articles_fts (rowid, title, body) VALUES (?,?,?)", buf_fts)
+#        con.executemany("INSERT INTO articles_fts (rowid, title, body) VALUES (?,?,?)", buf_fts)
     con.execute("COMMIT")
-    con.execute("INSERT INTO articles_fts(articles_fts) VALUES('optimize')")
+#    con.execute("INSERT INTO articles_fts(articles_fts) VALUES('optimize')")
     con.close()
+
+    # ------------------------------------------------
+    # Finaliza índice invertido
+    # ------------------------------------------------
+
+    if verbose:
+        print("\n  [INDEX] Finalizando Inverted Index...")
+
+    inv_builder.finalize()
+
+    inv_dir = INDEX_DIR / source_id
+
+    inv_builder.write(inv_dir)
 
     if verbose: print(f"\n  [BUILD] Concluído: {count} matrizes (Dedup: {deduplicated}) em {round(time.monotonic()-t0, 1)}s")
     return Path(db_path)
@@ -469,13 +486,23 @@ def search_local(query: str, source_id: str, limit: int = 3) -> "list[LocalResul
         con = sqlite3.connect(db_path, check_same_thread=False)
         con.execute("PRAGMA query_only=1")
 
-        rows = con.execute("SELECT rowid FROM articles_fts WHERE articles_fts MATCH ? ORDER BY rank LIMIT ?", (query, limit)).fetchall()
-        if not rows:
-            prefix = " ".join(w + "*" for w in query.split() if len(w) > 2)
-            if prefix: rows = con.execute("SELECT rowid FROM articles_fts WHERE articles_fts MATCH ? ORDER BY rank LIMIT ?", (prefix, limit)).fetchall()
+        # -----------------------------------------
+        # Busca via Inverted Index
+        # -----------------------------------------
 
-        results: list[LocalResult] =[]
-        for (doc_id,) in rows:
+        inv_dir = INDEX_DIR / source_id
+        searcher = InvertedIndexSearcher(inv_dir)
+
+        query_tokens = TokenizerBridge.get_vocab().tokenize(
+            query.encode("utf-8"),
+            add_bos=False
+        )
+
+        doc_ids = searcher.search(query_tokens, limit=limit)
+
+        results: list[LocalResult] = []
+
+        for doc_id in doc_ids:
             row = con.execute("SELECT p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE p.id = ?", (doc_id,)).fetchone()
             if row:
                 title, path, blob = row

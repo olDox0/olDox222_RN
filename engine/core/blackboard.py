@@ -1,98 +1,295 @@
 # -*- coding: utf-8 -*-
-"""Sessão de lousa (blackboard) para hipóteses e relações causais."""
+"""
+ORN — Lousa de Raciocínio (DoxoBoard / Hades)
+
+Blackboard clássico: espaço de trabalho ATIVO por query.
+Fontes de conhecimento depositam rascunhos → board sintetiza
+um bloco estruturado → bloco guia a geração → sessão encerrada.
+
+NÃO é histórico. NÃO persiste respostas entre sessões.
+NÃO injeta Q&A do passado no contexto.
+
+OSL-3:  Estado de sessão descartado em close_session() — sem acúmulo.
+OSL-4:  open / post / build / close — cada método faz uma coisa.
+OSL-5.1: Papéis de rascunho validados contra ROLES conhecidos.
+OSL-7:  build_synthesis_block() retorna "" se a sessão estiver vazia.
+OSL-18: stdlib only.
+God: Hades — guarda o que é útil agora; descarta o que já passou.
+
+Fluxo por query:
+  Executive._run_think()
+    ├─ board.open_session(query)          # abre workspace limpo
+    ├─ board.post_draft(...)              # deposita rascunhos
+    ├─ prompt = board.build_synthesis_block() + query
+    ├─ bridge.ask(prompt)
+    └─ board.close_session()             # descarta tudo
+"""
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Literal
 
 
-@dataclass
-class Hypothesis:
-    source: str
+# ---------------------------------------------------------------------------
+# Papéis de rascunho — o que cada draft representa no raciocínio
+# ---------------------------------------------------------------------------
+
+DraftRole = Literal[
+    "decomp",       # decomposição da query em sub-aspectos
+    "constraint",   # restrição de formato ou escopo da resposta
+    "evidence",     # fato ou dado de suporte já conhecido
+    "angle",        # ângulo de abordagem sugerido
+    "counter",      # contra-argumento ou ressalva a considerar
+    "format",       # instrução de formato para o output
+]
+
+_VALID_ROLES: frozenset[str] = frozenset(
+    {"decomp", "constraint", "evidence", "angle", "counter", "format"}
+)
+
+
+# ---------------------------------------------------------------------------
+# Unidade de rascunho
+# ---------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class Draft:
+    """Um rascunho depositado por uma fonte de conhecimento.
+
+    Attributes:
+        source:  Quem depositou (ex: "decomposer", "context_file", "user_hint").
+        role:    Papel no raciocínio — ver DraftRole.
+        content: Conteúdo do rascunho (texto curto).
+        weight:  Importância relativa; influencia ordem no bloco (0.0–1.0).
+    """
+    source:  str
+    role:    str
     content: str
-    confidence: float = 1.0
+    weight:  float = 1.0
 
+
+# ---------------------------------------------------------------------------
+# DoxoBoard — lousa de raciocínio
+# ---------------------------------------------------------------------------
 
 class DoxoBoard:
-    """Blackboard simples com persistência local para melhorar respostas."""
+    """Workspace de raciocínio por query.
 
-    def __init__(self, store_path: Path | None = None, max_items: int = 64) -> None:
-        self._store_path = store_path or Path("telemetry") / "blackboard_session.json"
-        self._max_items = max(8, int(max_items))
-        self._hypotheses: list[Hypothesis] = []
-        self._causal_links: list[tuple[str, str]] = []
-        self._load()
+    Cada chamada a open_session() apaga a sessão anterior.
+    Os drafts acumulados em post_draft() são sintetizados por
+    build_synthesis_block() num bloco de texto injetado no prompt.
+    close_session() descarta tudo — não há persistência de conteúdo.
 
-    def post_hypothesis(self, source: str, content: str, confidence: float = 1.0) -> None:
-        if not source or not content:
-            raise ValueError("source e content são obrigatórios.")
-        clamped = max(0.0, min(1.0, float(confidence)))
-        self._hypotheses.append(Hypothesis(source.strip(), content.strip(), clamped))
-        self._trim()
-        self._save()
+    Args:
+        max_drafts: Limite de drafts por sessão (evita crescimento sem controle).
+    """
 
-    def add_causal_link(self, causa: str, efeito: str) -> None:
-        if not causa or not efeito:
-            raise ValueError("causa e efeito são obrigatórios.")
-        self._causal_links.append((causa.strip(), efeito.strip()))
-        if len(self._causal_links) > self._max_items:
-            self._causal_links = self._causal_links[-self._max_items :]
-        self._save()
+    _MAX_CONTENT: int = 160   # chars máximos por draft no bloco final
+    _SECTION_SEP: str = "\n"
 
-    def get_summary(self) -> dict[str, Any]:
+    def __init__(self, max_drafts: int = 16) -> None:
+        self._max_drafts: int = max(4, int(max_drafts))
+        self._query:      str = ""
+        self._drafts:     list[Draft] = []
+        self._open:       bool = False
+
+    # ------------------------------------------------------------------
+    # Ciclo de vida da sessão
+    # ------------------------------------------------------------------
+
+    def open_session(self, query: str) -> None:
+        """Inicia um workspace limpo para a query.
+
+        OSL-5.1: query vazia é aceita (pode ser completada depois).
+        Chama close_session() implicitamente para garantir limpeza.
+
+        Args:
+            query: Texto da query que será processada.
+        """
+        self.close_session()
+        self._query = query.strip() if query else ""
+        self._open  = True
+
+    def close_session(self) -> None:
+        """Descarta todos os drafts da sessão corrente.
+
+        OSL-3: determinístico — não depende de GC nem de TTL.
+        Idempotente: seguro chamar sem sessão aberta.
+        """
+        self._query  = ""
+        self._drafts = []
+        self._open   = False
+
+    # ------------------------------------------------------------------
+    # Depósito de rascunhos (fontes de conhecimento)
+    # ------------------------------------------------------------------
+
+    def post_draft(
+        self,
+        source:  str,
+        content: str,
+        role:    str = "angle",
+        weight:  float = 1.0,
+    ) -> None:
+        """Deposita um rascunho de raciocínio na lousa.
+
+        OSL-5.1: valida role, source e content antes de aceitar.
+        Limita ao max_drafts mais pesados quando cheio.
+
+        Args:
+            source:  Identificador da fonte (ex: "decomposer", "file_ctx").
+            content: Texto curto — será truncado a _MAX_CONTENT chars.
+            role:    Papel do rascunho — ver DraftRole.
+            weight:  Importância (0.0–1.0). Padrão 1.0.
+
+        Raises:
+            RuntimeError: Se chamado sem open_session() ativo.
+            ValueError:   Se source, content ou role forem inválidos.
+        """
+        if not self._open:
+            raise RuntimeError(
+                "post_draft() chamado sem sessão aberta. "
+                "Chame open_session() primeiro."
+            )
+        if not source or not source.strip():
+            raise ValueError("source não pode ser vazio.")
+        if not content or not content.strip():
+            raise ValueError("content não pode ser vazio.")
+        role = role.strip().lower()
+        if role not in _VALID_ROLES:
+            raise ValueError(
+                f"role inválido: '{role}'. "
+                f"Válidos: {sorted(_VALID_ROLES)}"
+            )
+
+        draft = Draft(
+            source  = source.strip(),
+            role    = role,
+            content = content.strip()[: self._MAX_CONTENT * 2],   # pré-trunca
+            weight  = max(0.0, min(1.0, float(weight))),
+        )
+        self._drafts.append(draft)
+
+        # Mantém apenas os max_drafts mais relevantes (por weight, FIFO como desempate)
+        if len(self._drafts) > self._max_drafts:
+            self._drafts.sort(key=lambda d: d.weight, reverse=True)
+            self._drafts = self._drafts[: self._max_drafts]
+
+    # ------------------------------------------------------------------
+    # Síntese — monta bloco para injetar no prompt
+    # ------------------------------------------------------------------
+
+    def build_synthesis_block(self, compact: bool = False) -> str:
+        """Sintetiza os drafts em um bloco estruturado para o prompt.
+
+        OSL-7: retorna "" se a sessão estiver vazia — chamador não precisa
+               verificar nada especial, pode concatenar diretamente.
+
+        O bloco é organizado por role na ordem de prioridade:
+          constraint → decomp → evidence → angle → counter → format
+        Dentro de cada role, ordenado por weight (maior primeiro).
+
+        Args:
+            compact: Se True, usa formato ultra-curto para economizar tokens.
+                     Modo normal  → ~35–50 tokens de overhead.
+                     Modo compacto → ~8–14 tokens de overhead.
+
+        Returns:
+            Bloco de texto pronto para ser prefixado ao prompt,
+            ou "" se não houver drafts.
+        """
+        if not self._drafts:
+            return ""
+
+        role_order = ["constraint", "decomp", "evidence", "angle", "counter", "format"]
+        grouped: dict[str, list[Draft]] = {r: [] for r in role_order}
+        for d in self._drafts:
+            if d.role in grouped:
+                grouped[d.role].append(d)
+
+        if compact:
+            return self._build_compact(grouped, role_order)
+
+        sections: list[str] = []
+        for role in role_order:
+            items = sorted(grouped[role], key=lambda d: d.weight, reverse=True)
+            if not items:
+                continue
+            label = _ROLE_LABELS.get(role, role.upper())
+            lines = [f"  - {d.content[: self._MAX_CONTENT]}" for d in items]
+            sections.append(f"[{label}]\n" + "\n".join(lines))
+
+        if not sections:
+            return ""
+
+        body = self._SECTION_SEP.join(sections)
+        return f"[LOUSA]\n{body}\n[/LOUSA]\n\n"
+
+    def _build_compact(
+        self,
+        grouped: dict[str, list[Draft]],
+        role_order: list[str],
+    ) -> str:
+        """Formato compacto: uma linha por role, tags de 1 char.
+
+        Exemplo de saída:
+            [R]PT.conciso. [D]explicar. [E]arquivo:foo.py.
+
+        Mantém apenas o draft de maior weight por role.
+        Trunca cada item a 60 chars para conter o overhead.
+        """
+        _SHORT: dict[str, str] = {
+            "constraint": "R",   # Restrição
+            "decomp":     "D",   # Decomposição
+            "evidence":   "E",   # Evidência
+            "angle":      "A",   # Ângulo
+            "counter":    "C",   # Counter
+            "format":     "F",   # Formato
+        }
+        _MAX_COMPACT = 60
+        parts: list[str] = []
+        for role in role_order:
+            items = sorted(grouped[role], key=lambda d: d.weight, reverse=True)
+            if not items:
+                continue
+            best = items[0].content[:_MAX_COMPACT].replace("\n", " ")
+            parts.append(f"[{_SHORT[role]}]{best}")
+
+        if not parts:
+            return ""
+        return " ".join(parts) + "\n"
+
+    # ------------------------------------------------------------------
+    # Introspecção (OSL-12)
+    # ------------------------------------------------------------------
+
+    def session_info(self) -> dict:
+        """Retorna estado da sessão corrente para diagnóstico / `orn brain`.
+
+        Returns:
+            Dict com query, total de drafts e contagem por role.
+        """
+        counts: dict[str, int] = {}
+        for d in self._drafts:
+            counts[d.role] = counts.get(d.role, 0) + 1
         return {
-            "hypotheses": [
-                {"source": h.source, "content": h.content, "confidence": h.confidence}
-                for h in self._hypotheses
-            ],
-            "causal_links": list(self._causal_links),
-            "items": len(self._hypotheses),
+            "open":         self._open,
+            "query_preview": self._query[:80] if self._query else "",
+            "draft_count":   len(self._drafts),
+            "by_role":       counts,
         }
 
-    def build_context_block(self, query: str, limit: int = 4) -> str:
-        """Monta bloco curto para injetar no prompt da IA."""
-        if not self._hypotheses:
-            return ""
-        q = " ".join(query.lower().split())
-        scored: list[tuple[float, Hypothesis]] = []
-        for h in self._hypotheses:
-            overlap = 0.25 if any(tok in h.content.lower() for tok in q.split()[:6]) else 0.0
-            scored.append((h.confidence + overlap, h))
-        best = [h for _, h in sorted(scored, key=lambda it: it[0], reverse=True)[: max(1, limit)]]
-        bullets = "\n".join(f"- ({h.source}) {h.content[:120]}" for h in best)
-        return f"[BLACKBOARD]\nMemórias relevantes:\n{bullets}\n[/BLACKBOARD]\n"
 
-    def clear(self) -> None:
-        self._hypotheses.clear()
-        self._causal_links.clear()
-        self._save()
+# ---------------------------------------------------------------------------
+# Rótulos legíveis para o bloco de síntese
+# ---------------------------------------------------------------------------
 
-    def _trim(self) -> None:
-        if len(self._hypotheses) > self._max_items:
-            self._hypotheses = self._hypotheses[-self._max_items :]
-
-    def _load(self) -> None:
-        try:
-            if not self._store_path.exists():
-                return
-            payload = json.loads(self._store_path.read_text(encoding="utf-8"))
-            self._hypotheses = [
-                Hypothesis(str(h.get("source", "?")), str(h.get("content", "")), float(h.get("confidence", 1.0)))
-                for h in payload.get("hypotheses", [])
-                if h.get("content")
-            ]
-            self._causal_links = [tuple(x) for x in payload.get("causal_links", []) if isinstance(x, list) and len(x) == 2]
-            self._trim()
-        except Exception:
-            self._hypotheses = []
-            self._causal_links = []
-
-    def _save(self) -> None:
-        try:
-            self._store_path.parent.mkdir(parents=True, exist_ok=True)
-            self._store_path.write_text(json.dumps(self.get_summary(), ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+_ROLE_LABELS: dict[str, str] = {
+    "constraint": "RESTRIÇÕES",
+    "decomp":     "DECOMPOSIÇÃO",
+    "evidence":   "EVIDÊNCIAS",
+    "angle":      "ÂNGULOS",
+    "counter":    "RESSALVAS",
+    "format":     "FORMATO",
+}
