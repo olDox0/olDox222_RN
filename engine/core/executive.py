@@ -66,6 +66,7 @@ class SiCDoxExecutive:
     """
 
     def __init__(self) -> None:
+        self._infer_queue = None
         self._bridge:    Any = None   # SiCDoxBridge  (Hefesto)
         self._board:     Any = None   # DoxoBoard     (Hades)
         self._validator: Any = None   # SiCDoxValidator (Anúbis)
@@ -109,16 +110,34 @@ class SiCDoxExecutive:
                 success=False, intent=intent,
                 errors=[f"[TODO] {exc}"],
             )
+            import sys as _dox_sys, os as _dox_os
+            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
+            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
+            line_n = exc_tb.tb_lineno if exc_tb else 0
+            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033")
+
         except FileNotFoundError as exc:
             result = GoalResult(
                 success=False, intent=intent,
                 errors=[f"[ARQUIVO] {exc}"],
             )
+            import sys as _dox_sys, os as _dox_os
+            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
+            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
+            line_n = exc_tb.tb_lineno if exc_tb else 0
+            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033")
+
         except Exception as exc:  # OSL-15: captura controlada
             result = GoalResult(
                 success=False, intent=intent,
                 errors=[f"[ERRO INTERNO] {type(exc).__name__}: {exc}"],
             )
+            import sys as _dox_sys, os as _dox_os
+            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
+            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
+            line_n = exc_tb.tb_lineno if exc_tb else 0
+            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033")
+
 
         result.metadata["elapsed_s"] = round(time.monotonic() - t_start, 3)
         return result
@@ -193,7 +212,21 @@ class SiCDoxExecutive:
         board     = self._get_board()
 
         # 1. Workspace limpo para esta query
-        board.open_session(prompt)
+        _session_opened = False
+        try:
+            board.open_session(prompt)
+            _session_opened = True
+        except Exception as exc:
+            return GoalResult(
+                success=False, intent="think",
+                errors=[f"[BOARD] Falha ao abrir sessão: {exc}"],
+            )
+            import sys as _dox_sys, os as _dox_os
+            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
+            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
+            line_n = exc_tb.tb_lineno if exc_tb else 0
+            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033")
+
 
         try:
             # 2. Popula lousa com rascunhos de raciocínio (rule-based, sem LLM)
@@ -218,11 +251,11 @@ class SiCDoxExecutive:
             #    prompt    → user turn puro (apenas a query)
             token_hint = len((synthesis or "") + prompt) // 3 + 30
             max_tokens = context.get("max_tokens")
-            output = bridge.ask(
+            output = self._infer_queue.submit(
                 prompt,
-                max_tokens   = max_tokens,
-                token_hint   = token_hint,
-                system_hint  = synthesis,
+                max_tokens,
+                token_hint,
+                synthesis,
             )
 
             # 6. Validação (OSL-7)
@@ -236,15 +269,26 @@ class SiCDoxExecutive:
             # Captura estado da lousa antes de descartar (vai para metadata/telemetria)
             board_snapshot = board.session_info()
             board_snapshot["token_hint"]  = token_hint
-            board_snapshot["system_hint"] = bool(synthesis)   # registra se houve síntese
+            board_snapshot["system_hint"] = bool(synthesis)
 
             result = GoalResult(success=True, intent="think", output=output)
             result.metadata["board"] = board_snapshot
             return result
 
         finally:
-            # 7. OSL-3: descarta workspace — sem acúmulo entre queries
-            board.close_session()
+            # 7. OSL-3: descarta workspace — sem acúmulo entre queries.
+            # O guard _session_opened evita chamar close_session() se open_session()
+            # falhou, o que poderia causar erro ao fechar uma sessão inexistente.
+            if _session_opened:
+                try:
+                    board.close_session()
+                except Exception as e:
+                    import sys as _dox_sys, os as _dox_os
+                    exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
+                    f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
+                    line_n = exc_tb.tb_lineno if exc_tb else 0
+                    print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033")
+
 
     # ------------------------------------------------------------------
     # Fases futuras — stubs com NotImplementedError descritivo
@@ -274,10 +318,14 @@ class SiCDoxExecutive:
     # Loaders lazy (OSL-3)
     # ------------------------------------------------------------------
 
-    def _get_bridge(self) -> Any:
+    def _get_bridge(self):
         if self._bridge is None:
-            from engine.core.llm_bridge import SiCDoxBridge   # noqa: PLC0415
+            from engine.core.llm_bridge import SiCDoxBridge
+            from engine.runtime.infer_queue import InferQueue
+
             self._bridge = SiCDoxBridge()
+            self._infer_queue = InferQueue(self._bridge)
+
         return self._bridge
 
     def _get_board(self) -> Any:
@@ -309,6 +357,19 @@ class SiCDoxExecutive:
 # Utilitários internos (OSL-18: stdlib only)
 # ---------------------------------------------------------------------------
 
+# Constantes de decomposição movidas para módulo — evitam realocação a cada chamada.
+_LANG_MAP: tuple[tuple[str, str], ...] = (
+    ("python", "python"), ("py ",    "python"),
+    ("c++",    "c++"),    ("cpp",    "c++"),
+    (" c ",    "C"),      ("em c,",  "C"), ("em c.", "C"),
+    ("batch",  "batch"),  ("bat ",   "batch"),
+)
+_KW_EXPLAIN  = ("explique", "explica", "o que é", "como funciona", "define")
+_KW_GENERATE = ("crie", "escreva", "gere", "implemente", "faça", "cria")
+_KW_FIX      = ("corrija", "conserte", "bug", "erro", "fix")
+_KW_LIST     = ("liste", "quais são", "enumere", "mostre os")
+
+
 def _decompose_query(board: Any, prompt: str, context: dict) -> None:
     """Popula a lousa com rascunhos de raciocínio baseados em regras.
 
@@ -331,12 +392,6 @@ def _decompose_query(board: Any, prompt: str, context: dict) -> None:
     )
 
     # Detecção de linguagem de programação
-    _LANG_MAP: list[tuple[str, str]] = [
-        ("python", "python"), ("py ",    "python"),
-        ("c++",    "c++"),    ("cpp",    "c++"),
-        (" c ",    "C"),      ("em c,",  "C"), ("em c.", "C"),
-        ("batch",  "batch"),  ("bat ",   "batch"),
-    ]
     for kw, lang in _LANG_MAP:
         if kw in p:
             board.post_draft(
@@ -348,28 +403,28 @@ def _decompose_query(board: Any, prompt: str, context: dict) -> None:
             break
 
     # Tipo de tarefa (texto curto — o modelo entende diretivas concisas)
-    if any(kw in p for kw in ("explique", "explica", "o que é", "como funciona", "define")):
+    if any(kw in p for kw in _KW_EXPLAIN):
         board.post_draft(
             source  = "decomposer",
             content = "explicar.",
             role    = "decomp",
             weight  = 0.85,
         )
-    elif any(kw in p for kw in ("crie", "escreva", "gere", "implemente", "faça", "cria")):
+    elif any(kw in p for kw in _KW_GENERATE):
         board.post_draft(
             source  = "decomposer",
             content = "gerar artefato.",
             role    = "decomp",
             weight  = 0.85,
         )
-    elif any(kw in p for kw in ("corrija", "conserte", "bug", "erro", "fix")):
+    elif any(kw in p for kw in _KW_FIX):
         board.post_draft(
             source  = "decomposer",
             content = "corrigir:causa+fix.",
             role    = "decomp",
             weight  = 0.85,
         )
-    elif any(kw in p for kw in ("liste", "quais são", "enumere", "mostre os")):
+    elif any(kw in p for kw in _KW_LIST):
         board.post_draft(
             source  = "decomposer",
             content = "lista numerada.",

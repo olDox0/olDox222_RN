@@ -18,7 +18,33 @@ from pathlib import Path
 from functools import wraps
 from dataclasses import dataclass, field
 from collections import deque
+from contextlib import contextmanager
 
+
+@contextmanager
+def orn_span(name: str, category: str = "exec", critical: bool = False):
+    """Context manager para perfilar blocos internos (ex: loops de compressão)."""
+    t0 = time.perf_counter()
+    failed = False
+    try:
+        yield
+    except Exception:
+        failed = True
+        raise
+    finally:
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        try:
+            GLOBAL_TELEMETRY.observe(
+                name,
+                elapsed_ms,
+                category=category,
+                critical=critical,
+                is_cold=False,
+                failed=failed,
+            )
+        except Exception:
+            pass
+            
 
 @dataclass(slots=True)
 class ProbeStats:

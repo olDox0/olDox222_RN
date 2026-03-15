@@ -694,15 +694,14 @@ def _decide_search(prompt: str) -> str | None:
     OSL-4: função curta, uma responsabilidade.
     """
     decision_prompt = (
-        "You are a search decision engine.\n"
-        "Read the question and decide:\n"
-        "- If it requires current, external or specific factual data: "
-        "respond ONLY with SEARCH:<term>\n"
-        "- If answerable from general knowledge: respond ONLY with NO\n\n"
-        "Rules:\n"
-        "- SEARCH:<term> must be 1-3 words max\n"
-        "- No explanation, no punctuation, no extra text\n\n"
-        f"Question: {prompt.strip()}"
+        "Você é um motor de decisão de busca.\n"
+        "Leia a pergunta e decida:\n"
+        "- Se precisar de dados externos, fatos específicos ou pesquisa: responda APENAS com BUSCA:<termo>\n"
+        "- Se for conhecimento geral de programação: responda APENAS com NO\n\n"
+        "Regras:\n"
+        "- BUSCA:<termo> deve ter no máximo 3 palavras\n"
+        "- Nenhuma explicação extra\n\n"
+        f"Pergunta: {prompt.strip()}"
     )
     resp = _query_infer_raw(
         json.dumps({"prompt": decision_prompt, "max_tokens": 20}).encode() + b"\n"
@@ -720,12 +719,14 @@ def _parse_search_decision(text: str) -> str | None:
     if not text:
         return None
     normalized = text.strip().lower()
-    if not normalized.startswith("search:"):
-        return None
-    term = text.strip()[len("search:"):].strip()
-    if not term or len(term.split()) > 5:
-        return None
-    return term
+    # Aceitar as traduções prováveis do Qwen:
+    for prefix in ("search:", "busca:", "pesquisar:", "buscar:", "pesquisa:"):
+        if normalized.startswith(prefix):
+            term = text.strip()[len(prefix):].strip()
+            if not term or len(term.split()) > 5:
+                return None
+            return term
+    return None
 
 
 def _run_crawler(query: str) -> tuple[str, str, str]:
@@ -863,7 +864,7 @@ def _query_infer_raw(payload: bytes) -> dict | None:
             s.sendall(payload)
             data = b""
             while True:
-                chunk = s.recv(65536)
+                chunk = s.recv(1048576)  # 1 MB
                 if not chunk:
                     break
                 data += chunk

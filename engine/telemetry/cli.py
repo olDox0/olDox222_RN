@@ -1,5 +1,5 @@
-# engine/telemetry/cli.py
 # -*- coding: utf-8 -*-
+# engine/telemetry/cli.py
 """CLI utilitário para telemetria do ORN."""
 
 from __future__ import annotations
@@ -185,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if payload is None:
         payload, mode = _try_local_runtime(limit=max(1, args.limit))
+        
+    # === NOVA LINHA AQUI ===
+    if payload is not None:
+        _append_vulcan_hotspots(payload)
+
     # Final: se payload ainda None -> sem telemetria
     if payload is None:
         if args.as_json:
@@ -206,6 +211,41 @@ def main(argv: list[str] | None = None) -> int:
         _print_human_status(payload, limit=max(1, args.limit))
     return 0
 
+def _append_vulcan_hotspots(payload: dict) -> None:
+    """Lê telemetria do Vulcan Embedded e mescla nos hotspots nativos do ORN."""
+    try:
+        p = Path("telemetry") / "vulcan_runtime.jsonl"
+        if not p.exists(): return
+        
+        vulcan_agg = {}
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip(): continue
+                data = json.loads(line)
+                stats = data.get("vulcan_stats", {})
+                for fn, st in stats.items():
+                    if fn not in vulcan_agg:
+                        vulcan_agg[fn] = {"calls": 0, "total_ms": 0.0}
+                    vulcan_agg[fn]["calls"] += st.get("hits", 0)
+                    vulcan_agg[fn]["total_ms"] += st.get("total_ms", 0.0)
+        
+        if vulcan_agg:
+            hotspots = payload.setdefault("telemetry_hotspots",[])
+            for fn, st in vulcan_agg.items():
+                calls = st["calls"]
+                total_ms = st["total_ms"]
+                avg_ms = total_ms / calls if calls else 0.0
+                hotspots.append({
+                    "name": f"[⚡VULCAN] {fn}",
+                    "calls": calls,
+                    "avg_ms": avg_ms,
+                    "p95_ms": avg_ms, # fallback
+                    "total_ms": total_ms
+                })
+            # Reordena do mais custoso pro mais leve
+            hotspots.sort(key=lambda x: x.get("total_ms", 0), reverse=True)
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     raise SystemExit(main())

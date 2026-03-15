@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# engine/cli.p
 """
 ORN — CLI (Ártemis)
 Roteamento de comandos. Cada comando instancia o Executive e delega.
@@ -23,8 +24,10 @@ Comandos futuros:
 import os
 import sys
 import json
-from pathlib import Path
+import time
 import click
+
+from pathlib import Path
 
 from engine.ui.display import Display
 from engine.telemetry.runtime import record, system_stats
@@ -47,6 +50,25 @@ def _fmt_ms(value: float) -> str:
 def cli(ctx: click.Context) -> None:
     """ORN — AI CLI para código (Qwen2.5-Coder local)."""
     ctx.ensure_object(dict)
+    ctx.obj['start_time'] = time.perf_counter()
+    try:
+        from doxoade.chronos import chronos_recorder
+        chronos_recorder.start_command(ctx)
+    except ImportError:
+        pass
+
+@cli.result_callback()
+def process_result(result, **kwargs):
+    ctx = click.get_current_context()
+    if ctx.obj and 'start_time' in ctx.obj:
+        try:
+            from doxoade.chronos import chronos_recorder
+            import sys
+            duration_ms = (time.perf_counter() - ctx.obj['start_time']) * 1000
+            exit_code = 0 if sys.exc_info()[0] is None else 1
+            chronos_recorder.end_command(exit_code, duration_ms)
+        except ImportError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -218,12 +240,20 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         total_s = None
 
         try:
-            # tempo de criação (modelo carregado dentro do Executive)
-            t_ml0 = time.perf_counter()
             from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
             ex = SiCDoxExecutive()
-            t_ml1 = time.perf_counter()
-            model_load_s = round(t_ml1 - t_ml0, 3)
+
+            # O Executive é lazy: o modelo só carrega dentro de process_goal.
+            # Medimos model_load_s com um hook: pedimos ao bridge para carregar
+            # antes de process_goal e capturamos o delta.
+            # Fallback: se bridge não expõe loaded_since_s, model_load_s fica None.
+            t_ml0 = time.perf_counter()
+            try:
+                bridge = ex._get_bridge()
+                bridge._ensure_loaded()
+            except Exception:
+                pass
+            model_load_s = round(time.perf_counter() - t_ml0, 3)
 
             try:
                 t_inf0 = time.perf_counter()

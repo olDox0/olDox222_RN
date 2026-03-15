@@ -159,10 +159,10 @@ _session_cache: dict[str, CrawlerResult] = {}
 
 # Mapeamento apelido → source_id real (stem do .db em data/index/)
 # Adicione entradas ao baixar novos ZIMs.
-LOCAL_SOURCES: dict[str, str] = {
-    "wikipedia":     "wikipedia_pt_computer_maxi_2026_01",
-    "stackexchange": "softwareengineering_stackexchange_com_en_all_2026_02",
-}
+#LOCAL_SOURCES: dict[str, str] = {
+#    "wikipedia":     "wikipedia_pt_computer_maxi_2026_01",
+#    "stackexchange": "softwareengineering_stackexchange_com_en_all_2026_02",
+#}
 
 # Máximo de chars de contexto injetado no prompt.
 # N2808: ~0.25 token/char, ~0.75s/token → 400 chars ≈ 75 tokens ≈ 56s prompt eval.
@@ -328,7 +328,7 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
             body_text = ""
 
         if not body_text.strip():
-            snippet
+            return CrawlerResult("stackoverflow", query, error="Corpo vazio")
     except Exception as e:
         import traceback
         print(f"\033[31m ■ Erro: {e}")
@@ -662,6 +662,38 @@ class OrnCrawler:
             return CrawlerResult("none", query,
                 error="requests nao instalado. Execute: pip install requests beautifulsoup4")
 
+        # Nova verificação: Qualquer fonte que termine em "-local" ou seja apenas "local"
+        if source == "local" or source.endswith("-local"):
+            search_local, _ = _get_local_index()
+            if search_local is None:
+                return CrawlerResult(source, query, error="local_index não disponível")
+            
+            # Se ele digitou algo como "quimica-local", extraímos o "quimica"
+            target_src = source.replace("-local", "") if source != "local" else None
+            from pathlib import Path
+            index_dir = Path("data/index")
+            
+            if index_dir.exists():
+                for db_file in sorted(index_dir.glob("*.db")):
+                    src_id = db_file.stem
+                    
+                    # Se o usuário pediu um específico, pula os outros
+                    if target_src and target_src not in src_id:
+                        continue
+                        
+                    results = search_local(query, source_id=src_id, limit=1)
+                    if results and results[0].ok:
+                        ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
+                        return CrawlerResult(
+                            source  = f"{src_id}-local",
+                            query   = query,
+                            title   = results[0].title,
+                            context = ctx,
+                        )
+            
+            return CrawlerResult(source, query, error=f"nada no índice local: {query!r}")
+
+
         if source == "auto":
             return self._auto_search(query, lang)
 
@@ -752,22 +784,25 @@ class OrnCrawler:
         # Busca local primeiro — sem rede, <5ms
         search_local, index_info = _get_local_index()
         if search_local is not None:
-            for alias, src_id in LOCAL_SOURCES.items():
-                info = index_info(src_id)
-                if not info["exists"] or info.get("articles", 0) == 0:
-                    continue
-                results = search_local(query, source_id=src_id, limit=1)
-                if results and results[0].ok:
-                    # 1 resultado, truncado em CTX_MAX_CHARS — controla prompt eval time
-                    ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
-                    cached = CrawlerResult(
-                        source  = f"{src_id}-local",
-                        query   = query,
-                        title   = results[0].title,
-                        context = ctx,
-                    )
-                    _session_cache[f"local:{src_id}:{query}"] = cached
-                    return cached
+            from pathlib import Path
+            index_dir = Path("data/index")
+            if index_dir.exists():
+                # Vasculha todos os bancos locais que existirem
+                for db_file in sorted(index_dir.glob("*.db")):
+                    src_id = db_file.stem
+                    
+                    results = search_local(query, source_id=src_id, limit=1)
+                    if results and results[0].ok:
+                        # Achou em algum ZIM! Retorna e para a busca.
+                        ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
+                        cached = CrawlerResult(
+                            source  = f"{src_id}-local",
+                            query   = query,
+                            title   = results[0].title,
+                            context = ctx,
+                        )
+                        _session_cache[f"local:{src_id}:{query}"] = cached
+                        return cached
 
         is_single = len(query.split()) == 1
         is_lib = any(kw in q for kw in
@@ -835,10 +870,15 @@ class OrnCrawler:
         requests, _, _  = _get_requests()
         BS4             = _get_bs4()
         search_local, _ = _get_local_index()
-        local_indexes   = {
-            alias: __import__("pathlib").Path(f"data/index/{src_id}.db").exists()
-            for alias, src_id in LOCAL_SOURCES.items()
-        } if search_local else {}
+        
+        local_indexes = {}
+        if search_local:
+            from pathlib import Path
+            idx_dir = Path("data/index")
+            if idx_dir.exists():
+                for db in idx_dir.glob("*.db"):
+                    local_indexes[db.stem] = True
+                    
         return {
             "requests":           requests is not None,
             "beautifulsoup4":     BS4 is not None,

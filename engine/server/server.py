@@ -191,6 +191,161 @@ _boot_perf = {
 }
 _lock = threading.Lock()
 
+# ------ auxiliares ------
+
+# Adicionar perto de globals
+_WORK_QUEUE = None
+_WORKER_STOP = threading.Event()
+
+def _worker_loop(work_q: "queue.Queue[tuple[bytes, socket.socket]]"):
+    while not _WORKER_STOP.is_set():
+        try:
+            payload, conn = work_q.get(timeout=1.0)
+        except queue.Empty:
+            continue
+        try:
+            # Reusar _handle logic: podemos separar uma função _process_payload(payload) que
+            # retorna resp dict (sem fechar conn).
+            try:
+                resp = _process_payload(payload)
+            except Exception as e:
+                resp = {"output": "", "elapsed_s": 0, "error": f"worker error: {e}"}
+            try:
+                conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode())
+            except Exception:
+                pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            work_q.task_done()
+
+def _process_payload(payload_bytes: bytes) -> dict:
+    """Extrai JSON, chama infer/_infer e retorna o response dict.
+       Reaproveita a lógica de _handle sem manipular sockets."""
+    resp: dict = {"output": "", "elapsed_s": 0, "error": "internal error"}
+    try:
+        line = payload_bytes.decode("utf-8").strip()
+        if not line:
+            return {"output": "", "elapsed_s": 0, "error": "payload vazio"}
+
+        # STATUS já tratado antes, mas redundância ok
+        if line.upper() == "STATUS":
+            # replicar snapshot do bloco STATUS do _handle
+            up  = round(time.monotonic() - _stats["start"], 1) if _stats["start"] else 0
+            # ... montar resp igual ao do STATUS ...
+            return {"status": "online", "uptime_s": up}  # resumido; copie os fields que preferir
+
+        req_data   = json.loads(line)
+        prompt     = str(req_data.get("prompt", "")).strip()
+        max_tokens = max(1, min(int(req_data.get("max_tokens", 128)), 2048))
+
+        if not prompt:
+            return {"output": "", "elapsed_s": 0, "error": "prompt vazio"}
+
+        with _lock:
+            _stats["requests"] += 1
+        try:
+            output, elapsed = _infer(prompt, max_tokens)
+            with _lock:
+                _stats["total_tokens"]      += max_tokens
+                _stats["total_elapsed_s"]   += elapsed
+                _stats["infer_calls"]        += 1
+                _stats["last_infer_s"]       = elapsed
+                _stats["last_prompt_chars"]  = len(prompt)
+                _stats["last_output_chars"]  = len(output)
+                _stats["last_max_tokens"]    = max_tokens
+                _stats["sum_prompt_chars"]  += len(prompt)
+                _stats["sum_output_chars"]  += len(output)
+            return {"output": output, "elapsed_s": elapsed, "error": None}
+        except Exception as e:
+            with _lock:
+                _stats["errors"] += 1
+            return {"output": "", "elapsed_s": 0, "error": str(e), "traceback": traceback.format_exc()}
+
+    except json.JSONDecodeError as e:
+        return {"output": "", "elapsed_s": 0, "error": f"JSON invalido: {e}"}
+    except Exception as e:
+        return {"output": "", "elapsed_s": 0, "error": f"worker handler: {e}", "traceback": traceback.format_exc()}
+
+# Substitua _serve por:
+
+def _serve() -> None:
+    import queue as _queue
+    global _WORK_QUEUE, _WORKER_STOP
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind((HOST, PORT))
+    srv.listen(BACKLOG)
+    srv.settimeout(1.0)
+    PID_FILE.write_text(str(os.getpid()))
+    print(f"[SRV] PID={os.getpid()}  Porta={PORT}", flush=True)
+
+    _WORK_QUEUE = _queue.Queue(maxsize=64)  # bounded: protege memória
+    # Escolha 1 worker se a inferência serializa bem com _lock; 1 evita contenda.
+    workers = []
+    for i in range(1):
+        th = threading.Thread(target=_worker_loop, args=(_WORK_QUEUE,), daemon=True)
+        th.start()
+        workers.append(th)
+
+    while True:
+        try:
+            conn, _ = srv.accept()
+            # leitura rápida da linha (non-blocking minimal): ler até \n com timeout curto
+            try:
+                conn.settimeout(0.5)
+                data = bytearray()
+                while True:
+                    chunk = conn.recv(RECV_SZ)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if b"\n" in data:
+                        break
+                line = data.decode("utf-8").strip() if data else ""
+            except Exception:
+                # se falhou lendo rápido, feche a conexão para não travar accept loop
+                conn.close()
+                continue
+
+            if not line:
+                conn.sendall((json.dumps({"output":"","elapsed_s":0,"error":"payload vazio"}) + "\n").encode())
+                conn.close()
+                continue
+
+            if line.upper() == "STATUS":
+                resp = _handle_status()  # extrair função que monta o JSON de STATUS
+                try:
+                    conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode())
+                except Exception:
+                    pass
+                conn.close()
+                continue
+
+            # Push to work queue - se cheio, respondemos 503 curto
+            try:
+                _WORK_QUEUE.put_nowait((data, conn))
+            except _queue.Full:
+                try:
+                    conn.sendall((json.dumps({"output":"", "elapsed_s":0, "error":"server busy"}) + "\n").encode())
+                except Exception:
+                    pass
+                conn.close()
+                continue
+
+        except socket.timeout:
+            continue
+        except KeyboardInterrupt:
+            print("\n[SRV] Encerrando...", flush=True)
+            _WORKER_STOP.set()
+            _shutdown()
+            break
+        except Exception as e:
+            print(f"[SRV] accept error: {e}", flush=True)
+            traceback.print_exc()
+
 
 # ---------------------------------------------------------------------------
 # Boot do modelo
@@ -310,10 +465,14 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
     _observe_telemetry("server.infer.lock_wait", lock_wait_ms)
     _observe_telemetry("server.infer.llm_call", llm_call_ms)
 
-    _stats["last_lock_wait_ms"] = round(lock_wait_ms, 4)
-    _stats["last_llm_call_ms"] = round(llm_call_ms, 4)
-    _stats["sum_lock_wait_ms"] += lock_wait_ms
-    _stats["sum_llm_call_ms"] += llm_call_ms
+    # Protege os contadores de timing com o mesmo lock usado pelo resto do _handle.
+    # Sem isso, writes simultâneos em sum_lock_wait_ms e sum_llm_call_ms causam
+    # race condition silenciosa — os valores divergem ao longo do tempo.
+    with _lock:
+        _stats["last_lock_wait_ms"]  = round(lock_wait_ms, 4)
+        _stats["last_llm_call_ms"]   = round(llm_call_ms, 4)
+        _stats["sum_lock_wait_ms"]  += lock_wait_ms
+        _stats["sum_llm_call_ms"]   += llm_call_ms
 
     elapsed = round(time.monotonic() - t0, 3)
     return out["choices"][0]["text"].strip(), elapsed
@@ -390,12 +549,12 @@ def _handle(conn: socket.socket) -> None:
 
     try:
         conn.settimeout(10)
-        data = b""
+        data = bytearray()   # bytearray.extend() é O(chunk) — bytes += é O(N²)
         while True:
             chunk = conn.recv(RECV_SZ)
             if not chunk:
                 break
-            data += chunk
+            data.extend(chunk)
             if b"\n" in data:
                 break
 
@@ -463,7 +622,6 @@ def _handle(conn: socket.socket) -> None:
         else:
             with _lock:
                 _stats["requests"] += 1
-#            _stats["requests"] += 1
             try:
                 output, elapsed = _infer(prompt, max_tokens)
                 # Bug fix: _stats é compartilhado entre threads — protegido com _lock.
@@ -481,7 +639,8 @@ def _handle(conn: socket.socket) -> None:
                     _stats["sum_output_chars"]   += len(output)
                 resp = {"output": output, "elapsed_s": elapsed, "error": None}
             except Exception as e:
-                _stats["errors"] += 1
+                with _lock:
+                    _stats["errors"] += 1
                 resp = {
                     "output":    "",
                     "elapsed_s": 0,
@@ -685,10 +844,10 @@ class ServerCLI:
         else:
             # Registra handlers para SIGINT/SIGTERM **no processo servidor** (main thread).
             try:
-#                signal.signal(signal.SIGTERM, _sigterm_handler)
+                signal.signal(signal.SIGTERM, _sigterm_handler)
                 signal.signal(signal.SIGINT, _sigterm_handler)
             except Exception:
-                # Em alguns ambientes windows antigos ou embeded, signal pode levantar.
+                # Em alguns ambientes windows antigos ou embedded, signal pode levantar.
                 pass
 
             self._apply_start_env(
@@ -965,62 +1124,3 @@ class ServerCLI:
             return json.loads(data.decode("utf-8").strip())
         except Exception:
             return None
-            
-            
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Telemetry:
-
-    start_time: float = field(default_factory=time.perf_counter)
-
-    marks: dict = field(default_factory=dict)
-
-    prompt_tokens: int = 0
-    generated_tokens: int = 0
-
-    first_token_latency: float | None = None
-
-    def mark(self, name):
-        self.marks[name] = time.perf_counter()
-
-    def set_prompt_tokens(self, n):
-        self.prompt_tokens = n
-
-    def add_generated(self):
-        self.generated_tokens += 1
-
-        if self.generated_tokens == 1:
-            self.first_token_latency = (
-                time.perf_counter() - self.marks["generation_start"]
-            )
-
-    def report(self):
-
-        end = time.perf_counter()
-
-        def diff(a, b):
-            return self.marks[b] - self.marks[a]
-
-        gen_time = diff("generation_start", "generation_end")
-
-        tok_s = 0
-        if self.generated_tokens > 0:
-            tok_s = self.generated_tokens / gen_time
-
-        proc = psutil.Process(os.getpid())
-
-        return {
-            "total_time": end - self.start_time,
-            "model_load": diff("model_load_start", "model_load_end"),
-            "prompt_eval": diff("prompt_eval_start", "prompt_eval_end"),
-            "generation": gen_time,
-            "first_token_latency": self.first_token_latency,
-            "prompt_tokens": self.prompt_tokens,
-            "generated_tokens": self.generated_tokens,
-            "tokens_per_second": tok_s,
-            "cpu_percent": psutil.cpu_percent(),
-            "ram_used_mb": proc.memory_info().rss / 1024 / 1024,
-        }

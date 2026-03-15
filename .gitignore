@@ -48,6 +48,7 @@ nppBackup/
 pytest_temp_dir/
 .doxoade/vulcan/foundry/
 data/
+telemetry/
 
 # --- Arquivos de Configuração de IDE ---
 .vscode/

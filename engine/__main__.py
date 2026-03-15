@@ -41,7 +41,7 @@ if callable(_doxo_install_meta_finder) and _doxo_project_root:
 
 # 2. Tenta usar o loader "embedded"
 try:
-    _doxo_t = _doxo_time.monotonic()   # inicializado ANTES do if — evita NameError no finally
+    _doxo_t = _doxo_time.monotonic()
     if _doxo_project_root:
         _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
         if _embedded_path.exists():
@@ -61,14 +61,13 @@ try:
                     try:
                         import sys as _d_sys
                         _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
-                        # sys.intern no sufixo — a comparação endswith é feita N_módulos×N_attrs vezes
                         _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
                         _suffix_len    = len(_vulcan_suffix)
                         for mname, mod in list(_d_sys.modules.items()):
                             try:
                                 mfile = getattr(mod, "__file__", None)
                                 if not mfile:
-                                    continue  # saída antecipada — evita construir Path para módulos builtin
+                                    continue
                                 mpath = _doxo_path(mfile)
                                 if _bin_dir not in mpath.parents:
                                     continue
