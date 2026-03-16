@@ -40,9 +40,6 @@ if callable(_doxo_install_meta_finder) and _doxo_project_root:
         _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
 
 # 2. Tenta usar o loader "embedded"
-# Pre-initialize _doxo_t so the finally block can reference it even if
-# monotonic() itself somehow raises before the assignment completes.
-_doxo_t = _doxo_time.monotonic()
 try:
     _doxo_t = _doxo_time.monotonic()
     if _doxo_project_root:
@@ -62,10 +59,11 @@ try:
                         pass
                 if callable(_doxo_safe_call):
                     try:
+                        import sys as _d_sys
                         _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
-                        _vulcan_suffix = _doxo_sys.intern("_vulcan_optimized")
+                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
                         _suffix_len    = len(_vulcan_suffix)
-                        for _, mod in list(_doxo_sys.modules.items()):
+                        for mname, mod in list(_d_sys.modules.items()):
                             try:
                                 mfile = getattr(mod, "__file__", None)
                                 if not mfile:

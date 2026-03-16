@@ -43,7 +43,7 @@ if callable(_doxo_install_meta_finder) and _doxo_project_root:
 
 # 2. Tenta usar o loader "embedded"
 try:
-    _doxo_t = _doxo_time.monotonic()   # inicializado ANTES do if — evita NameError no finally
+    _doxo_t = _doxo_time.monotonic()
     if _doxo_project_root:
         _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
         if _embedded_path.exists():
@@ -63,14 +63,13 @@ try:
                     try:
                         import sys as _d_sys
                         _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
-                        # sys.intern no sufixo — a comparação endswith é feita N_módulos×N_attrs vezes
                         _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
                         _suffix_len    = len(_vulcan_suffix)
                         for mname, mod in list(_d_sys.modules.items()):
                             try:
                                 mfile = getattr(mod, "__file__", None)
                                 if not mfile:
-                                    continue  # saída antecipada — evita construir Path para módulos builtin
+                                    continue
                                 mpath = _doxo_path(mfile)
                                 if _bin_dir not in mpath.parents:
                                     continue
@@ -126,101 +125,70 @@ if callable(_doxo_probe_embedded):
     except Exception:
         pass
 # --- DOXOADE_VULCAN_BOOTSTRAP:END ---
+
 # -*- coding: utf-8 -*-
-# engine\tools\local_index.py
-"""
-ORN — LocalIndex (Projeto Vulcan / SiCDox) v5.4 - pyzim Only EditionORN — LocalIndex (Projeto Vulcan / SiCDox) v6.0 - Semantic Edition
-Motor de Busca Offline ZIM -> SQLite FTS5 + ZSTD Tokenizado Nativo
+# engine/tools/local_index.py
 
-Backend exclusivo: python-zim (pyzim)  — libzim removido (crashava no Windows)
-Busca:            SQLite FTS5 (build obrigatório uma vez)
-Compressão:       pyzstd (opcional — fallback para texto puro se não instalado)
-
-Uso rápido:
-  python -m engine.tools.local_index probe  data/zim/<arquivo>.zim
-  python -m engine.tools.local_index build  data/zim/<arquivo>.zim
-  python -m engine.tools.local_index search <source_id> <query>
-  python -m engine.tools.local_index list
-
-God Thoth — dá forma ao conhecimento e o torna pesquisável.
-
-Compliance PA10: 
-- Compressão Semântica via Tokenização Nativa (llama_cpp).
-- Conversão de Texto para Arrays Int (A Matriz Numérica da IA).
-- Zero dependência do HuggingFace/Transformers.
-"""
-
+import argparse
 import array
 import hashlib
+import logging
 import os
 import re
+import sqlite3
 import struct
 import sys
-import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
-from typing import Iterator
+from threading import Lock
+from typing import Iterator, List, Optional
 
+# dependências do projeto (mantidas)
 from engine.tools.inverted_index import InvertedIndexBuilder, InvertedIndexSearcher
 from engine.telemetry.core import orn_span, GLOBAL_TELEMETRY, record_direct_telemetry
 
-
-ZIM_DIR   = Path("data/zim")
-INDEX_DIR = Path("data/index")
-
-_GGUF_PATH = (
-    r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto_OIA\olDox222RN\ORN\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
-    
-)
-
 # ---------------------------------------------------------------------------
-# Utilidades e Compressão (ZSTD)
+# Config / constantes
 # ---------------------------------------------------------------------------
-def _zim_to_source_id(zim_path: str | Path) -> str:
-    name = Path(zim_path).stem
-    name = name.replace("-", "_").replace(".", "_")
-    name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
-    return re.sub(r"_+", "_", name).strip("_").lower()
+logger = logging.getLogger("engine.tools.local_index")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-def _source_id_to_db(source_id: str) -> Path:
-    return INDEX_DIR / f"{source_id}.db"
+ZIM_DIR = Path(os.environ.get("SICDOX_ZIM_DIR", "data/zim"))
+INDEX_DIR = Path(os.environ.get("SICDOX_INDEX_DIR", "data/index"))
 
-def _find_zim_for_source(source_id: str) -> "Path | None":
-    if ZIM_DIR.exists():
-        for zim in ZIM_DIR.glob("*.zim"):
-            if _zim_to_source_id(zim) == source_id: return zim
-    return None
+# Caminho padrão antigo mantido como fallback — preferir definir SICDOX_GGUF
+_DEFAULT_GGUF = r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto_OIA\olDox222RN\ORN\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+_GGUF_PATH_ENV = "SICDOX_GGUF"
 
-def _compress(data: bytes) -> bytes:
-    try:
-        import pyzstd
-        return pyzstd.compress(data)
-    except ImportError: return data
-
-def _decompress(data: bytes) -> bytes:
-    try:
-        import pyzstd
-        return pyzstd.decompress(data)
-    except Exception:
-        return data
-
-class LocalResult:
-    __slots__ = ("source", "title", "body", "path")
-    def __init__(self, source: str, title: str, body: str, path: str = ""):
-        self.source = source; self.title = title; self.body = body; self.path = path
-    @property
-    def ok(self) -> bool: return bool(self.title and self.body.strip())
-    def to_prompt_block(self, max_chars: int = 800) -> str:
-        if not self.ok: return ""
-        return f"[CTX-BEGIN]\nscope: {self.source} | {self.title}\n{self.body[:max_chars]}\n[CTX-END]\n"
-
+# Regexes (consolidadas)
 _RE_SCRIPT = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
-_RE_NAV    = re.compile(r'<[^>]*(navbox|mw-toc|mw-jump|sidebar|infobox|reflist)[^>]*>.*?</\w+>', re.DOTALL | re.IGNORECASE)
-_RE_TAG    = re.compile(r"<[^>]+>")
+_RE_NAV = re.compile(r'<[^>]*(navbox|mw-toc|mw-jump|sidebar|infobox|reflist)[^>]*>.*?</\w+>', re.DOTALL | re.IGNORECASE)
+_RE_TAG = re.compile(r"<[^>]+>")
 _RE_ENTITY = re.compile(r"&(?:[a-zA-Z]{2,8}|#\d{1,6});")
-_RE_MULTI  = re.compile(r"[ \t]{2,}")
-_RE_NEWL   = re.compile(r"\n{3,}")
-_RE_URL    = re.compile(r"https?://\S+")
+_RE_MULTI = re.compile(r"[ \t]{2,}")
+_RE_NEWL = re.compile(r"\n{3,}")
+_RE_URL = re.compile(r"https?://\S+")
+
+# ---------------------------------------------------------------------------
+# Utilidades
+# ---------------------------------------------------------------------------
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _like_escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# ---------------------------------------------------------------------------
+# HTML cleaning / helpers
+# ---------------------------------------------------------------------------
 
 def _strip_html(html: str, max_chars: int = 8000) -> str:
     html = _RE_SCRIPT.sub(" ", html)
@@ -232,22 +200,228 @@ def _strip_html(html: str, max_chars: int = 8000) -> str:
     text = _RE_NEWL.sub("\n\n", text).strip()
     return text[:max_chars]
 
-def _read_entry_content(entry) -> "bytes | None":
+
+# ---------------------------------------------------------------------------
+# Compression helpers (pyzstd optional)
+# ---------------------------------------------------------------------------
+
+def _compress(data: bytes) -> bytes:
+    """
+    Retorna blob com um byte de formato:
+      b'\\x00' + raw_payload  -> não comprimido
+      b'\\x01' + zstd_payload -> comprimido (pyzstd disponível)
+    """
+    try:
+        import pyzstd
+        compressed = pyzstd.compress(data)
+        return b"\x01" + compressed
+    except Exception:
+        logger.debug("pyzstd unavailable; storing raw payload (flag 0)")
+        return b"\x00" + data
+
+
+def _decompress(data: bytes) -> bytes:
+    """
+    Interpreta o primeiro byte de flag e devolve os bytes payload (descomprimidos
+    quando necessário). Não devolve dados comprimidos cru.
+    """
+    if not data:
+        return data
+    flag = data[0:1]
+    payload = data[1:]
+    if flag == b"\x00":
+        return payload
+    if flag == b"\x01":
+        try:
+            import pyzstd
+            return pyzstd.decompress(payload)
+        except Exception:
+            logger.exception("_decompress: pyzstd present at build but missing at runtime")
+            # NÃO retornar payload comprimido — em vez disso sinalizamos erro
+            raise RuntimeError("Unable to decompress zstd payload: pyzstd missing or decompression failed")
+    # fallback: se não reconhecido, tentar heurística segura
+    logger.warning("_decompress: unknown format flag %r; attempting to detect zstd magic", flag)
+    if len(data) >= 5 and data[1:5] == b"\x28\xb5\x2f\xfd":
+        try:
+            import pyzstd
+            return pyzstd.decompress(payload)
+        except Exception:
+            raise RuntimeError("Unknown blob format and pyzstd unavailable")
+    # último recurso: devolver como-is (não ideal)
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Read entry content (consolidated)
+# ---------------------------------------------------------------------------
+
+def _read_entry_content(entry) -> Optional[bytes]:
     for method in ("read", "get_data", "content", "data"):
         fn = getattr(entry, method, None)
-        if fn is None: continue
+        if fn is None:
+            continue
         try:
             result = fn() if callable(fn) else fn
-            if isinstance(result, (bytes, bytearray, memoryview)) and len(result) > 0: return bytes(result)
-        except Exception: continue
+            if isinstance(result, (bytes, bytearray)) and len(result) > 0:
+                return bytes(result)
+            if isinstance(result, memoryview) and len(result) > 0:
+                return bytes(result)
+        except Exception:
+            logger.debug("_read_entry_content: method %s failed", method, exc_info=True)
+            continue
+
     for attr in ("_data", "_content", "raw"):
         val = getattr(entry, attr, None)
-        if isinstance(val, (bytes, bytearray, memoryview)) and len(val) > 0: return bytes(val)
+        if isinstance(val, (bytes, bytearray, memoryview)) and len(val) > 0:
+            return bytes(val)
     return None
 
+
+# ---------------------------------------------------------------------------
+# TokenizerBridge (thread-safe, GGUF via env)
+# ---------------------------------------------------------------------------
+
+class TokenizerBridge:
+    """Singleton leve que carrega apenas o vocab (vocab_only=True).
+    Fornecer o caminho do GGUF via variável de ambiente SICDOX_GGUF é recomendado.
+    """
+
+    _llm_vocab = None
+    _lock = Lock()
+
+    @classmethod
+    def get_gguf_path(cls) -> str:
+        env = os.environ.get(_GGUF_PATH_ENV)
+        if env and os.path.exists(env):
+            return env
+        if os.path.exists(_DEFAULT_GGUF):
+            return _DEFAULT_GGUF
+        raise FileNotFoundError(f"GGUF não encontrado. Defina { _GGUF_PATH_ENV } apontando para o arquivo .gguf")
+
+    @classmethod
+    def get_vocab(cls):
+        if cls._llm_vocab is None:
+            with cls._lock:
+                if cls._llm_vocab is None:
+                    try:
+                        from llama_cpp import Llama
+                    except Exception:
+                        logger.exception("llama_cpp import falhou")
+                        raise
+                    gguf = cls.get_gguf_path()
+                    logger.info("Carregando vocab_only do GGUF: %s", gguf)
+                    cls._llm_vocab = Llama(model_path=gguf, vocab_only=True, verbose=False)
+        return cls._llm_vocab
+
+    @classmethod
+    def text_to_bytes(cls, text: str) -> bytes:
+        vocab = cls.get_vocab()
+        tokens = vocab.tokenize(text.encode("utf-8"), add_bos=False)
+        return array.array("i", tokens).tobytes()
+
+    @classmethod
+    def bytes_to_text(cls, data: bytes) -> str:
+        # data expected to be token-array-bytes (length %4==0) after decompression.
+        if not data:
+            return ""
+        if len(data) % 4 != 0:
+            # Não tentar decodificar comprimido ou corrompido como UTF-8 sem avisar.
+            logger.warning("bytes_to_text: data length %d not multiple of 4 — possible corrupted/compressed blob", len(data))
+            try:
+                # tentativa cuidadosa: devolve texto legível como fallback
+                return data.decode("utf-8", errors="ignore")
+            except Exception:
+                return ""
+        try:
+            vocab = cls.get_vocab()
+            arr = array.array("i")
+            arr.frombytes(data)
+            tokens = arr.tolist()
+            if tokens and (max(tokens) >= vocab.n_vocab() or min(tokens) < 0):
+                logger.warning("bytes_to_text: token ids outside vocab range; returning fallback decode")
+                return data.decode("utf-8", errors="ignore")
+            return vocab.detokenize(tokens).decode("utf-8", errors="ignore")
+        except Exception:
+            logger.exception("bytes_to_text failed; returning raw decode")
+            return data.decode("utf-8", errors="ignore")
+
+
+# ---------------------------------------------------------------------------
+# LocalResult (consolidado)
+# ---------------------------------------------------------------------------
+
+class LocalResult:
+    __slots__ = ("source", "title", "body", "path")
+
+    def __init__(self, source: str, title: str, body: str, path: str = ""):
+        self.source = source
+        self.title = title
+        self.body = body
+        self.path = path
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.title and self.body.strip())
+
+    def get_snippet(self, query: str = "", max_chars: int = 600) -> str:
+        if not self.ok:
+            return ""
+        text = self.body
+        if query:
+            q_lower = query.lower()
+            t_lower = text.lower()
+            idx = t_lower.find(q_lower)
+            if idx == -1:
+                for word in q_lower.split():
+                    if len(word) > 3:
+                        idx = t_lower.find(word)
+                        if idx != -1:
+                            break
+            if idx != -1:
+                start = max(0, idx - 80)
+                end = min(len(text), start + max_chars)
+                if start > 0:
+                    space_idx = text.find(" ", start)
+                    start = space_idx + 1 if space_idx != -1 else start
+                snippet = text[start:end].strip()
+                return f"...{snippet}..." if start > 0 else snippet
+        if len(text) > max_chars:
+            return text[:max_chars] + "..."
+        return text
+
+    def to_prompt_block(self, max_chars: int = 600, query: str = "") -> str:
+        if not self.ok:
+            return ""
+        snippet = self.get_snippet(query, max_chars)
+        return f"[CTX-BEGIN]\nscope: {self.source} | {self.title}\n{snippet}\n[CTX-END]\n"
+
+
+# ---------------------------------------------------------------------------
+# ZIM iteration
+# ---------------------------------------------------------------------------
+
+def _zim_to_source_id(zim_path: str | Path) -> str:
+    name = Path(zim_path).stem
+    name = name.replace("-", "_").replace(".", "_")
+    name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+    return re.sub(r"_+", "_", name).strip("_").lower()
+
+
+def _source_id_to_db(source_id: str) -> Path:
+    return INDEX_DIR / f"{source_id}.db"
+
+
+def _find_zim_for_source(source_id: str) -> Optional[Path]:
+    if ZIM_DIR.exists():
+        for zim in ZIM_DIR.glob("*.zim"):
+            if _zim_to_source_id(zim) == source_id:
+                return zim
+    return None
+
+
 def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str, str, str]]:
-    """Itera entradas HTML de um ZIM. Compatível com ZIM 5.x e 6.x."""
     import pyzim
+
     p = Path(zim_path).absolute()
 
     total_scanned = total_yielded = total_redirect = 0
@@ -258,39 +432,33 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
             total_scanned += 1
 
             if verbose and total_scanned % 5000 == 0:
-                print(
-                    f"  [ZIM] scanned={total_scanned} yielded={total_yielded} "
-                    f"redirect={total_redirect} non_html={total_non_html} "
-                    f"empty={total_empty}",
-                    flush=True,
+                logger.info(
+                    "[ZIM] scanned=%d yielded=%d redirect=%d non_html=%d empty=%d",
+                    total_scanned,
+                    total_yielded,
+                    total_redirect,
+                    total_non_html,
+                    total_empty,
                 )
 
-            # --- Redirect ---
             if getattr(entry, "is_redirect", False):
                 total_redirect += 1
                 continue
 
-            # --- Namespace ---
-            # ZIM 5.x: "A"=artigos, "I"=imagens, "-"=metadados → filtrar recursos.
-            # ZIM 6.x: namespace removido — pyzim pode retornar None, "", "C".
-            # Estratégia: bloquear APENAS namespaces de recursos explícitos.
             ns = getattr(entry, "namespace", None)
             if ns is not None:
                 if isinstance(ns, bytes):
                     ns = ns.decode("utf-8", errors="ignore")
                 ns = str(ns).strip()
-                if ns in ("I", "-", "X"):   # imagens, metadados — nunca artigos
+                if ns in ("I", "-", "X"):
                     total_non_html += 1
                     continue
 
-            # --- Ler conteúdo ---
             content_bytes = _read_entry_content(entry)
             if not content_bytes:
                 total_empty += 1
                 continue
 
-            # --- Filtro de conteúdo: HTML ou texto ---
-            # ZIM 6.x pode conter HTML sem DOCTYPE — verifica sinais mais amplos.
             head = content_bytes[:400].lower()
             is_html = (
                 b"<html" in head
@@ -306,7 +474,6 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
                 total_non_html += 1
                 continue
 
-            # --- Extração de título e path ---
             try:
                 title = getattr(entry, "title", "")
                 if isinstance(title, bytes):
@@ -327,346 +494,332 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
 
             except Exception:
                 total_error += 1
+                logger.debug("Error parsing zim entry", exc_info=True)
                 continue
 
     if verbose:
-        print(
-            f"  [ZIM] total: scanned={total_scanned} yielded={total_yielded} "
-            f"redirect={total_redirect} non_html={total_non_html} "
-            f"empty={total_empty} error={total_error}",
-            flush=True,
+        logger.info(
+            "[ZIM] total: scanned=%d yielded=%d redirect=%d non_html=%d empty=%d error=%d",
+            total_scanned,
+            total_yielded,
+            total_redirect,
+            total_non_html,
+            total_empty,
+            total_error,
         )
 
 
 # ---------------------------------------------------------------------------
-# Ponte Semântica Nativa (llama.cpp) — Zero Bloatware
-# ---------------------------------------------------------------------------
-class TokenizerBridge:
-    """Singleton ultraleve — carrega só o vocabulário do GGUF (vocab_only=True)."""
-    _llm_vocab = None
-
-    @classmethod
-    def get_vocab(cls):
-        if cls._llm_vocab is None:
-            from llama_cpp import Llama
-            if not os.path.exists(_GGUF_PATH):
-                raise FileNotFoundError(f"GGUF não encontrado: {_GGUF_PATH}")
-            print("  [SiCDox] Carregando a Matriz de Vocabulario (vocab_only)...", flush=True)
-            cls._llm_vocab = Llama(model_path=_GGUF_PATH, vocab_only=True, verbose=False)
-        return cls._llm_vocab
-
-    @classmethod
-    def text_to_bytes(cls, text: str) -> bytes:
-        """Converte texto humano em C-Array de Tokens (Inteiros)"""
-        vocab  = cls.get_vocab()
-        tokens = vocab.tokenize(text.encode("utf-8"), add_bos=False)
-        # 'i' = signed int de 32 bits nativo da linguagem C
-        return array.array("i", tokens).tobytes()
-
-    @classmethod
-    def bytes_to_text(cls, data: bytes) -> str:
-        """Recria o texto a partir dos Tokens binários para entregar ao RAG"""
-        # Proteção 1: Se o bloco de bytes não for múltiplo de 4, é texto legado
-        if len(data) % 4 != 0:
-            return data.decode("utf-8", errors="ignore")
-            
-        try:
-            vocab = cls.get_vocab()
-            arr   = array.array("i")
-            arr.frombytes(data)
-            tokens = arr.tolist()
-            
-            # Proteção 2 (Anti-C++ Crash): Se um token extrapolar o limite do modelo,
-            # significa que estamos tentando ler texto puro como inteiros.
-            if tokens and (max(tokens) >= vocab.n_vocab() or min(tokens) < 0):
-                return data.decode("utf-8", errors="ignore")
-
-            return vocab.detokenize(tokens).decode("utf-8", errors="ignore")
-            
-        except Exception:
-            # Fallback final: devolve o dado como string normal
-            return data.decode("utf-8", errors="ignore")
-
-# ---------------------------------------------------------------------------
-# LocalResult — __slots__ explícito (Vulcan C++ Safe)
+# BUILD INDEX
 # ---------------------------------------------------------------------------
 
-class LocalResult:
-    """
-    Resultado de busca offline.
-    __slots__ obrigatório — sem ele o Vulcan/GCC gera wrapper sem __init__.
-    """
-    __slots__ = ("source", "title", "body", "path")
-
-    def __init__(self, source: str, title: str, body: str, path: str = ""):
-        self.source = source
-        self.title  = title
-        self.body   = body
-        self.path   = path
-
-    @property
-    def ok(self) -> bool:
-        return bool(self.title and self.body.strip())
-
-    def to_prompt_block(self, max_chars: int = 600) -> str:
-        if not self.ok:
-            return ""
-        return (
-            f"[CTX-BEGIN]\n"
-            f"scope: {self.source} | {self.title}\n"
-            f"{self.body[:max_chars]}\n"
-            f"[CTX-END]\n"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Limpeza HTML (stdlib pura)
-# ---------------------------------------------------------------------------
-
-_RE_SCRIPT = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
-_RE_NAV    = re.compile(
-    r'<[^>]*(navbox|mw-toc|mw-jump|sidebar|infobox|reflist)[^>]*>.*?</\w+>',
-    re.DOTALL | re.IGNORECASE,
-)
-_RE_TAG    = re.compile(r"<[^>]+>")
-_RE_ENTITY = re.compile(r"&(?:[a-zA-Z]{2,8}|#\d{1,6});")
-_RE_MULTI  = re.compile(r"[ \t]{2,}")
-_RE_NEWL   = re.compile(r"\n{3,}")
-_RE_URL    = re.compile(r"https?://\S+")
-
-
-def _strip_html(html: str, max_chars: int = 8000) -> str:
-    html = _RE_SCRIPT.sub(" ", html)
-    html = _RE_NAV.sub(" ", html)
-    html = _RE_TAG.sub(" ", html)
-    html = _RE_ENTITY.sub(" ", html)
-    html = _RE_URL.sub(" ", html)
-    text = _RE_MULTI.sub(" ", html)
-    text = _RE_NEWL.sub("\n\n", text).strip()
-    return text[:max_chars]
-
-
-# ---------------------------------------------------------------------------
-# Compressão opcional (pyzstd)
-# ---------------------------------------------------------------------------
-
-def _compress(data: bytes) -> bytes:
+def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int = 1000, verbose: bool = True) -> Path:
     try:
-        import pyzstd
-        return pyzstd.compress(data)
+        import pyzim  # noqa: F401
     except ImportError:
-        return data  # fallback: sem compressão
+        raise ImportError("pyzim não instalado. pip install pyzim")
 
+    zim_path = str(zim_path)
+    if not Path(zim_path).exists():
+        raise FileNotFoundError(f"ZIM não encontrado: {zim_path}")
 
-def _decompress(data: bytes) -> bytes:
-    # Detecta magic bytes do ZSTD: 0xFD2FB528
-    if len(data) >= 4 and data[:4] == b"\x28\xb5\x2f\xfd":
-        try:
-            import pyzstd
-            return pyzstd.decompress(data)
-        except Exception:
-            pass
-    return data  # já é texto puro (fallback sem pyzstd)
-
-
-# ---------------------------------------------------------------------------
-# Iterador pyzim — core do build
-# ---------------------------------------------------------------------------
-
-def _read_entry_content(entry) -> "bytes | None":
-    """
-    Tenta ler o conteúdo de uma entry pyzim.
-    pyzim tem APIs diferentes entre versões — testa em ordem.
-    """
-    # API mais comum: entry.read()
-    for method in ("read", "get_data", "content", "data"):
-        fn = getattr(entry, method, None)
-        if fn is None:
-            continue
-        try:
-            result = fn() if callable(fn) else fn
-            if isinstance(result, (bytes, bytearray)) and len(result) > 0:
-                return bytes(result)
-            if isinstance(result, memoryview):
-                return bytes(result)
-        except Exception:
-            continue
-
-    # Último recurso: atributo direto
-    for attr in ("_data", "_content", "raw"):
-        val = getattr(entry, attr, None)
-        if isinstance(val, (bytes, bytearray, memoryview)) and len(val) > 0:
-            return bytes(val)
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# VULCAN BUILD (Indexador Tokenizado)
-# ---------------------------------------------------------------------------
-def build_index(zim_path: str, source_id: "str | None" = None, batch_size: int = 500, verbose: bool = True) -> Path:
-    try: import pyzim  # noqa: F401
-    except ImportError: raise ImportError("pyzim não instalado.  pip install pyzim")
-    if not Path(zim_path).exists(): raise FileNotFoundError(f"ZIM não encontrado: {zim_path}")
-
-    # Força o carregamento do LLM Vocab antes do loop
+    # Garante que o vocab seja carregado no início (pode lançar FileNotFoundError)
     TokenizerBridge.get_vocab()
 
-    if source_id is None: source_id = _zim_to_source_id(zim_path)
+    if source_id is None:
+        source_id = _zim_to_source_id(zim_path)
+
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     db_path = str(_source_id_to_db(source_id))
 
-    if verbose: print(f"\n  [SiCDox BUILD] Construindo Banco Tokenizado...\n  DB: {db_path}", flush=True)
-    # inicializa o builder do índice invertido no escopo correto
-    inv_builder = InvertedIndexBuilder()
+    # --- Remover DB / índice existente para garantir rebuild limpo ---
+    try:
+        db_p = Path(db_path)
+        inv_dir = INDEX_DIR / source_id
+        if db_p.exists():
+            logger.info("[SiCDox BUILD] DB existente encontrado, removendo para rebuild: %s", db_path)
+            # fechar handles não é possível aqui (esperamos que nenhum processo esteja usando),
+            # removemos arquivos sqlite auxiliares também (wal/shm).
+            for suf in ("", "-wal", "-shm"):
+                f = db_p.with_name(db_p.name + suf)
+                try:
+                    if f.exists():
+                        f.unlink()
+                except Exception:
+                    logger.warning("Não foi possível remover %s (continuando)", f, exc_info=True)
+        # remove índice invertido antigo se existir
+        if inv_dir.exists():
+            logger.info("[SiCDox BUILD] Removendo diretório de índice invertido anterior: %s", inv_dir)
+            try:
+                # usar rmtree para remover diretório recursivamente
+                import shutil
 
+                shutil.rmtree(inv_dir)
+            except Exception:
+                logger.warning("Falha ao remover índice invertido %s (continuando)", inv_dir, exc_info=True)
+    except Exception:
+        logger.exception("Erro ao tentar remover DB/índice existente; prosseguindo com build")
+
+    if verbose:
+        logger.info("[SiCDox BUILD] Construindo Banco Tokenizado... DB: %s", db_path)
+
+    inv_builder = InvertedIndexBuilder()
     t0 = time.monotonic()
 
     con = sqlite3.connect(db_path, isolation_level=None)
-    con.execute("PRAGMA page_size=4096")
-    con.execute("PRAGMA synchronous=NORMAL")
+    try:
+        con.execute("PRAGMA page_size=4096")
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA synchronous=NORMAL")
+        # cache_size is in pages; use negative value to specify KB units (e.g. -20000 ~ 20MB depending on page_size)
+        try:
+            con.execute("PRAGMA cache_size = -20000")
+        except Exception:
+            pass
 
-    con.execute("BEGIN")
-    for tbl in ("articles_fts", "pages", "content_pool", "meta"): con.execute(f"DROP TABLE IF EXISTS {tbl}")
-    
-    con.execute("CREATE TABLE content_pool (hash TEXT PRIMARY KEY, token_blob BLOB)")
-    con.execute("CREATE TABLE pages (id INTEGER PRIMARY KEY, title TEXT, path TEXT, content_hash TEXT)")
-#    con.execute("CREATE VIRTUAL TABLE articles_fts USING fts5(title, body, content='', content_rowid='id', tokenize='unicode61 remove_diacritics 1')")
-    con.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
-    con.execute("INSERT INTO meta VALUES ('source_id', ?)", (source_id,))
-    con.execute("INSERT INTO meta VALUES ('sicdox_ver', '6.0')",)
-    con.execute("COMMIT")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS pages (
+            id INTEGER PRIMARY KEY,
+            title TEXT,
+            path TEXT,
+            content_hash TEXT
+        )
+        """)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS content_pool (
+            hash TEXT PRIMARY KEY,
+            token_blob BLOB
+        )
+        """)
 
-    count = deduplicated = 0
-    buf_pages, seen_hashes = [], set()
-#    buf_pages, buf_fts, seen_hashes = [],[], set()
+        # Optional index for faster joins
+        con.execute("CREATE INDEX IF NOT EXISTS idx_pages_hash ON pages(content_hash)")
 
-    con.execute("BEGIN")
-    for title, path, html in _iter_zim_entries(zim_path, verbose=verbose):
-        with orn_span("build.strip_html", category="index"):
-            body = _strip_html(html, max_chars=8000)
-            
-        if len(body.strip()) < 50: continue
 
-        with orn_span("build.tokenize", category="index"):
-            try: payload = TokenizerBridge.text_to_bytes(body)
-            except Exception: continue
+        con.execute("BEGIN")
+        # Preparações para otimização:
+        # - carrega vocab UMA vez antes do loop
+        # - reduz max chars tokenizados para diminuir custo
+        vocab = TokenizerBridge.get_vocab()
+        MAX_TOKENIZE_CHARS = int(os.environ.get("SICDOX_MAX_CHARS", "4000"))
 
-            tokens = array.array("i")
-            tokens.frombytes(payload)
-            h = hashlib.md5(payload).hexdigest()
+        count = deduplicated = 0
+        buf_pages: List[tuple] = []
+        seen_hashes = set()
+        # Buffer para writes em batch do content_pool: mapa hash->blob
+        content_pending: dict[str, bytes] = {}
+        CONTENT_FLUSH_BATCH = int(os.environ.get("SICDOX_CONTENT_BATCH", "256"))
 
-        if h not in seen_hashes:
-            seen_hashes.add(h)
-            with orn_span("build.zstd_compress", category="index"):
-                compressed = _compress(payload)
-            
+        def _flush_content_pending():
+            """Insere em bulk o que estiver pendente no content_pool e limpa o buffer."""
+            nonlocal content_pending
+            if not content_pending:
+                return
+            items = list(content_pending.items())
             with orn_span("build.sql_insert", category="index"):
-                con.execute("INSERT INTO content_pool VALUES (?, ?)", (h, compressed))
-        else: deduplicated += 1
+                try:
+                    # executemany em lote para reduzir overhead
+                    con.executemany("INSERT OR IGNORE INTO content_pool (hash, token_blob) VALUES (?, ?)", items)
+                except Exception:
+                    # fallback item-a-item se algo falhar (mais lento, mas resiliente)
+                    logger.debug("bulk insert failed; falling back to single inserts", exc_info=True)
+                    for k, v in items:
+                        try:
+                            con.execute("INSERT OR IGNORE INTO content_pool (hash, token_blob) VALUES (?, ?)", (k, v))
+                        except Exception:
+                            logger.debug("failed single insert for %s", k, exc_info=True)
+            content_pending = {}
 
-        count += 1
-        buf_pages.append((count, title, path, h))
+        for title, path, html in _iter_zim_entries(zim_path, verbose=verbose):
+            with orn_span("build.strip_html", category="index"):
+                body = _strip_html(html, max_chars=MAX_TOKENIZE_CHARS)
 
-        with orn_span("build.inverted_idx", category="index"):
-            inv_builder.add_document(count, tokens)
+            if len(body.strip()) < 50:
+                continue
 
-        if len(buf_pages) >= batch_size:
-            with orn_span("build.sql_commit", category="index"):
-                con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
-                con.execute("COMMIT")
-                con.execute("BEGIN")
-                buf_pages.clear()
-            if verbose: print(f"  [BUILD] {count} artigos tokenizados...", end="\r", flush=True)
+            with orn_span("build.tokenize", category="index"):
+                try:
+                    # tokeniza o corpo e o título (título terá peso maior no índice)
+                    body_bytes = body.encode("utf-8")
+                    qtoks = vocab.tokenize(body_bytes, add_bos=False)  # lista de ints
+                    title_bytes = title.encode("utf-8")
+                    ttoks = vocab.tokenize(title_bytes, add_bos=False)
+                    # payload armazenado no content_pool: apenas tokens do corpo (economiza espaço)
+                    body_arr = array.array("i", qtoks)
+                    payload = body_arr.tobytes()
+                except Exception:
+                    logger.debug("tokenize failed for title=%s", title, exc_info=True)
+                    continue
 
-    if buf_pages:
-        con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
-#        con.executemany("INSERT INTO articles_fts (rowid, title, body) VALUES (?,?,?)", buf_fts)
-    con.execute("COMMIT")
-#    con.execute("INSERT INTO articles_fts(articles_fts) VALUES('optimize')")
-    con.close()
+                h = hashlib.md5(payload).hexdigest()
 
-    # ------------------------------------------------
-    # Finaliza índice invertido
-    # ------------------------------------------------
+            if h not in seen_hashes:
+                seen_hashes.add(h)
+                with orn_span("build.zstd_compress", category="index"):
+                    compressed = _compress(payload)
 
-    if verbose:
-        print("\n  [INDEX] Finalizando Inverted Index...")
+                # acumula em memória e escreve em bloco quando atingir CONTENT_FLUSH_BATCH
+                content_pending[h] = compressed
+                if len(content_pending) >= CONTENT_FLUSH_BATCH:
+                    _flush_content_pending()
+            else:
+                deduplicated += 1
+
+            count += 1
+            buf_pages.append((count, title, path, h))
+
+            # Para melhorar relevância, duplicamos tokens do título ao passar ao inverted index
+            # (aumenta peso de termos que aparecem no título)
+            try:
+                combined_tokens = ttoks + ttoks + qtoks  # título tem peso 2
+            except Exception:
+                combined_tokens = qtoks
+
+            with orn_span("build.inverted_idx", category="index"):
+                inv_builder.add_document(count, combined_tokens)
+
+            if len(buf_pages) >= batch_size:
+                with orn_span("build.sql_commit", category="index"):
+                    con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
+                    _flush_content_pending()
+                    con.execute("COMMIT")
+                    con.execute("BEGIN")
+                    buf_pages.clear()
+                if verbose:
+                    logger.info("[BUILD] %d artigos tokenizados...", count)
+
+        if buf_pages:
+            con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
+        con.execute("COMMIT")
+
+    except Exception:
+        logger.exception("Erro durante build_index; rollback")
+        try:
+            con.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        con.close()
 
     inv_builder.finalize()
-
     inv_dir = INDEX_DIR / source_id
-
     inv_builder.write(inv_dir)
 
-    if verbose: print(f"\n  [BUILD] Concluído: {count} matrizes (Dedup: {deduplicated}) em {round(time.monotonic()-t0, 1)}s")
+    if verbose:
+        logger.info("[BUILD] Concluído: %d matrizes (Dedup: %d) em %.1fs", count, deduplicated, time.monotonic() - t0)
+
     return Path(db_path)
 
 # ---------------------------------------------------------------------------
-# SEARCH LOCAL (Descompressão Semântica)
+# SEARCH LOCAL
 # ---------------------------------------------------------------------------
-def search_local(query: str, source_id: str, limit: int = 3) -> "list[LocalResult]":
-    if not query.strip(): return[]
+
+def _simple_query_tokens(text: str) -> list[int]:
+    # Fallback rápido: hash de n-grams ou bytes simples
+    # NOTE: não compatível 1:1 com tokens do GGUF, mas dá resultados rápidos
+    # Implementação simples: split por palavras e use hash modulo 2^31
+    toks = []
+    for w in re.findall(r"[A-Za-z0-9]+", text.lower()):
+        h = int(hashlib.md5(w.encode("utf-8")).hexdigest()[:8], 16)
+        toks.append(h & 0x7fffffff)
+    return toks
+
+def search_local(query: str, source_id: str, limit: int = 3) -> List[LocalResult]:
+    if not query.strip():
+        return []
+
     db_path = str(_source_id_to_db(source_id))
-    if not Path(db_path).exists(): return[]
+    if not Path(db_path).exists():
+        return []
 
     t_start = time.perf_counter()
-    label   = f"{source_id}-local"
+    label = f"{source_id}-local"
 
     try:
         con = sqlite3.connect(db_path, check_same_thread=False)
         con.execute("PRAGMA query_only=1")
-        
-        results: list[LocalResult] =[]
+        results: List[LocalResult] = []
+        doc_ids: List[int] = []
 
-        # 1. BUSCA RÁPIDA PELO TÍTULO (Ignora maiúsculas/minúsculas e acha instantâneo)
-        rows = con.execute(
-            "SELECT p.title, p.path, c.token_blob FROM pages p "
-            "JOIN content_pool c ON p.content_hash = c.hash "
-            "WHERE p.title LIKE ? LIMIT ?", (f"%{query}%", limit)
-        ).fetchall()
+        inv_dir = INDEX_DIR / source_id
+        if inv_dir.exists():
+            try:
+                with InvertedIndexSearcher(inv_dir) as searcher:
+                    if _env_bool("SICDOX_FAST_MODE"):
+                        query_tokens = _simple_query_tokens(query)
+                    else:
+                        vocab = TokenizerBridge.get_vocab()
+                        query_tokens = vocab.tokenize(query.encode("utf-8"), add_bos=False)
+                    doc_ids = searcher.search(query_tokens, limit=limit)
+            except Exception:
+                logger.debug("Inverted index search failed; falling back", exc_info=True)
 
-        if rows:
-            for title, path, blob in rows:
-                decompressed_bytes = _decompress(blob)
-                body = TokenizerBridge.bytes_to_text(decompressed_bytes)
-                body = re.sub(r'\n\s*\n', '\n\n', body).strip()
-                results.append(LocalResult(label, title, body, path))
-        else:
-            # 2. SE NÃO ACHOU NO TÍTULO, TENTA A BUSCA POR TOKENS (Inverted Index)
-            inv_dir = INDEX_DIR / source_id
-            from engine.tools.inverted_index import InvertedIndexSearcher
-            searcher = InvertedIndexSearcher(inv_dir)
+        if not doc_ids:
+            # Fallback por título: prioriza igualdade, depois prefixo, depois substring
+            q_esc = _like_escape(query)
+            exact = query
+            starts = f"{q_esc}%"
+            contains = f"%{q_esc}%"
+            rows = con.execute(
+                "SELECT p.id, p.title FROM pages p WHERE p.title LIKE ? ESCAPE '\\\\' OR p.title LIKE ? ESCAPE '\\\\' OR p.title LIKE ? ESCAPE '\\\\' LIMIT ?",
+                (exact, starts, contains, limit),
+            ).fetchall()
+            # ordena manualmente: igualdade -> prefixo -> contains, e depois por tamanho do título
+            ordered = []
+            for r in rows:
+                pid, ptitle = r
+                pl = ptitle.lower()
+                ql = query.lower()
+                if pl == ql:
+                    score = 0
+                elif pl.startswith(ql):
+                    score = 1
+                elif ql in pl:
+                    score = 2
+                else:
+                    score = 3
+                ordered.append((score, len(ptitle), pid))
+            ordered.sort()
+            doc_ids = [t[2] for t in ordered][:limit]
 
-            query_tokens = TokenizerBridge.get_vocab().tokenize(
-                query.encode("utf-8"),
-                add_bos=False
-            )
-
-            doc_ids = searcher.search(query_tokens, limit=limit)
-
-            for doc_id in doc_ids:
-                row = con.execute("SELECT p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE p.id = ?", (doc_id,)).fetchone()
-                if row:
-                    title, path, blob = row
+        for doc_id in doc_ids:
+            row = con.execute(
+                "SELECT p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE p.id = ?",
+                (doc_id,),
+            ).fetchone()
+            if row:
+                title, path, blob = row
+                try:
                     decompressed_bytes = _decompress(blob)
-                    body = TokenizerBridge.bytes_to_text(decompressed_bytes)
-                    body = re.sub(r'\n\s*\n', '\n\n', body).strip()
-                    results.append(LocalResult(label, title, body, path))
+                except RuntimeError as e:
+                    logger.warning("search_local: skipping doc %s due to decompression error: %s", doc_id, e)
+                    continue
+                body = TokenizerBridge.bytes_to_text(decompressed_bytes)
+                if not body.strip():
+                    logger.debug("search_local: doc %s produced empty body after decode; skipping", doc_id)
+                    continue
+
+                body = re.sub(r"\n\s*\n", "\n\n", body).strip()
+                if body.lower().startswith(title.lower()):
+                    body = body[len(title):].strip()
+
+                results.append(LocalResult(label, title, body, path))
 
         con.close()
-
-        if os.environ.get("VULCAN_TELEMETRY") == "1":
-            print(f"\n[🔥 VULCAN PROFILER] search_semantic({source_id}) C++ ZSTD: {(time.perf_counter() - t_start)*1000:.2f}ms")
+        if _env_bool("VULCAN_TELEMETRY"):
+            logger.info("[VULCAN PROFILER] search_semantic(%s) C++ ZSTD: %.2fms", source_id, (time.perf_counter() - t_start) * 1000)
         return results
 
-    except Exception as e:
-        if os.environ.get("VULCAN_TELEMETRY") == "1": print(f"[ERRO search_local]: {e}")
+    except Exception:
+        logger.exception("search_local failed")
         return []
 
+
 # ---------------------------------------------------------------------------
-# RESTANTE (info, list, probe, cli)
+# INFO / LIST
 # ---------------------------------------------------------------------------
+
 def index_info(source_id: str) -> dict:
     db_path = _source_id_to_db(source_id)
     zim = _find_zim_for_source(source_id)
@@ -679,14 +832,18 @@ def index_info(source_id: str) -> dict:
             info["exists"] = True
             info["mode"] = "SiCDox (Tokenized)" if meta.get("sicdox_ver") else "Texto Puro"
             con.close()
-        except Exception: pass
+        except Exception:
+            logger.debug("index_info failed for %s", source_id, exc_info=True)
     return info
 
-def list_indexes() -> "list[dict]":
-    seen, result = set(),[]
+
+def list_indexes() -> List[dict]:
+    seen, result = set(), []
     if INDEX_DIR.exists():
         for db_file in sorted(INDEX_DIR.glob("*.db")):
-            sid = db_file.stem; seen.add(sid); result.append(index_info(sid))
+            sid = db_file.stem
+            seen.add(sid)
+            result.append(index_info(sid))
     if ZIM_DIR.exists():
         for zim_file in sorted(ZIM_DIR.glob("*.zim")):
             sid = _zim_to_source_id(zim_file)
@@ -695,12 +852,16 @@ def list_indexes() -> "list[dict]":
                 seen.add(sid)
     return result
 
-_ZIM_MAGIC         = 0x044D495A
-_ZIM_HEADER_SIZE   = 80
+
+# ---------------------------------------------------------------------------
+# ZIM header probe / diagnose
+# ---------------------------------------------------------------------------
+
+_ZIM_MAGIC = 0x044D495A
+_ZIM_HEADER_SIZE = 80
 
 
 def _read_zim_header(zim_path: str) -> dict:
-    """Lê 80 bytes do header ZIM sem abrir pyzim (O(1))."""
     with open(zim_path, "rb") as f:
         raw = f.read(_ZIM_HEADER_SIZE)
     if len(raw) < _ZIM_HEADER_SIZE:
@@ -709,12 +870,10 @@ def _read_zim_header(zim_path: str) -> dict:
     if magic != _ZIM_MAGIC:
         raise ValueError(f"Magic inválido: 0x{magic:08X}")
     entry_count, cluster_count = struct.unpack_from("<II", raw, 24)
-    return {"version": f"{major}.{minor}", "uuid": raw[8:24].hex(),
-            "entry_count": entry_count, "cluster_count": cluster_count}
+    return {"version": f"{major}.{minor}", "uuid": raw[8:24].hex(), "entry_count": entry_count, "cluster_count": cluster_count}
 
 
 def probe_zim(zim_path: str) -> None:
-    """Exibe metadados do ZIM lendo apenas o header binário."""
     try:
         info = _read_zim_header(zim_path)
         size_mb = round(Path(zim_path).stat().st_size / 1_048_576, 1)
@@ -727,12 +886,8 @@ def probe_zim(zim_path: str) -> None:
     except Exception as e:
         print(f"  [PROBE] FALHOU: {e}")
 
-def diagnose_zim(zim_path: str, n: int = 20) -> None:
-    """Inspeciona as primeiras N entradas do ZIM e imprime atributos reais.
 
-    Usar quando build retorna 0 artigos: revela o que pyzim enxerga
-    (namespace, MIME type, is_redirect, tamanho do conteúdo).
-    """
+def diagnose_zim(zim_path: str, n: int = 20) -> None:
     try:
         import pyzim
     except ImportError:
@@ -747,17 +902,21 @@ def diagnose_zim(zim_path: str, n: int = 20) -> None:
         for i, entry in enumerate(zim.iter_entries()):
             if i >= n:
                 break
-            is_redir  = getattr(entry, "is_redirect", "?")
-            ns        = getattr(entry, "namespace", "?")
-            if isinstance(ns, bytes): ns = ns.decode("utf-8", errors="ignore")
-            mime      = getattr(entry, "mimetype", None) or getattr(entry, "mime_type", "?")
-            if callable(mime): mime = mime()
-            if isinstance(mime, bytes): mime = mime.decode("utf-8", errors="ignore")
-            title     = getattr(entry, "title", "?")
-            if isinstance(title, bytes): title = title.decode("utf-8", errors="ignore")
-            content   = _read_entry_content(entry)
-            clen      = len(content) if content else 0
-            chead     = ""
+            is_redir = getattr(entry, "is_redirect", "?")
+            ns = getattr(entry, "namespace", "?")
+            if isinstance(ns, bytes):
+                ns = ns.decode("utf-8", errors="ignore")
+            mime = getattr(entry, "mimetype", None) or getattr(entry, "mime_type", "?")
+            if callable(mime):
+                mime = mime()
+            if isinstance(mime, bytes):
+                mime = mime.decode("utf-8", errors="ignore")
+            title = getattr(entry, "title", "?")
+            if isinstance(title, bytes):
+                title = title.decode("utf-8", errors="ignore")
+            content = _read_entry_content(entry)
+            clen = len(content) if content else 0
+            chead = ""
             if content:
                 chead = content[:60].replace(b"\n", b" ").decode("utf-8", errors="ignore")
             print(f"  {i:<4} {str(is_redir):<10} {str(ns):<12} {str(mime)[:28]:<30} {clen:<14} {str(title)[:40]}")
@@ -765,92 +924,104 @@ def diagnose_zim(zim_path: str, n: int = 20) -> None:
     print()
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
-_HELP = "ORN LocalIndex v6.0 — SiCDox (Semantic Compression)"
+def _cli_main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(prog="local_index", description="ORN LocalIndex v6.0 — SiCDox (Semantic Compression)")
+    parser.add_argument("--gguf", help="Caminho para o arquivo .gguf (sobe para SICDOX_GGUF)")
+    parser.add_argument("--verbose", action="store_true", help="Ativa modo verboso")
 
-def _cli_main() -> None:
-    import sys
-    import time
-    from pathlib import Path
-    
-    args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"): 
-        print(_HELP)
-        return
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("probe", help="Ler header do zim")
+    b = sub.add_parser("build", help="Construir índice tokenizado")
+    b.add_argument("zim", help="Caminho do arquivo .zim")
+    b.add_argument("source_id", nargs="?", help="Source ID opcional")
+    s = sub.add_parser("search", help="Buscar no índice local")
+    s.add_argument("source_id", help="Source ID")
+    s.add_argument("query", nargs=argparse.REMAINDER, help="Termos de busca")
+    i = sub.add_parser("info", help="Informação do índice")
+    i.add_argument("source_id", help="Source ID")
+    sub.add_parser("list", help="Listar índices e ZIMs disponíveis")
+    sub.add_parser("diagnose", help="Diagnose ZIM (primeiras entradas)").add_argument("zim", nargs=1)
 
-    cmd = args[0]
+    args = parser.parse_args(argv)
 
-    # --- INJEÇÃO BLINDADA E LOCALIZADOR DO DOXOADE ---
-    # Sobe 3 níveis a partir deste arquivo (engine/tools/local_index.py) 
-    # para chegar na pasta 'olDox222RN' e tenta achar a pasta 'doxoade'
-    try:
-        project_root = Path(__file__).resolve().parents[3]
-        doxoade_dir = project_root / "doxoade"
-        if doxoade_dir.exists() and str(doxoade_dir) not in sys.path:
-            sys.path.insert(0, str(doxoade_dir))
-    except Exception:
-        pass
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
 
+    if args.gguf:
+        os.environ[_GGUF_PATH_ENV] = args.gguf
+
+    # Chronos (opcional)
     chronos_recorder = None
     try:
         from doxoade.chronos import chronos_recorder
-        
+
         class FakeCommand:
-            name = f"INDEX-{cmd.upper()}"
-            
+            name = f"INDEX-{args.cmd.upper() if args.cmd else 'NONE'}"
+
         class FakeCtx:
             invoked_subcommand = None
             command = FakeCommand()
             obj = {}
-            
-        chronos_recorder.start_command(FakeCtx())
-        print(f"[TELEMETRY] Chronos Nexus ativado! (Sessão: {chronos_recorder.session_uuid})")
-    except Exception as e:
-        print(f"  [TELEMETRY] Aviso: Doxoade Chronos não iniciou -> {e}")
-    # -------------------------------------------------
 
-    t_start_global = time.perf_counter()
+        chronos_recorder.start_command(FakeCtx())
+        logger.info("[TELEMETRY] Chronos Nexus ativado! (Sessão: %s)", chronos_recorder.session_uuid)
+    except Exception as e:
+        logger.debug("Chronos não iniciado: %s", e)
+
     exit_code = 0
+    t_start_global = time.perf_counter()
 
     try:
-        if cmd == "probe": 
-            probe_zim(args[1])
-        elif cmd == "build": 
-            build_index(args[1], source_id=args[2] if len(args) > 2 else None)
-            from engine.telemetry.core import GLOBAL_TELEMETRY
-            GLOBAL_TELEMETRY.flush_json("telemetry/local_index_build.json")
-            print("[TELEMETRY] ORN Spans salvos em telemetry/local_index_build.json")
-        elif cmd == "search":
-            t0 = time.perf_counter()
-            results = search_local(" ".join(args[2:]), args[1])
-            elapsed = round((time.perf_counter() - t0) * 1000, 2)
-            if not results: 
-                print(f"\n  Nenhum resultado para a busca.")
+        if args.cmd == "probe":
+            probe_zim(args.zim)
+        elif args.cmd == "build":
+            build_index(args.zim, source_id=getattr(args, "source_id", None))
+            try:
+                GLOBAL_TELEMETRY.flush_json("telemetry/local_index_build.json")
+                logger.info("[TELEMETRY] ORN Spans salvos em telemetry/local_index_build.json")
+            except Exception:
+                logger.debug("Não foi possível salvar GLOBAL_TELEMETRY", exc_info=True)
+        elif args.cmd == "search":
+            q = " ".join(args.query or [])
+            results = search_local(q, args.source_id)
+            elapsed = round((time.perf_counter() - t_start_global) * 1000, 2)
+            if not results:
+                print("\n  Nenhum resultado para a busca.")
             else:
-                for r in results: 
+                for r in results:
                     print(f"\n  [{r.source}] {r.title}\n  {r.body[:400]}")
             print(f"\n  Tempo: {elapsed}ms | {len(results)} resultado(s)")
-        elif cmd == "info":
-            for k, v in index_info(args[1]).items(): 
+        elif args.cmd == "info":
+            for k, v in index_info(args.source_id).items():
                 print(f"  {k:<12}: {v}")
-        elif cmd == "list":
-            for info in list_indexes(): 
+        elif args.cmd == "list":
+            for info in list_indexes():
                 print(f"  {info['source_id']:<45} {info.get('articles', 0):>8}  {info.get('mode', '?')}")
-        else: 
-            print("Comandos: probe | build | search | info | list")
-            
+        elif args.cmd == "diagnose":
+            diagnose_zim(args.zim[0], n=20)
+        else:
+            parser.print_help()
+
     except Exception as e:
         exit_code = 1
-        raise e
-        
+        logger.exception("CLI command failed")
+        raise
+
     finally:
-        # --- FINALIZA O CHRONOS COM SEGURANÇA ---
         if chronos_recorder:
             duration_ms = (time.perf_counter() - t_start_global) * 1000
             try:
                 chronos_recorder.end_command(exit_code, duration_ms)
-                print(f"  [TELEMETRY] Dados gravados no banco de auditoria Doxoade.")
-            except Exception as e:
-                print(f"  [TELEMETRY] Erro ao salvar log do Chronos: {e}")
+                logger.info("[TELEMETRY] Dados gravados no banco de auditoria Doxoade.")
+            except Exception:
+                logger.debug("Erro ao salvar log do Chronos", exc_info=True)
 
-if __name__ == "__main__": _cli_main()
+    return exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli_main())
