@@ -234,8 +234,11 @@ class InvertedIndexSearcher:
 
         for token in tokens:
             docs = self._read_postings(int(token))
-            if len(docs) > idf_threshold:
+            
+            # Só ignora como stop-word se a query tiver mais de 1 ou 2 tokens
+            if len(tokens) > 2 and len(docs) > idf_threshold:
                 continue   # stop word implícita
+                
             for d in docs:
                 scores[d] += 1
 

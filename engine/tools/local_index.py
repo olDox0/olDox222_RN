@@ -198,12 +198,11 @@ def _compress(data: bytes) -> bytes:
     except ImportError: return data
 
 def _decompress(data: bytes) -> bytes:
-    if len(data) >= 4 and data[:4] == b"\xfd\x2f\xb5\x28":
-        try:
-            import pyzstd
-            return pyzstd.decompress(data)
-        except Exception: pass
-    return data
+    try:
+        import pyzstd
+        return pyzstd.decompress(data)
+    except Exception:
+        return data
 
 class LocalResult:
     __slots__ = ("source", "title", "body", "path")
@@ -367,11 +366,26 @@ class TokenizerBridge:
     @classmethod
     def bytes_to_text(cls, data: bytes) -> str:
         """Recria o texto a partir dos Tokens binários para entregar ao RAG"""
-        vocab = cls.get_vocab()
-        arr   = array.array("i")
-        arr.frombytes(data)
-        return vocab.detokenize(arr.tolist()).decode("utf-8", errors="ignore")
+        # Proteção 1: Se o bloco de bytes não for múltiplo de 4, é texto legado
+        if len(data) % 4 != 0:
+            return data.decode("utf-8", errors="ignore")
+            
+        try:
+            vocab = cls.get_vocab()
+            arr   = array.array("i")
+            arr.frombytes(data)
+            tokens = arr.tolist()
+            
+            # Proteção 2 (Anti-C++ Crash): Se um token extrapolar o limite do modelo,
+            # significa que estamos tentando ler texto puro como inteiros.
+            if tokens and (max(tokens) >= vocab.n_vocab() or min(tokens) < 0):
+                return data.decode("utf-8", errors="ignore")
 
+            return vocab.detokenize(tokens).decode("utf-8", errors="ignore")
+            
+        except Exception:
+            # Fallback final: devolve o dado como string normal
+            return data.decode("utf-8", errors="ignore")
 
 # ---------------------------------------------------------------------------
 # LocalResult — __slots__ explícito (Vulcan C++ Safe)
@@ -446,7 +460,7 @@ def _compress(data: bytes) -> bytes:
 
 def _decompress(data: bytes) -> bytes:
     # Detecta magic bytes do ZSTD: 0xFD2FB528
-    if len(data) >= 4 and data[:4] == b"\xfd\x2f\xb5\x28":
+    if len(data) >= 4 and data[:4] == b"\x28\xb5\x2f\xfd":
         try:
             import pyzstd
             return pyzstd.decompress(data)
@@ -616,6 +630,7 @@ def search_local(query: str, source_id: str, limit: int = 3) -> "list[LocalResul
             for title, path, blob in rows:
                 decompressed_bytes = _decompress(blob)
                 body = TokenizerBridge.bytes_to_text(decompressed_bytes)
+                body = re.sub(r'\n\s*\n', '\n\n', body).strip()
                 results.append(LocalResult(label, title, body, path))
         else:
             # 2. SE NÃO ACHOU NO TÍTULO, TENTA A BUSCA POR TOKENS (Inverted Index)
@@ -636,6 +651,7 @@ def search_local(query: str, source_id: str, limit: int = 3) -> "list[LocalResul
                     title, path, blob = row
                     decompressed_bytes = _decompress(blob)
                     body = TokenizerBridge.bytes_to_text(decompressed_bytes)
+                    body = re.sub(r'\n\s*\n', '\n\n', body).strip()
                     results.append(LocalResult(label, title, body, path))
 
         con.close()
@@ -646,7 +662,7 @@ def search_local(query: str, source_id: str, limit: int = 3) -> "list[LocalResul
 
     except Exception as e:
         if os.environ.get("VULCAN_TELEMETRY") == "1": print(f"[ERRO search_local]: {e}")
-        return[]
+        return []
 
 # ---------------------------------------------------------------------------
 # RESTANTE (info, list, probe, cli)

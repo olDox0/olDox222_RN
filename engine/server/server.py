@@ -450,16 +450,13 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
             "temperature": _cfg.temperature,
             "top_p": _cfg.top_p,
             "top_k": _cfg.top_k,
-            "min_p": _cfg.min_p,
             "repeat_penalty": _cfg.repeat_penalty,
         }
-        try:
-            out = _llm(prompt_full, **infer_kwargs)
-        except TypeError as exc:
-            if "min_p" not in str(exc):
-                raise
-            infer_kwargs.pop("min_p", None)
-            out = _llm(prompt_full, **infer_kwargs)
+
+        if _cfg.min_p is not None:
+            infer_kwargs["min_p"] = float(_cfg.min_p)
+
+        out = _llm(prompt_full, **infer_kwargs)
         llm_call_ms = (time.monotonic() - t_llm0) * 1000.0
 
     _observe_telemetry("server.infer.lock_wait", lock_wait_ms)
