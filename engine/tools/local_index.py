@@ -139,10 +139,15 @@ import sqlite3
 import struct
 import sys
 import time
+import unicodedata
+import difflib
+import html as _html_module
+
 from contextlib import closing
 from pathlib import Path
 from threading import Lock
 from typing import Iterator, List, Optional
+
 
 # dependências do projeto (mantidas)
 from engine.tools.inverted_index import InvertedIndexBuilder, InvertedIndexSearcher
@@ -162,10 +167,20 @@ INDEX_DIR = Path(os.environ.get("SICDOX_INDEX_DIR", "data/index"))
 _DEFAULT_GGUF = r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto_OIA\olDox222RN\ORN\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
 _GGUF_PATH_ENV = "SICDOX_GGUF"
 
-# Regexes (consolidadas)
+# Regexes melhor definidos — preservam blocos de interesse
 _RE_SCRIPT = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
-_RE_NAV = re.compile(r'<[^>]*(navbox|mw-toc|mw-jump|sidebar|infobox|reflist)[^>]*>.*?</\w+>', re.DOTALL | re.IGNORECASE)
-_RE_TAG = re.compile(r"<[^>]+>")
+# NAV: manter infobox? opcional — deixei para remover apenas 'navbox' e 'mw-toc' mas sem tocar outras tags cruciais
+_RE_NAV = re.compile(r'<[^>]*(navbox|mw-toc|mw-jump|sidebar|reflist)[^>]*>.*?</\w+>', re.DOTALL | re.IGNORECASE)
+
+# Tags a preservar (capturamos conteúdo entre tags e substituímos por placeholders)
+# preserva: <pre>...</pre>, <code>...</code>, <syntaxhighlight>...</syntaxhighlight>, <math>...</math>, <math-display>...</math-display>
+_RE_PRESERVE = re.compile(
+    r"(?P<open><(?P<tag>pre|code|syntaxhighlight|math|math-display|source)[^>]*>)(?P<body>.*?)(?P<close></(?P=tag)>)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Tags a remover (mas depois do preserve)
+_RE_TAG = re.compile(r"<[^>\n]+>")  # menos agressivo: não atravessa linhas arbitrárias sem '>'
 _RE_ENTITY = re.compile(r"&(?:[a-zA-Z]{2,8}|#\d{1,6});")
 _RE_MULTI = re.compile(r"[ \t]{2,}")
 _RE_NEWL = re.compile(r"\n{3,}")
@@ -174,6 +189,40 @@ _RE_URL = re.compile(r"https?://\S+")
 # ---------------------------------------------------------------------------
 # Utilidades
 # ---------------------------------------------------------------------------
+
+try:
+    from rapidfuzz import fuzz, process as rprocess  # opcional, muito recomendado
+    _HAS_RAPIDFUZZ = True
+except Exception:
+    _HAS_RAPIDFUZZ = False
+
+def _normalize_text_for_match(s: str) -> str:
+    """Lower + remove accents + collapse whitespace."""
+    if s is None:
+        return ""
+    s = s.lower().strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def _trigrams_for(s: str) -> set:
+    """Return set of character trigrams for string s (with boundary padding)."""
+    s = _normalize_text_for_match(s)
+    if not s:
+        return set()
+    s = f"  {s} "  # pad start/end
+    tr = set()
+    for i in range(len(s) - 2):
+        tr.add(s[i : i + 3])
+    return tr
+
+def _similarity_ratio(a: str, b: str) -> float:
+    """Return similarity [0..1] between two normalized strings."""
+    if _HAS_RAPIDFUZZ:
+        return fuzz.token_sort_ratio(a, b) / 100.0
+    # fallback to difflib.SequenceMatcher
+    return difflib.SequenceMatcher(None, a, b).ratio()
 
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.environ.get(name)
@@ -185,19 +234,209 @@ def _env_bool(name: str, default: bool = False) -> bool:
 def _like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
+def _clean_body(text: str, max_chars: int = 100_000) -> str:
+    """
+    Normaliza o body antes de retornar/exibir:
+     - remove caracteres de controle
+     - normaliza quebras de linha e espaços
+     - remove repetições do título no começo (linhas idênticas repetidas)
+     - colapsa runs longos de newline para no máximo 2
+     - mantém parágrafos intactos ao truncar
+    """
+    if not text:
+        return ""
+
+    # ensure str
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            text = ""
+
+    # remove unicode control chars except \n and \t
+    text = "".join(ch for ch in text if (ch >= " " or ch in ("\n", "\t")))
+
+    # normalize newlines and tabs/spaces
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\t", " ")
+
+    # trim leading/trailing spaces on each line, but keep empty lines
+    lines = [ln.rstrip() for ln in text.split("\n")]
+
+    # Remove leading empty lines
+    while lines and lines[0].strip() == "":
+        lines.pop(0)
+
+    # If the first non-empty line is short (likely a title/header),
+    # remove consecutive repetitions of the same short header at the top.
+    if lines:
+        first = lines[0].strip()
+        if 0 < len(first) <= 120:
+            # remove immediate repeated lines equal to first (case-insensitive, ignore punctuation)
+            def norm_key(s: str) -> str:
+                s2 = re.sub(r"[^\w\s]", "", s or "").strip().lower()
+                return s2
+            fk = norm_key(first)
+            # consume repeated header lines up to a sane limit
+            i = 1
+            removed = 0
+            while i < min(len(lines), 30):  # only check the first 30 lines to avoid O(n^2)
+                if norm_key(lines[i]) == fk:
+                    lines.pop(i)
+                    removed += 1
+                    continue
+                # also remove if the next line is empty and the following is same header (header + blank + header)
+                if lines[i].strip() == "" and i + 1 < len(lines) and norm_key(lines[i + 1]) == fk:
+                    # pop the blank and the next header
+                    lines.pop(i)     # blank
+                    lines.pop(i)     # the repeated header
+                    removed += 2
+                    continue
+                i += 1
+
+    # collapse multiple identical short lines in the top region (e.g., "Chemistry" repeated with blanks)
+    # but do this conservatively only for the first ~40 lines
+    limit_top = min(len(lines), 40)
+    out_top = []
+    seen_short = set()
+    for ln in lines[:limit_top]:
+        key = ln.strip().lower()
+        if key and len(key) <= 120:
+            if key in seen_short:
+                # skip repeated short header
+                continue
+            seen_short.add(key)
+        out_top.append(ln)
+    # append the remainder lines unchanged
+    rest = lines[limit_top:]
+    lines = out_top + rest
+
+    # collapse runs of 3+ newlines to exactly 2
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # remove leading/trailing whitespace
+    text = text.strip()
+
+    # Remove stray long sequences of the same character (e.g., many repeated '-') that may be header artifacts
+    text = re.sub(r"([\-=_\*])\1{6,}", r"\1\1\1", text)
+
+    # limit total length while preserving paragraph boundaries
+    if len(text) > max_chars:
+        parts = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+        out_parts = []
+        total = 0
+        for p in parts:
+            if total + len(p) + 2 > max_chars and out_parts:
+                break
+            out_parts.append(p)
+            total += len(p) + 2
+            if len(out_parts) >= 6:
+                break
+        text = "\n\n".join(out_parts)
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "..."
+
+    return text
+    
 
 # ---------------------------------------------------------------------------
 # HTML cleaning / helpers
 # ---------------------------------------------------------------------------
 
+# Substitua a função _strip_html existente por esta.
+_RE_CODE = re.compile(
+    r"(?P<open><(?P<tag>pre|code|script)(?P<attrs>[^>]*)>)(?P<body>.*?)(?P<close></(?P=tag)>)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+def _extract_code_blocks(html: str) -> tuple[str, list[tuple[str, str]]]:
+    """
+    Extrai blocos de código (pre, code, script) e os substitui por placeholders.
+    Retorna (html_with_placeholders, list_of_code_blocks)
+    cada code block -> (placeholder, code_text_with_optional_lang)
+    """
+    code_blocks = []
+    out_html = []
+    last = 0
+    idx = 0
+    for m in _RE_CODE.finditer(html):
+        start, end = m.span()
+        tag = m.group("tag").lower()
+        attrs = m.group("attrs") or ""
+        body = m.group("body") or ""
+        # Do not lose &lt; &gt; in code: keep body as-is (no entity unescape)
+        # try to detect language from class or data-lang
+        lang = ""
+        cls_m = re.search(r'class=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+        if cls_m:
+            cls = cls_m.group(1)
+            # typical patterns: language-python, lang-python, brush:python
+            lm = re.search(r"(?:lang|language|language-|(brush:)|(?:language:))?([a-zA-Z0-9_+-]+)", cls)
+            if lm:
+                # take last token that looks like a language
+                parts = re.split(r"[^\w+-]+", cls)
+                for p in parts[::-1]:
+                    if len(p) <= 20 and re.match(r"^[a-zA-Z0-9_+-]+$", p):
+                        lang = p.lower()
+                        break
+        data_lang = re.search(r'data-lang=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+        if data_lang:
+            lang = data_lang.group(1).lower()
+        # placeholder
+        ph = f"__CODE_BLOCK_{idx}__"
+        code_text = body
+        # If HTML-escaped inside (e.g., &lt;), we leave as-is; tokeniser will handle.
+        code_repr = f"```{lang}\n{code_text}\n```"
+        code_blocks.append((ph, code_repr))
+        out_html.append(html[last:start])
+        out_html.append(ph)
+        last = end
+        idx += 1
+    out_html.append(html[last:])
+    return "".join(out_html), code_blocks
+
+def _restore_code_placeholders(text: str, code_blocks: list[tuple[str,str]]) -> str:
+    for ph, code in code_blocks:
+        text = text.replace(ph, code)
+    return text
+
 def _strip_html(html: str, max_chars: int = 8000) -> str:
-    html = _RE_SCRIPT.sub(" ", html)
-    html = _RE_NAV.sub(" ", html)
-    html = _RE_TAG.sub(" ", html)
-    html = _RE_ENTITY.sub(" ", html)
-    html = _RE_URL.sub(" ", html)
-    text = _RE_MULTI.sub(" ", html)
+    """
+    Limpeza avançada que preserva blocos de código.
+    - extrai code/pre/script em placeholders;
+    - remove nav/infobox/style tags e outras tags HTML;
+    - preserva entidades dentro de code blocks;
+    - restaura code blocks como fenced code (```lang\n...\n```).
+    """
+    if not html:
+        return ""
+
+    # 1) extrair blocos de código preservando seu conteúdo
+    extracted_html, code_blocks = _extract_code_blocks(html)
+
+    # 2) remover blocos de navegação/infobox que poluem
+    text = _RE_NAV.sub(" ", extracted_html)
+
+    # 3) remover apenas <style> (mantemos scripts/code extracted above)
+    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+
+    # 4) remover tags restantes (mas placeholders permanecem)
+    text = _RE_TAG.sub(" ", text)
+
+    # 5) não destruir conteúdo dos code blocks com entity removal - as entidades fora de code podem ser simplificadas
+    # primeiro capturar e preservar placeholders (eles são alfanuméricos com underscores)
+    # então aplicamos entity/substitutions no restante
+    text = _RE_ENTITY.sub(" ", text)
+    text = _RE_URL.sub(" ", text)
+    text = _RE_MULTI.sub(" ", text)
     text = _RE_NEWL.sub("\n\n", text).strip()
+
+    # 6) restaurar blocos de código convertendo placeholders para fences
+    if code_blocks:
+        text = _restore_code_placeholders(text, code_blocks)
+
+    # 7) limitar tamanho final
     return text[:max_chars]
 
 
@@ -363,31 +602,128 @@ class LocalResult:
     def ok(self) -> bool:
         return bool(self.title and self.body.strip())
 
-    def get_snippet(self, query: str = "", max_chars: int = 600) -> str:
+    def get_snippet(self, query: str = "", max_chars: int = 1200, n_snippets: int = 3) -> str:
+        """
+        Retorna até `n_snippets` trechos relevantes com no máximo `max_chars` chars
+        no total. Se query vazia ou não encontrada, devolve os primeiros max_chars do body.
+        Mantém e preserva marcadores [CODE-BEGIN] / [MATH-BEGIN] se existirem.
+        """
         if not self.ok:
             return ""
         text = self.body
-        if query:
-            q_lower = query.lower()
-            t_lower = text.lower()
-            idx = t_lower.find(q_lower)
-            if idx == -1:
-                for word in q_lower.split():
-                    if len(word) > 3:
-                        idx = t_lower.find(word)
-                        if idx != -1:
+        if not text:
+            return ""
+
+        # normalize search tokens (simple words)
+        q = (query or "").strip()
+        if q:
+            qlower = q.lower()
+            # localizar todas ocorrências de palavras (fallback: substring)
+            positions = []
+            # procura por palavras longas primeiro
+            words = [w for w in re.findall(r"[A-Za-z0-9_]{2,}", qlower)]
+            if words:
+                for w in words:
+                    start = 0
+                    while True:
+                        idx = text.lower().find(w, start)
+                        if idx == -1:
                             break
-            if idx != -1:
-                start = max(0, idx - 80)
-                end = min(len(text), start + max_chars)
-                if start > 0:
-                    space_idx = text.find(" ", start)
-                    start = space_idx + 1 if space_idx != -1 else start
-                snippet = text[start:end].strip()
-                return f"...{snippet}..." if start > 0 else snippet
-        if len(text) > max_chars:
-            return text[:max_chars] + "..."
-        return text
+                        positions.append(idx)
+                        start = idx + len(w)
+            else:
+                # fallback substring
+                idx = text.lower().find(qlower)
+                if idx != -1:
+                    positions.append(idx)
+
+            # dedupe and sort
+            positions = sorted(set(positions))
+
+            if positions:
+                snippets = []
+                used = 0
+                # escolher até n_snippets janelas em torno das posições (evitar sobreposição)
+                for pos in positions:
+                    if len(snippets) >= n_snippets:
+                        break
+                    # janela:  start..end
+                    left = max(0, pos - 120)   # 120 chars antes
+                    right = min(len(text), pos + 420)  # 420 after -> ~540 window
+                    # evitar sobreposição com snippet anterior
+                    if snippets and left < snippets[-1][1]:
+                        left = snippets[-1][1] + 1
+                    snippets.append((left, right))
+                    used += (right - left)
+
+                # juntar snippets respeitando max_chars
+                out_parts = []
+                total = 0
+                for left, right in snippets:
+                    part = text[left:right].strip()
+                    # garantir que não corte código markers no meio
+                    # se começa dentro de [CODE-BEGIN], expandir até [CODE-END]
+                    if "[CODE-BEGIN" in part and "[CODE-END]" not in part:
+                        # expand to next code end
+                        end_idx = text.find("[CODE-END]", right)
+                        if end_idx != -1:
+                            part = text[left:end_idx + len("[CODE-END]")]
+                    # similar for math markers
+                    if "[MATH-BEGIN]" in part and "[MATH-END]" not in part:
+                        end_idx = text.find("[MATH-END]", right)
+                        if end_idx != -1:
+                            part = text[left:end_idx + len("[MATH-END]")]
+                    # highlight query occurrences (simple)
+                    if q:
+                        try:
+                            # highlight words from `words`, wrap in ** **
+                            for w in words:
+                                # case-preserving replace: use regex with IGNORECASE
+                                part = re.sub(rf"(?i)\b{re.escape(w)}\b", lambda m: f"**{m.group(0)}**", part)
+                        except Exception:
+                            pass
+                    # append with ellipses
+                    if left > 0:
+                        part = "..." + part
+                    if right < len(text):
+                        part = part + "..."
+                    out_parts.append(part)
+                    total += len(part)
+                    if total >= max_chars:
+                        break
+
+                # fallback: no occurrences found -> return first N paragraphs (more context)
+                paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
+                if not paras:
+                    return ""
+                # escolha até 3 parágrafos que caibam em max_chars
+                out = []
+                total = 0
+                for p in paras[:6]:  # olhar até 6 parágrafos, pegar os melhores 1-3
+                    if total + len(p) + 2 > max_chars and out:
+                        break
+                    out.append(p)
+                    total += len(p) + 2
+                    if len(out) >= 3:
+                        break
+                snippet = "\n\n".join(out)
+                if len(snippet) > max_chars:
+                    snippet = snippet[:max_chars].rstrip() + "..."
+                return snippet
+
+        # fallback: no occurrences found -> return the leading context (preserving code/math markers)
+        leading = text[:max_chars]
+        # try to avoid cutting inside markers: if we cut inside [CODE-BEGIN], extend until [CODE-END] or trim to last newline
+        if "[CODE-BEGIN" in leading and "[CODE-END]" not in leading:
+            end_idx = text.find("[CODE-END]")
+            if end_idx != -1 and end_idx < max_chars * 3:
+                # append until code end (within reason)
+                leading = text[: end_idx + len("[CODE-END]")]
+        # normalize spaces/newlines
+        leading = leading.strip()
+        if len(leading) < len(text):
+            leading = leading + "..."
+        return leading
 
     def to_prompt_block(self, max_chars: int = 600, query: str = "") -> str:
         if not self.ok:
@@ -595,6 +931,15 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
         # Optional index for faster joins
         con.execute("CREATE INDEX IF NOT EXISTS idx_pages_hash ON pages(content_hash)")
 
+        # table for title trigrams (for fuzzy title search)
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS title_trigrams (
+            trigram TEXT,
+            doc_id INTEGER
+        )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_title_trigrams_trigram ON title_trigrams(trigram)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_title_trigrams_doc ON title_trigrams(doc_id)")
 
         con.execute("BEGIN")
         # Preparações para otimização:
@@ -667,6 +1012,21 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
 
             count += 1
             buf_pages.append((count, title, path, h))
+            
+            # accumulate title trigrams for this doc
+            tnorm = _normalize_text_for_match(title)
+            trigs = _trigrams_for(tnorm)
+            # buffer inserts into in-memory list for batch insert later
+            if "title_trigrams_pending" not in locals():
+                title_trigrams_pending = []
+            for tg in trigs:
+                title_trigrams_pending.append((tg, count))
+
+            # flush periodically (same batch timing)
+            if len(title_trigrams_pending) >= 2000:
+                with orn_span("build.sql_insert_trigrams", category="index"):
+                    con.executemany("INSERT INTO title_trigrams (trigram, doc_id) VALUES (?, ?)", title_trigrams_pending)
+                title_trigrams_pending = []
 
             # Para melhorar relevância, duplicamos tokens do título ao passar ao inverted index
             # (aumenta peso de termos que aparecem no título)
@@ -690,6 +1050,9 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
 
         if buf_pages:
             con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
+        # flush any remaining title trigram pending
+        if 'title_trigrams_pending' in locals() and title_trigrams_pending:
+            con.executemany("INSERT INTO title_trigrams (trigram, doc_id) VALUES (?, ?)", title_trigrams_pending)
         con.execute("COMMIT")
 
     except Exception:
@@ -725,6 +1088,48 @@ def _simple_query_tokens(text: str) -> list[int]:
         toks.append(h & 0x7fffffff)
     return toks
 
+def _fuzzy_title_search(con: sqlite3.Connection, query: str, candidate_limit: int = 30, final_limit: int = 10):
+    """Retorna lista ordenada de doc_ids por similaridade/title-overlap."""
+    qnorm = _normalize_text_for_match(query)
+    trigs = list(_trigrams_for(qnorm))
+    if not trigs:
+        return []
+
+    # busca candidatos por overlap de trigramas (fast, via SQL aggregate)
+    # nota: usar parâmetros com lista -> construímos placeholders
+    placeholders = ",".join("?" for _ in trigs)
+    sql = f"""
+      SELECT doc_id, COUNT(*) as cnt
+      FROM title_trigrams
+      WHERE trigram IN ({placeholders})
+      GROUP BY doc_id
+      ORDER BY cnt DESC
+      LIMIT ?
+    """
+    rows = con.execute(sql, (*trigs, candidate_limit)).fetchall()
+    if not rows:
+        return []
+
+    candidates = [r[0] for r in rows]
+    # fetch titles for candidates
+    rows2 = con.execute(f"SELECT id, title FROM pages WHERE id IN ({','.join('?' for _ in candidates)})", candidates).fetchall()
+    title_map = {r[0]: r[1] for r in rows2}
+
+    scored = []
+    for doc_id in candidates:
+        title = title_map.get(doc_id, "")
+        score = _similarity_ratio(qnorm, _normalize_text_for_match(title))
+        # boost exact/prefix matches
+        tnorm = _normalize_text_for_match(title)
+        if tnorm == qnorm:
+            score += 0.6
+        elif tnorm.startswith(qnorm):
+            score += 0.35
+        scored.append((doc_id, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [doc_id for doc_id, _ in scored[:final_limit]]
+
 def search_local(query: str, source_id: str, limit: int = 3) -> List[LocalResult]:
     if not query.strip():
         return []
@@ -744,44 +1149,196 @@ def search_local(query: str, source_id: str, limit: int = 3) -> List[LocalResult
 
         inv_dir = INDEX_DIR / source_id
         if inv_dir.exists():
-            try:
-                with InvertedIndexSearcher(inv_dir) as searcher:
-                    if _env_bool("SICDOX_FAST_MODE"):
-                        query_tokens = _simple_query_tokens(query)
-                    else:
-                        vocab = TokenizerBridge.get_vocab()
-                        query_tokens = vocab.tokenize(query.encode("utf-8"), add_bos=False)
-                    doc_ids = searcher.search(query_tokens, limit=limit)
-            except Exception:
-                logger.debug("Inverted index search failed; falling back", exc_info=True)
+            # --- obter candidatos via inverted index (body) e fuzzy title (title) ---
+                # --- obter candidatos via inverted index (body) e fuzzy title (title) ---
+                candidates = []
+                body_ids: list[int] = []
 
-        if not doc_ids:
-            # Fallback por título: prioriza igualdade, depois prefixo, depois substring
-            q_esc = _like_escape(query)
-            exact = query
-            starts = f"{q_esc}%"
-            contains = f"%{q_esc}%"
-            rows = con.execute(
-                "SELECT p.id, p.title FROM pages p WHERE p.title LIKE ? ESCAPE '\\\\' OR p.title LIKE ? ESCAPE '\\\\' OR p.title LIKE ? ESCAPE '\\\\' LIMIT ?",
-                (exact, starts, contains, limit),
-            ).fetchall()
-            # ordena manualmente: igualdade -> prefixo -> contains, e depois por tamanho do título
-            ordered = []
-            for r in rows:
-                pid, ptitle = r
-                pl = ptitle.lower()
-                ql = query.lower()
-                if pl == ql:
-                    score = 0
-                elif pl.startswith(ql):
-                    score = 1
-                elif ql in pl:
-                    score = 2
-                else:
-                    score = 3
-                ordered.append((score, len(ptitle), pid))
-            ordered.sort()
-            doc_ids = [t[2] for t in ordered][:limit]
+                # Normalize once
+                q_raw = query.strip()
+                qnorm = _normalize_text_for_match(q_raw)
+
+                # 0) título exato (mais rápido e decisivo) -> se encontrar, retorna imediatamente
+                try:
+                    row = con.execute("SELECT p.id, p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE LOWER(p.title) = ? LIMIT 1", (qnorm,)).fetchone()
+                    if row:
+                        doc_id, title, path, blob = row
+                        try:
+                            decompressed = _decompress(blob)
+                            body = TokenizerBridge.bytes_to_text(decompressed)
+                        except Exception:
+                            body = ""
+                        # retorno imediato com o artigo exato no topo
+                        res = LocalResult(label, title, (body[len(title):].strip() if body.lower().startswith(title.lower()) else body), path)
+                        con.close()
+                        return [res]
+                except Exception:
+                    # não fatal — continuar com o fluxo normal
+                    logger.debug("exact title lookup failed", exc_info=True)
+
+                # Detecta queries que parecem fórmulas químicas (ex.: CH4, H2O, C6H6, subscripts removed)
+                _formula_like = bool(re.search(r"[A-Za-z].*\d|\d", q_raw)) and len(q_raw) <= 12  # heurística curta
+
+                # 1) tentar candidates pelo inverted index (body)
+                try:
+                    with InvertedIndexSearcher(inv_dir) as searcher:
+                        if _env_bool("SICDOX_FAST_MODE"):
+                            query_tokens = _simple_query_tokens(query)
+                        else:
+                            vocab = TokenizerBridge.get_vocab()
+                            query_tokens = vocab.tokenize(query.encode("utf-8"), add_bos=False)
+                        body_ids = searcher.search(query_tokens, limit=80) or []
+                        candidates.extend(body_ids)
+                except Exception:
+                    logger.debug("Inverted index search failed; continuing", exc_info=True)
+
+                # 2) title quick matches (exact/prefix/contains) — fast SQL
+                q_esc = _like_escape(q_raw)
+                exact = q_raw
+                starts = f"{q_esc}%"
+                contains = f"%{q_esc}%"
+                try:
+                    rows = con.execute(
+                        "SELECT p.id FROM pages p WHERE p.title = ? OR p.title LIKE ? ESCAPE '\\' OR p.title LIKE ? ESCAPE '\\' LIMIT ?",
+                        (exact, starts, contains, 80),
+                    ).fetchall()
+                    title_ids_quick = [r[0] for r in rows]
+                except Exception:
+                    title_ids_quick = []
+
+                # 3) if no quick title hits, try fuzzy trigram
+                if not title_ids_quick:
+                    try:
+                        title_ids_quick = _fuzzy_title_search(con, q_raw, candidate_limit=200, final_limit=60)
+                    except Exception:
+                        title_ids_quick = []
+
+                # union candidates keeping order (body first, then title)
+                for tid in title_ids_quick:
+                    if tid not in candidates:
+                        candidates.append(tid)
+
+                if not candidates:
+                    # nothing found
+                    con.close()
+                    return []
+
+                # --- fetch candidate blobs in one query ---
+                placeholders = ",".join("?" for _ in candidates)
+                rows = con.execute(
+                    f"SELECT p.id, p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE p.id IN ({placeholders})",
+                    candidates,
+                ).fetchall()
+                row_map = {r[0]: r for r in rows}
+
+                # prepare query token set (if tokenized)
+                qtoken_set = set(int(t) for t in (query_tokens or []))
+
+                scored = []
+                for cid in candidates:
+                    r = row_map.get(cid)
+                    if not r:
+                        continue
+                    doc_id, title, path, blob = r
+
+                    # tenta extrair tokens (lista de ints) e texto detokenizado
+                    tokens = None
+                    body_text = ""
+                    try:
+                        decompressed = _decompress(blob)
+                        arr = array.array("i")
+                        arr.frombytes(decompressed)
+                        tokens = arr.tolist()
+                        body_text = TokenizerBridge.bytes_to_text(decompressed)
+                        
+                        body_text = _clean_body(body_text, max_chars=50_000)
+                        # se começou com title, remova
+                        if body_text.lower().startswith(title.lower()):
+                            body_text = re.sub(rf"^{re.escape(title)}\s*", "", body_text, flags=re.IGNORECASE).lstrip()
+                    except Exception:
+                        # fallback: tentar decodificar bruto para texto
+                        try:
+                            body_text = TokenizerBridge.bytes_to_text(_decompress(blob))
+                        except Exception:
+                            body_text = ""
+
+                    # sinais a extrair
+                    dl = max(1, len(tokens) if tokens is not None else max(1, len(body_text.split())))
+                    if tokens is not None:
+                        positions = [i for i, tok in enumerate(tokens) if tok in qtoken_set]
+                        tf = len(positions)
+                        early_window = min(200, max(20, dl // 8))
+                        early_tf = sum(1 for p in positions if p < early_window)
+                        first_pos = min(positions) if positions else None
+                    else:
+                        # substring heuristic counts (word-level)
+                        words = [w for w in re.findall(r"[A-Za-z0-9]+", body_text.lower())]
+                        qwords = [w for w in re.findall(r"[A-Za-z0-9]+", q_raw.lower())]
+                        tf = sum(body_text.lower().count(w) for w in qwords if len(w) > 0)
+                        early_tf = sum(body_text[:400].lower().count(w) for w in qwords if len(w) > 0)
+                        positions = []
+                        first_pos = 0 if early_tf > 0 else None
+
+                    # title signals
+                    tnorm = _normalize_text_for_match(title)
+                    title_boost = 0.0
+                    if tnorm == qnorm:
+                        title_boost = 3.0
+                    elif tnorm.startswith(qnorm):
+                        title_boost = 1.8
+                    else:
+                        title_sim = _similarity_ratio(qnorm, tnorm)
+                        title_boost = 0.9 * title_sim
+
+                    # body signals
+                    density = tf / dl
+                    early_density = early_tf / max(1, dl)
+                    front_bonus = 1.0 if early_tf > 0 and (positions and min(positions) < max(10, dl // 20)) else 0.0
+
+                    # special handling for formula-like queries: substring match priority
+                    formula_score = 0.0
+                    if _formula_like and body_text:
+                        # case-sensitive substring check first (chemical formulas are case-sensitive-ish)
+                        if q_raw in body_text:
+                            formula_score = 6.0
+                        elif q_raw.lower() in body_text.lower():
+                            formula_score = 2.0
+
+                    # combine signals into final score (weights tuned to favor title and early mentions)
+                    score = 0.0
+                    score += 120.0 * title_boost        # strong bias to title matches
+                    score += 300.0 * early_density      # emphasize appearances at start
+                    score += 120.0 * density            # normalized frequency in document
+                    score += 30.0 * tf                  # raw tf small bonus
+                    score += 80.0 * front_bonus         # very early occurrence bonus
+                    score += formula_score              # formula special boost
+
+                    # boost small: if candidate came from inverted body search, keep slight preference
+                    if cid in body_ids:
+                        score *= 1.03
+
+                    scored.append((doc_id, score, title, path, body_text))
+
+                # sort & limit
+                scored.sort(key=lambda x: x[1], reverse=True)
+                top = scored[:limit]
+
+                # build results
+                results = []
+                for doc_id, score, title, path, body_text in top:
+                    body = body_text or ""
+                    body = re.sub(r"\n\s*\n", "\n\n", body).strip()
+                    # safer remove of leading title + following separators/newlines
+                    pat = rf"^\s*{re.escape(title)}\s*[:\-\|]?\s*(\r?\n)+"
+                    body = re.sub(pat, "", body, flags=re.IGNORECASE)
+                    # collapse remaining repeated blank lines
+                    body = re.sub(r"\n{3,}", "\n\n", body).lstrip()
+                    results.append(LocalResult(label, title, body, path))
+
+                con.close()
+                if _env_bool("VULCAN_TELEMETRY"):
+                    logger.info("[VULCAN PROFILER] search_semantic(%s) C++ ZSTD: %.2fms", source_id, (time.perf_counter() - t_start) * 1000)
+                return results
 
         for doc_id in doc_ids:
             row = con.execute(
@@ -797,12 +1354,35 @@ def search_local(query: str, source_id: str, limit: int = 3) -> List[LocalResult
                     continue
                 body = TokenizerBridge.bytes_to_text(decompressed_bytes)
                 if not body.strip():
+                    # try fallback: if we have raw_html stored (content_raw) decode it; otherwise attempt to read ZIM entry
+                    try:
+                        # try to read raw content_pool raw_html table if present
+                        row2 = con.execute("SELECT raw_html FROM content_raw WHERE hash = (SELECT content_hash FROM pages WHERE id = ?)", (doc_id,)).fetchone()
+                        if row2 and row2[0]:
+                            raw = row2[0]
+                            # if stored compressed, use _decompress convention or decode
+                            try:
+                                raw_txt = _decompress(raw)
+                                body = raw_txt.decode("utf-8", errors="replace")
+                            except Exception:
+                                body = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+                    except Exception:
+                        pass
+
+                if len(body.strip()) < 40:
+                    logger.warning("SHORT_BODY id=%s title=%s body_len=%d blob_len=%d", doc_id, title, len(body), len(blob) if blob else 0)
+
+                if not body.strip():
                     logger.debug("search_local: doc %s produced empty body after decode; skipping", doc_id)
                     continue
 
-                body = re.sub(r"\n\s*\n", "\n\n", body).strip()
+                # Normaliza e limpa excessos de newlines/whitespace antes de armazenar
+                body = _clean_body(body, max_chars=50_000)
+
+                # Se o body começa com o título repetido, remova o prefixo redundante
                 if body.lower().startswith(title.lower()):
-                    body = body[len(title):].strip()
+                    # tente remover apenas a primeira ocorrência e limpar espaços sobrando
+                    body = re.sub(rf"^{re.escape(title)}\s*", "", body, flags=re.IGNORECASE).lstrip()
 
                 results.append(LocalResult(label, title, body, path))
 
@@ -992,8 +1572,12 @@ def _cli_main(argv: Optional[List[str]] = None) -> int:
             if not results:
                 print("\n  Nenhum resultado para a busca.")
             else:
+                # tamanho de snippet via env (padrão 1200)
+                max_chars = int(os.environ.get("SICDOX_SNIPPET_CHARS", "1200"))
+                n_snips = int(os.environ.get("SICDOX_SNIPPETS", "3"))
                 for r in results:
-                    print(f"\n  [{r.source}] {r.title}\n  {r.body[:400]}")
+                    snippet = r.get_snippet(q, max_chars=max_chars, n_snippets=n_snips)
+                    print(f"\n  [{r.source}] {r.title}\n{snippet}\n  path: {r.path}")
             print(f"\n  Tempo: {elapsed}ms | {len(results)} resultado(s)")
         elif args.cmd == "info":
             for k, v in index_info(args.source_id).items():
