@@ -81,3 +81,34 @@ def test_crawler_auto_prefers_local_before_cached_remote(monkeypatch, tmp_path) 
     assert result.source.endswith("-local")
     assert "local async" in result.context
     _session_cache.clear()
+
+
+def test_crawler_local_source_prefers_code_index_for_code_query(monkeypatch, tmp_path) -> None:
+    idx_dir = tmp_path / "data" / "index"
+    idx_dir.mkdir(parents=True)
+    (idx_dir / "wikipedia_en_chemistry_mini_2026_01.db").write_text("x", encoding="utf-8")
+    (idx_dir / "wikipedia_pt_computer_maxi_2026_01.db").write_text("x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    crawler = OrnCrawler()
+    monkeypatch.setattr(crawler, "check_deps", lambda: {"requests": True, "beautifulsoup4": True, "urllib.robotparser": True})
+
+    class _Res:
+        ok = True
+
+        def __init__(self, title: str):
+            self.title = title
+
+        def to_prompt_block(self, max_chars=1200):
+            return "[CTX-BEGIN]dummy[CTX-END]"
+
+    def fake_search_local(query: str, source_id: str, limit: int = 1):
+        if "computer" in source_id:
+            return [_Res("Quicksort")]
+        return [_Res("Sesquioxide")]
+
+    import engine.tools.crawler as crawler_mod
+    monkeypatch.setattr(crawler_mod, "_get_local_index", lambda: (fake_search_local, lambda *_a, **_k: {}))
+
+    result = crawler.search("quicksort python", source="local")
+    assert result.source.startswith("wikipedia_pt_computer_maxi_2026_01")

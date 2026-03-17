@@ -616,6 +616,37 @@ class OrnCrawler:
         self.verify_ssl    = verify_ssl
         self._context_limit = 2000
 
+
+    @staticmethod
+    def _is_code_query(query: str) -> bool:
+        q = (query or "").lower()
+        return (
+            "." in q or
+            any(kw in q for kw in [
+                "python", "javascript", "typescript", "java", "c++", "c#", "ruby", "php",
+                "erro", "error", "exception", "stack", "algoritmo", "algorithm", "quicksort",
+                "funcao", "function", "class", "import", "async", "await", "api", "code",
+            ])
+        )
+
+    def _rank_local_source_ids(self, source_ids: list[str], query: str) -> list[str]:
+        q = (query or "").lower()
+        q_tokens = [t for t in re.findall(r"[a-z0-9_]+", q) if len(t) >= 3]
+        is_code = self._is_code_query(query)
+
+        def _score(src_id: str) -> tuple[int, int, str]:
+            sid = src_id.lower()
+            score = 0
+            if is_code and any(k in sid for k in ["computer", "stackexchange", "softwareengineering", "program", "code", "python"]):
+                score += 8
+            if not is_code and any(k in sid for k in ["chem", "biolog", "hist", "geo"]):
+                score += 4
+            score += sum(1 for t in q_tokens if t in sid)
+            # desempate estável por nome
+            return (-score, len(sid), sid)
+
+        return sorted(source_ids, key=_score)
+
     def _rate_wait(self, domain: str) -> None:
         limit = self._RATE_LIMITS.get(domain, 0.0)
         if limit <= 0:
@@ -674,13 +705,13 @@ class OrnCrawler:
             index_dir = Path("data/index")
             
             if index_dir.exists():
-                for db_file in sorted(index_dir.glob("*.db")):
-                    src_id = db_file.stem
-                    
+                src_ids = [db_file.stem for db_file in sorted(index_dir.glob("*.db"))]
+                ranked_ids = self._rank_local_source_ids(src_ids, query)
+                for src_id in ranked_ids:
                     # Se o usuário pediu um específico, pula os outros
                     if target_src and target_src not in src_id:
                         continue
-                        
+
                     results = search_local(query, source_id=src_id, limit=1)
                     if results and results[0].ok:
                         ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
@@ -782,9 +813,8 @@ class OrnCrawler:
             index_dir = Path("data/index")
             if index_dir.exists():
                 # Vasculha todos os bancos locais que existirem
-                for db_file in sorted(index_dir.glob("*.db")):
-                    src_id = db_file.stem
-
+                src_ids = [db_file.stem for db_file in sorted(index_dir.glob("*.db"))]
+                for src_id in self._rank_local_source_ids(src_ids, query):
                     results = search_local(query, source_id=src_id, limit=1)
                     if results and results[0].ok:
                         # Achou em algum ZIM! Retorna e para a busca.
