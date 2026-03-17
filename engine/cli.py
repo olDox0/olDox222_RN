@@ -399,6 +399,55 @@ def _show_config() -> None:
             Display.warn(issue)
 
 
+
+
+@cli.command("index", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.argument("local_index_args", nargs=-1, type=click.UNPROCESSED)
+def index(local_index_args: tuple[str, ...]) -> None:
+    """Encaminha comandos para o Local Index. Ex: orn index search <fonte> <query>"""
+    from engine.tools.local_index import _cli_main  # noqa: PLC0415
+
+    exit_code = _cli_main(list(local_index_args))
+    if exit_code:
+        raise click.ClickException(f"Comando de index finalizado com código {exit_code}.")
+
+
+@cli.command("tutorial")
+def tutorial() -> None:
+    """Mostra guia rápido com comandos principais do ORN."""
+    click.echo(
+        """
+=== ORN TUTORIAL (GUIA RÁPIDO) ===
+
+1) Perguntas para IA
+   orn think "explique quicksort em python"
+
+2) Servidor de inferência (recomendado para uso contínuo)
+   orn server start
+   orn server status
+   orn server ask "resuma esse texto" --tokens 128
+   orn server stop
+
+3) Interface Web
+   orn web start
+   orn web stop
+
+4) Telemetria / saúde operacional
+   orn probe status
+   orn probe status --json-output --out status.json
+
+5) Index local (atalho para engine.tools.local_index)
+   orn index list
+   orn index info wikipedia_pt_computer_maxi_2026_01
+   orn index search wikipedia_pt_computer_maxi_2026_01 "quicksort python"
+   orn index search wikipedia_pt_computer_maxi_2026_01 "quicksort python" --code-only
+   orn index preload wikipedia_pt_computer_maxi_2026_01
+
+Dica: use `orn <comando> --help` para detalhes.
+        """.strip()
+    )
+
+
 # ---------------------------------------------------------------------------
 # Comandos Fase 2+ — stubs com mensagem clara
 # ---------------------------------------------------------------------------
