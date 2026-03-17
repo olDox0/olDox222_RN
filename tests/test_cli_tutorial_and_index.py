@@ -33,3 +33,21 @@ def test_orn_tutorial_lists_core_commands() -> None:
     assert "orn web start" in result.output
     assert "orn probe status" in result.output
     assert "orn index search" in result.output
+
+
+def test_orn_index_help_is_forwarded_to_local_index(monkeypatch) -> None:
+    captured = {}
+
+    def fake_cli_main(args):
+        captured["args"] = args
+        return 0
+
+    import engine.tools.local_index as local_index
+
+    monkeypatch.setattr(local_index, "_cli_main", fake_cli_main)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["index", "--help"])
+
+    assert result.exit_code == 0
+    assert captured["args"] == ["--help"]

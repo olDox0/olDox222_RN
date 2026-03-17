@@ -775,14 +775,8 @@ class OrnCrawler:
         """
         q = query.lower()
 
-        # Fast path: evita rate-wait e rede quando já existe cache útil.
-        for src in ("wikipedia", "stackoverflow", "pypi", "arxiv", "github"):
-            cached = self._cached(src, query, lang)
-            if cached is not None and cached.ok:
-                return cached
-
         # Busca local primeiro — sem rede, <5ms
-        search_local, index_info = _get_local_index()
+        search_local, _ = _get_local_index()
         if search_local is not None:
             from pathlib import Path
             index_dir = Path("data/index")
@@ -790,7 +784,7 @@ class OrnCrawler:
                 # Vasculha todos os bancos locais que existirem
                 for db_file in sorted(index_dir.glob("*.db")):
                     src_id = db_file.stem
-                    
+
                     results = search_local(query, source_id=src_id, limit=1)
                     if results and results[0].ok:
                         # Achou em algum ZIM! Retorna e para a busca.
@@ -804,6 +798,13 @@ class OrnCrawler:
                         _session_cache[f"local:{src_id}:{query}"] = cached
                         return cached
 
+        # Fast path de cache remoto: evita rate-wait/rede quando já existe cache útil.
+        for src in ("wikipedia", "stackoverflow", "pypi", "arxiv", "github"):
+            cached = self._cached(src, query, lang)
+            if cached is not None and cached.ok:
+                return cached
+
+        # Sem resultado local/cached: segue para internet.
         is_single = len(query.split()) == 1
         is_lib = any(kw in q for kw in
                      ["lib", "library", "package", "pip", "pypi", "module", "modulo"])

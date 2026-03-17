@@ -33,6 +33,7 @@ def test_context_rotation_can_be_disabled() -> None:
 def test_crawler_uses_cache_without_rate_wait_for_explicit_source(monkeypatch) -> None:
     cached = CrawlerResult(source="wikipedia", query="kernel", title="Kernel", context="cached text")
     _session_cache["wiki:pt:kernel"] = cached
+
     crawler = OrnCrawler()
     monkeypatch.setattr(crawler, "check_deps", lambda: {"requests": True, "beautifulsoup4": True, "urllib.robotparser": True})
 
@@ -50,18 +51,33 @@ def test_crawler_uses_cache_without_rate_wait_for_explicit_source(monkeypatch) -
     _session_cache.clear()
 
 
-def test_crawler_auto_prefers_cached_result(monkeypatch) -> None:
+def test_crawler_auto_prefers_local_before_cached_remote(monkeypatch, tmp_path) -> None:
     cached = CrawlerResult(source="stackoverflow", query="python async", title="Async", context="cached so")
     _session_cache["so:stackoverflow:python async"] = cached
+
+    idx_dir = tmp_path / "data" / "index"
+    idx_dir.mkdir(parents=True)
+    (idx_dir / "wiki_fake.db").write_text("x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
     crawler = OrnCrawler()
     monkeypatch.setattr(crawler, "check_deps", lambda: {"requests": True, "beautifulsoup4": True, "urllib.robotparser": True})
 
-    def fake_rate_wait(domain: str) -> None:
-        raise AssertionError("rate wait should not run when auto cache hit")
+    class _LocalRes:
+        ok = True
+        title = "Local Async"
 
-    monkeypatch.setattr(crawler, "_rate_wait", fake_rate_wait)
+        def to_prompt_block(self, max_chars=1200):
+            return "[CTX-BEGIN]local async[CTX-END]"
+
+    def fake_search_local(query: str, source_id: str, limit: int = 1):
+        return [_LocalRes()]
+
+    import engine.tools.crawler as crawler_mod
+    monkeypatch.setattr(crawler_mod, "_get_local_index", lambda: (fake_search_local, lambda *_a, **_k: {}))
 
     result = crawler.search("python async", source="auto")
 
-    assert result.context == "cached so"
+    assert result.source.endswith("-local")
+    assert "local async" in result.context
     _session_cache.clear()

@@ -401,13 +401,23 @@ def _show_config() -> None:
 
 
 
-@cli.command("index", context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@cli.command(
+    "index",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+    add_help_option=False,
+)
 @click.argument("local_index_args", nargs=-1, type=click.UNPROCESSED)
 def index(local_index_args: tuple[str, ...]) -> None:
-    """Encaminha comandos para o Local Index. Ex: orn index search <fonte> <query>"""
+    """Encaminha comandos para o Local Index (build/search/info/list/diagnose/preload)."""
     from engine.tools.local_index import _cli_main  # noqa: PLC0415
 
-    exit_code = _cli_main(list(local_index_args))
+    args = list(local_index_args)
+    if not args:
+        args = ["--help"]
+    elif args[0] in ("-h", "--help"):
+        args = ["--help"] + args[1:]
+
+    exit_code = _cli_main(args)
     if exit_code:
         raise click.ClickException(f"Comando de index finalizado com código {exit_code}.")
 
