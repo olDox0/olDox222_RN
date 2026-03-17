@@ -279,6 +279,20 @@ def _score_code_only_match(body_text: str, q_raw: str, qwords: list[str]) -> tup
     return tf > 0, tf, len(matched_terms), len(query_terms)
 
 
+
+
+def _format_code_only_body(body_text: str, max_blocks: int = 8) -> str:
+    """Retorna apenas blocos de código para exibição em modo --code-only."""
+    blocks = _extract_code_blocks_for_search(body_text)
+    if not blocks:
+        return ""
+
+    parts: list[str] = []
+    for lang, code in blocks[:max_blocks]:
+        lang_suffix = f" {lang}" if lang else ""
+        parts.append(f"[CODE-BEGIN{lang_suffix}]\n{code}\n[CODE-END]")
+    return "\n\n".join(parts).strip()
+
 def _normalize_math_text(text: str) -> str:
     """Normaliza fórmulas extraídas de HTML para leitura em terminal/contexto."""
     if not text:
@@ -934,7 +948,16 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
         raise ImportError("pyzim não instalado. pip install pyzim")
 
     zim_path = str(zim_path)
-    if not Path(zim_path).exists(): raise FileNotFoundError(f"ZIM não encontrado: {zim_path}")
+    if not Path(zim_path).exists():
+        available = sorted(str(z.name) for z in ZIM_DIR.glob("*.zim")) if ZIM_DIR.exists() else []
+        hint = ""
+        if available:
+            close = difflib.get_close_matches(Path(zim_path).name, available, n=3, cutoff=0.35)
+            if close:
+                hint = "\nSugestões próximas em data/zim: " + ", ".join(close)
+            else:
+                hint = "\nZIMs disponíveis em data/zim: " + ", ".join(available[:5])
+        raise FileNotFoundError(f"ZIM não encontrado: {zim_path}{hint}")
 
     TokenizerBridge.get_vocab()
 
@@ -1301,12 +1324,19 @@ def search_local(query: str, source_id: str, limit: int = 3, code_only: bool = F
                 elif q_raw.lower() in body_text.lower(): formula_score = 2.0
 
             score = 0.0
-            score += 120.0 * title_boost        
-            score += 300.0 * early_density      
-            score += 120.0 * density            
-            score += 30.0 * tf                  
-            score += 80.0 * front_bonus         
-            score += formula_score              
+            if code_only:
+                score += 45.0 * title_boost
+                score += 420.0 * early_density
+                score += 220.0 * density
+                score += 55.0 * tf
+                score += 20.0 * front_bonus
+            else:
+                score += 120.0 * title_boost
+                score += 300.0 * early_density
+                score += 120.0 * density
+                score += 30.0 * tf
+                score += 80.0 * front_bonus
+                score += formula_score
 
             if cid in body_ids: score *= 1.03
 
@@ -1318,6 +1348,10 @@ def search_local(query: str, source_id: str, limit: int = 3, code_only: bool = F
         results =[]
         for doc_id, score, title, path, body_text in top:
             body = body_text or ""
+            if code_only:
+                code_only_body = _format_code_only_body(body)
+                if code_only_body:
+                    body = code_only_body
             body = re.sub(r"\n\s*\n", "\n\n", body).strip()
             pat = rf"^\s*{re.escape(title)}\s*[:\-\|]?\s*(\r?\n)+"
             body = re.sub(pat, "", body, flags=re.IGNORECASE)

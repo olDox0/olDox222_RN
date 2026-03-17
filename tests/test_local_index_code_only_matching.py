@@ -1,4 +1,4 @@
-from engine.tools.local_index import _score_code_only_match
+from engine.tools.local_index import _format_code_only_body, _score_code_only_match
 
 
 def test_code_only_requires_language_alignment_when_query_mentions_language() -> None:
@@ -55,3 +55,20 @@ def quicksort(nums):
     assert tf > 0
     assert matched == 1
     assert total == 2
+
+
+def test_format_code_only_body_keeps_only_code_blocks() -> None:
+    body = """Texto fora
+[CODE-BEGIN python]
+print('x')
+[CODE-END]
+mais texto
+[CODE-BEGIN]
+SELECT 1;
+[CODE-END]
+"""
+    out = _format_code_only_body(body)
+    assert "Texto fora" not in out
+    assert "mais texto" not in out
+    assert "[CODE-BEGIN python]" in out
+    assert "SELECT 1;" in out
