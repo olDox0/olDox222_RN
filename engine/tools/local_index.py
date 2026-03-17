@@ -247,20 +247,30 @@ def _score_code_only_match(body_text: str, q_raw: str, qwords: list[str]) -> tup
     matched_terms = {w for w in query_terms if w in all_code_text}
 
     query_langs = _canonical_query_languages(qwords)
+    normalized_block_langs: set[str] = set()
     if query_langs:
         block_langs = {lang for lang, _ in blocks if lang}
         normalized_block_langs = {
             _LANGUAGE_ALIASES.get(lang, lang)
             for lang in block_langs
         }
-        if not (query_langs & normalized_block_langs):
+        # Só aplica bloqueio rígido por linguagem quando há metadata explícita de linguagem
+        # no bloco de código. Em conteúdos sem lang tag, evitamos falso-negativo.
+        if normalized_block_langs and not (query_langs & normalized_block_langs):
             if not any(lang in all_code_text for lang in query_langs):
                 return False, 0.0, len(matched_terms), len(query_terms)
 
+    coverage_terms = list(query_terms)
+    if query_langs and not normalized_block_langs:
+        non_lang_terms = [w for w in query_terms if _LANGUAGE_ALIASES.get(w, w) not in query_langs]
+        if non_lang_terms:
+            coverage_terms = non_lang_terms
+    matched_for_coverage = {w for w in coverage_terms if w in all_code_text}
+
     if not phrase_match:
-        if len(query_terms) >= 2 and len(matched_terms) < 2:
+        if len(coverage_terms) >= 2 and len(matched_for_coverage) < 2:
             return False, 0.0, len(matched_terms), len(query_terms)
-        if len(query_terms) >= 3 and (len(matched_terms) / max(1, len(query_terms))) < 0.67:
+        if len(coverage_terms) >= 3 and (len(matched_for_coverage) / max(1, len(coverage_terms))) < 0.67:
             return False, 0.0, len(matched_terms), len(query_terms)
 
     tf = float(sum(all_code_text.count(w) for w in query_terms))

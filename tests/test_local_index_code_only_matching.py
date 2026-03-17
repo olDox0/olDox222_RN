@@ -40,3 +40,18 @@ def quicksort(nums):
     assert tf == 0.0
     assert matched == 2
     assert total == 3
+
+
+def test_code_only_allows_language_query_when_code_blocks_have_no_lang_metadata() -> None:
+    body = """
+[CODE-BEGIN]
+def quicksort(nums):
+    if len(nums) < 2:
+        return nums
+[CODE-END]
+"""
+    passed, tf, matched, total = _score_code_only_match(body, "quicksort python", ["quicksort", "python"])
+    assert passed
+    assert tf > 0
+    assert matched == 1
+    assert total == 2
