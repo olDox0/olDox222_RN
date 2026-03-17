@@ -179,6 +179,57 @@ _RE_MULTI = re.compile(r"[ \t]{2,}")
 _RE_NEWL = re.compile(r"\n{3,}")
 _RE_URL = re.compile(r"https?://\S+")
 
+
+def _normalize_math_text(text: str) -> str:
+    """Normaliza fórmulas extraídas de HTML para leitura em terminal/contexto."""
+    if not text:
+        return ""
+
+    compact = " ".join(ln.strip() for ln in text.splitlines() if ln.strip())
+    compact = re.sub(r"\s+", " ", compact).strip()
+
+    displaystyle = re.search(r"\{\\displaystyle\s*(.+)\}\s*$", compact)
+    if displaystyle and displaystyle.group(1).strip():
+        compact = displaystyle.group(1).strip()
+
+    compact = re.sub(r"\s+([\)\]\}])", r"\1", compact)
+    compact = re.sub(r"([\(\[\{])\s+", r"\1", compact)
+    return compact
+
+
+def _format_snippet_for_terminal(snippet: str) -> str:
+    """Converte marcadores internos em blocos markdown legíveis no CLI."""
+    if not snippet:
+        return ""
+
+    rendered = snippet
+
+    def _code_repl(match: re.Match) -> str:
+        lang = (match.group("lang") or "").strip()
+        body = (match.group("body") or "").rstrip()
+        lang_suffix = lang if lang else ""
+        return f"\n```{lang_suffix}\n{body}\n```\n"
+
+    def _math_repl(match: re.Match) -> str:
+        body = _normalize_math_text(match.group("body") or "")
+        if not body:
+            return ""
+        return f"\n$$\n{body}\n$$\n"
+
+    rendered = re.sub(
+        r"\[CODE-BEGIN\s*(?P<lang>[^\]\n]*)\]\n?(?P<body>.*?)\n?\[CODE-END\]",
+        _code_repl,
+        rendered,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    rendered = re.sub(
+        r"\[MATH-BEGIN\]\n?(?P<body>.*?)\n?\[MATH-END\]",
+        _math_repl,
+        rendered,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return re.sub(r"\n{3,}", "\n\n", rendered).strip()
+
 # ---------------------------------------------------------------------------
 # Utilidades
 # ---------------------------------------------------------------------------
@@ -1343,7 +1394,8 @@ def _cli_main(argv: Optional[List[str]] = None) -> int:
                 n_snips = int(os.environ.get("SICDOX_SNIPPETS", "3"))
                 for r in results:
                     snippet = r.get_snippet(q, max_chars=max_chars, n_snippets=n_snips)
-                    print(f"\n  [{r.source}] {r.title}\n{snippet}\n  path: {r.path}")
+                    rendered_snippet = _format_snippet_for_terminal(snippet)
+                    print(f"\n  [{r.source}] {r.title}\n{rendered_snippet}\n  path: {r.path}")
             print(f"\n  Tempo: {elapsed}ms | {len(results)} resultado(s)")
             print(f"  (DICA: Para velocidade extrema, chame LocalIndexCache.preload() dentro da IA ao invés do CLI)")
         elif args.cmd == "info":
