@@ -141,13 +141,11 @@ import sys
 import time
 import unicodedata
 import difflib
-import html as _html_module
 
 from contextlib import closing
 from pathlib import Path
 from threading import Lock
-from typing import Iterator, List, Optional
-
+from typing import Iterator, List, Optional, Tuple
 
 # dependências do projeto (mantidas)
 from engine.tools.inverted_index import InvertedIndexBuilder, InvertedIndexSearcher
@@ -163,24 +161,19 @@ if not logging.getLogger().handlers:
 ZIM_DIR = Path(os.environ.get("SICDOX_ZIM_DIR", "data/zim"))
 INDEX_DIR = Path(os.environ.get("SICDOX_INDEX_DIR", "data/index"))
 
-# Caminho padrão antigo mantido como fallback — preferir definir SICDOX_GGUF
 _DEFAULT_GGUF = r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto_OIA\olDox222RN\ORN\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
 _GGUF_PATH_ENV = "SICDOX_GGUF"
 
-# Regexes melhor definidos — preservam blocos de interesse
 _RE_SCRIPT = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
-# NAV: manter infobox? opcional — deixei para remover apenas 'navbox' e 'mw-toc' mas sem tocar outras tags cruciais
 _RE_NAV = re.compile(r'<[^>]*(navbox|mw-toc|mw-jump|sidebar|reflist)[^>]*>.*?</\w+>', re.DOTALL | re.IGNORECASE)
 
-# Tags a preservar (capturamos conteúdo entre tags e substituímos por placeholders)
-# preserva: <pre>...</pre>, <code>...</code>, <syntaxhighlight>...</syntaxhighlight>, <math>...</math>, <math-display>...</math-display>
-_RE_PRESERVE = re.compile(
-    r"(?P<open><(?P<tag>pre|code|syntaxhighlight|math|math-display|source)[^>]*>)(?P<body>.*?)(?P<close></(?P=tag)>)",
+# Atualizado para capturar tags <math> e <math-display> e isolar fórmulas matemáticas
+_RE_CODE = re.compile(
+    r"(?P<open><(?P<tag>pre|code|syntaxhighlight|source|math|math-display)(?P<attrs>[^>]*)>)(?P<body>.*?)(?P<close></(?P=tag)>)",
     re.DOTALL | re.IGNORECASE,
 )
 
-# Tags a remover (mas depois do preserve)
-_RE_TAG = re.compile(r"<[^>\n]+>")  # menos agressivo: não atravessa linhas arbitrárias sem '>'
+_RE_TAG = re.compile(r"<[^>\n]+>") 
 _RE_ENTITY = re.compile(r"&(?:[a-zA-Z]{2,8}|#\d{1,6});")
 _RE_MULTI = re.compile(r"[ \t]{2,}")
 _RE_NEWL = re.compile(r"\n{3,}")
@@ -191,13 +184,12 @@ _RE_URL = re.compile(r"https?://\S+")
 # ---------------------------------------------------------------------------
 
 try:
-    from rapidfuzz import fuzz, process as rprocess  # opcional, muito recomendado
+    from rapidfuzz import fuzz, process as rprocess 
     _HAS_RAPIDFUZZ = True
 except Exception:
     _HAS_RAPIDFUZZ = False
 
 def _normalize_text_for_match(s: str) -> str:
-    """Lower + remove accents + collapse whitespace."""
     if s is None:
         return ""
     s = s.lower().strip()
@@ -207,21 +199,18 @@ def _normalize_text_for_match(s: str) -> str:
     return s
 
 def _trigrams_for(s: str) -> set:
-    """Return set of character trigrams for string s (with boundary padding)."""
     s = _normalize_text_for_match(s)
     if not s:
         return set()
-    s = f"  {s} "  # pad start/end
+    s = f"  {s} "  
     tr = set()
     for i in range(len(s) - 2):
         tr.add(s[i : i + 3])
     return tr
 
 def _similarity_ratio(a: str, b: str) -> float:
-    """Return similarity [0..1] between two normalized strings."""
     if _HAS_RAPIDFUZZ:
         return fuzz.token_sort_ratio(a, b) / 100.0
-    # fallback to difflib.SequenceMatcher
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -230,134 +219,83 @@ def _env_bool(name: str, default: bool = False) -> bool:
         return default
     return v.strip().lower() not in ("0", "false", "no", "off")
 
-
 def _like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 def _clean_body(text: str, max_chars: int = 100_000) -> str:
-    """
-    Normaliza o body antes de retornar/exibir:
-     - remove caracteres de controle
-     - normaliza quebras de linha e espaços
-     - remove repetições do título no começo (linhas idênticas repetidas)
-     - colapsa runs longos de newline para no máximo 2
-     - mantém parágrafos intactos ao truncar
-    """
     if not text:
         return ""
-
-    # ensure str
     if not isinstance(text, str):
-        try:
-            text = str(text)
-        except Exception:
-            text = ""
+        try: text = str(text)
+        except Exception: text = ""
 
-    # remove unicode control chars except \n and \t
     text = "".join(ch for ch in text if (ch >= " " or ch in ("\n", "\t")))
-
-    # normalize newlines and tabs/spaces
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = text.replace("\t", " ")
+    text = text.replace("\t", "    ")
 
-    # trim leading/trailing spaces on each line, but keep empty lines
-    lines = [ln.rstrip() for ln in text.split("\n")]
-
-    # Remove leading empty lines
+    lines =[ln.rstrip() for ln in text.split("\n")]
     while lines and lines[0].strip() == "":
         lines.pop(0)
 
-    # If the first non-empty line is short (likely a title/header),
-    # remove consecutive repetitions of the same short header at the top.
     if lines:
         first = lines[0].strip()
-        if 0 < len(first) <= 120:
-            # remove immediate repeated lines equal to first (case-insensitive, ignore punctuation)
+        if 0 < len(first) <= 120 and "[CODE-BEGIN" not in first and "[MATH-BEGIN" not in first:
             def norm_key(s: str) -> str:
-                s2 = re.sub(r"[^\w\s]", "", s or "").strip().lower()
-                return s2
+                return re.sub(r"[^\w\s]", "", s or "").strip().lower()
             fk = norm_key(first)
-            # consume repeated header lines up to a sane limit
             i = 1
             removed = 0
-            while i < min(len(lines), 30):  # only check the first 30 lines to avoid O(n^2)
+            while i < min(len(lines), 30):
                 if norm_key(lines[i]) == fk:
                     lines.pop(i)
                     removed += 1
                     continue
-                # also remove if the next line is empty and the following is same header (header + blank + header)
                 if lines[i].strip() == "" and i + 1 < len(lines) and norm_key(lines[i + 1]) == fk:
-                    # pop the blank and the next header
-                    lines.pop(i)     # blank
-                    lines.pop(i)     # the repeated header
+                    lines.pop(i)
+                    lines.pop(i)
                     removed += 2
                     continue
                 i += 1
 
-    # collapse multiple identical short lines in the top region (e.g., "Chemistry" repeated with blanks)
-    # but do this conservatively only for the first ~40 lines
     limit_top = min(len(lines), 40)
-    out_top = []
+    out_top =[]
     seen_short = set()
     for ln in lines[:limit_top]:
         key = ln.strip().lower()
-        if key and len(key) <= 120:
+        if key and len(key) <= 120 and "[CODE-BEGIN" not in key and "[CODE-END]" not in key and "[MATH-BEGIN" not in key and "[MATH-END]" not in key:
             if key in seen_short:
-                # skip repeated short header
                 continue
             seen_short.add(key)
         out_top.append(ln)
-    # append the remainder lines unchanged
+    
     rest = lines[limit_top:]
     lines = out_top + rest
 
-    # collapse runs of 3+ newlines to exactly 2
-    text = "\n".join(lines)
+    out_lines =[]
+    total_len = 0
+    in_code = False
+    for ln in lines:
+        if "[CODE-BEGIN" in ln or "[MATH-BEGIN" in ln:
+            in_code = True
+        elif "[CODE-END]" in ln or "[MATH-END]" in ln:
+            in_code = False
+            
+        out_lines.append(ln)
+        total_len += len(ln) + 1
+        
+        if total_len > max_chars and not in_code:
+            out_lines.append("...")
+            break
+
+    text = "\n".join(out_lines)
     text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
-    # remove leading/trailing whitespace
-    text = text.strip()
-
-    # Remove stray long sequences of the same character (e.g., many repeated '-') that may be header artifacts
-    text = re.sub(r"([\-=_\*])\1{6,}", r"\1\1\1", text)
-
-    # limit total length while preserving paragraph boundaries
-    if len(text) > max_chars:
-        parts = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
-        out_parts = []
-        total = 0
-        for p in parts:
-            if total + len(p) + 2 > max_chars and out_parts:
-                break
-            out_parts.append(p)
-            total += len(p) + 2
-            if len(out_parts) >= 6:
-                break
-        text = "\n\n".join(out_parts)
-        if len(text) > max_chars:
-            text = text[:max_chars].rstrip() + "..."
-
-    return text
-    
-
-# ---------------------------------------------------------------------------
-# HTML cleaning / helpers
-# ---------------------------------------------------------------------------
-
-# Substitua a função _strip_html existente por esta.
-_RE_CODE = re.compile(
-    r"(?P<open><(?P<tag>pre|code|script)(?P<attrs>[^>]*)>)(?P<body>.*?)(?P<close></(?P=tag)>)",
-    re.DOTALL | re.IGNORECASE,
-)
 
 def _extract_code_blocks(html: str) -> tuple[str, list[tuple[str, str]]]:
-    """
-    Extrai blocos de código (pre, code, script) e os substitui por placeholders.
-    Retorna (html_with_placeholders, list_of_code_blocks)
-    cada code block -> (placeholder, code_text_with_optional_lang)
-    """
-    code_blocks = []
-    out_html = []
+    import html as _html_lib
+    code_blocks =[]
+    out_html =[]
     last = 0
     idx = 0
     for m in _RE_CODE.finditer(html):
@@ -365,34 +303,40 @@ def _extract_code_blocks(html: str) -> tuple[str, list[tuple[str, str]]]:
         tag = m.group("tag").lower()
         attrs = m.group("attrs") or ""
         body = m.group("body") or ""
-        # Do not lose &lt; &gt; in code: keep body as-is (no entity unescape)
-        # try to detect language from class or data-lang
-        lang = ""
-        cls_m = re.search(r'class=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
-        if cls_m:
-            cls = cls_m.group(1)
-            # typical patterns: language-python, lang-python, brush:python
-            lm = re.search(r"(?:lang|language|language-|(brush:)|(?:language:))?([a-zA-Z0-9_+-]+)", cls)
-            if lm:
-                # take last token that looks like a language
-                parts = re.split(r"[^\w+-]+", cls)
-                for p in parts[::-1]:
-                    if len(p) <= 20 and re.match(r"^[a-zA-Z0-9_+-]+$", p):
-                        lang = p.lower()
-                        break
-        data_lang = re.search(r'data-lang=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
-        if data_lang:
-            lang = data_lang.group(1).lower()
-        # placeholder
-        ph = f"__CODE_BLOCK_{idx}__"
-        code_text = body
-        # If HTML-escaped inside (e.g., &lt;), we leave as-is; tokeniser will handle.
-        code_repr = f"```{lang}\n{code_text}\n```"
-        code_blocks.append((ph, code_repr))
+        
+        body_clean = re.sub(r"<[^>]+>", "", body)
+        body_clean = _html_lib.unescape(body_clean)
+        
+        if tag in ("math", "math-display"):
+            ph = f"__MATH_BLOCK_{idx}__"
+            code_repr = f"\n[MATH-BEGIN]\n{body_clean.strip()}\n[MATH-END]\n"
+            code_blocks.append((ph, code_repr))
+        else:
+            lang = ""
+            cls_m = re.search(r'class=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+            if cls_m:
+                cls = cls_m.group(1)
+                lm = re.search(r"(?:lang|language|language-|(brush:)|(?:language:))?([a-zA-Z0-9_+-]+)", cls)
+                if lm:
+                    parts = re.split(r"[^\w+-]+", cls)
+                    for p in parts[::-1]:
+                        if len(p) <= 20 and re.match(r"^[a-zA-Z0-9_+-]+$", p):
+                            lang = p.lower()
+                            break
+            data_lang = re.search(r'data-lang=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+            if data_lang:
+                lang = data_lang.group(1).lower()
+            
+            ph = f"__CODE_BLOCK_{idx}__"
+            lang_str = f" {lang}" if lang else ""
+            code_repr = f"\n[CODE-BEGIN{lang_str}]\n{body_clean.strip()}\n[CODE-END]\n"
+            code_blocks.append((ph, code_repr))
+            
         out_html.append(html[last:start])
         out_html.append(ph)
         last = end
         idx += 1
+        
     out_html.append(html[last:])
     return "".join(out_html), code_blocks
 
@@ -401,55 +345,53 @@ def _restore_code_placeholders(text: str, code_blocks: list[tuple[str,str]]) -> 
         text = text.replace(ph, code)
     return text
 
-def _strip_html(html: str, max_chars: int = 8000) -> str:
-    """
-    Limpeza avançada que preserva blocos de código.
-    - extrai code/pre/script em placeholders;
-    - remove nav/infobox/style tags e outras tags HTML;
-    - preserva entidades dentro de code blocks;
-    - restaura code blocks como fenced code (```lang\n...\n```).
-    """
+def _strip_html(html: str, max_chars: int = 64000) -> str:
     if not html:
         return ""
 
-    # 1) extrair blocos de código preservando seu conteúdo
     extracted_html, code_blocks = _extract_code_blocks(html)
 
-    # 2) remover blocos de navegação/infobox que poluem
     text = _RE_NAV.sub(" ", extracted_html)
+    text = re.sub(r"<(style|script)[^>]*>.*?</\1>", " ", text, flags=re.DOTALL | re.IGNORECASE)
 
-    # 3) remover apenas <style> (mantemos scripts/code extracted above)
-    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
-
-    # 4) remover tags restantes (mas placeholders permanecem)
     text = _RE_TAG.sub(" ", text)
-
-    # 5) não destruir conteúdo dos code blocks com entity removal - as entidades fora de code podem ser simplificadas
-    # primeiro capturar e preservar placeholders (eles são alfanuméricos com underscores)
-    # então aplicamos entity/substitutions no restante
     text = _RE_ENTITY.sub(" ", text)
     text = _RE_URL.sub(" ", text)
     text = _RE_MULTI.sub(" ", text)
     text = _RE_NEWL.sub("\n\n", text).strip()
 
-    # 6) restaurar blocos de código convertendo placeholders para fences
     if code_blocks:
         text = _restore_code_placeholders(text, code_blocks)
 
-    # 7) limitar tamanho final
-    return text[:max_chars]
+    if len(text) > max_chars:
+        cut_text = text[:max_chars]
+        last_cb = cut_text.rfind("[CODE-BEGIN")
+        last_ce = cut_text.rfind("[CODE-END]")
+        last_mb = cut_text.rfind("[MATH-BEGIN")
+        last_me = cut_text.rfind("[MATH-END]")
+        
+        # Proteção para blocos de Código
+        if last_cb > last_ce:
+            actual_end = text.find("[CODE-END]", max_chars)
+            if actual_end != -1:
+                text = text[:actual_end + len("[CODE-END]")]
+            else: text = cut_text
+        # Proteção para blocos Matemáticos
+        elif last_mb > last_me:
+            actual_end = text.find("[MATH-END]", max_chars)
+            if actual_end != -1:
+                text = text[:actual_end + len("[MATH-END]")]
+            else: text = cut_text
+        else:
+            text = cut_text
 
+    return text
 
 # ---------------------------------------------------------------------------
 # Compression helpers (pyzstd optional)
 # ---------------------------------------------------------------------------
 
 def _compress(data: bytes) -> bytes:
-    """
-    Retorna blob com um byte de formato:
-      b'\\x00' + raw_payload  -> não comprimido
-      b'\\x01' + zstd_payload -> comprimido (pyzstd disponível)
-    """
     try:
         import pyzstd
         compressed = pyzstd.compress(data)
@@ -458,12 +400,7 @@ def _compress(data: bytes) -> bytes:
         logger.debug("pyzstd unavailable; storing raw payload (flag 0)")
         return b"\x00" + data
 
-
 def _decompress(data: bytes) -> bytes:
-    """
-    Interpreta o primeiro byte de flag e devolve os bytes payload (descomprimidos
-    quando necessário). Não devolve dados comprimidos cru.
-    """
     if not data:
         return data
     flag = data[0:1]
@@ -475,18 +412,13 @@ def _decompress(data: bytes) -> bytes:
             import pyzstd
             return pyzstd.decompress(payload)
         except Exception:
-            logger.exception("_decompress: pyzstd present at build but missing at runtime")
-            # NÃO retornar payload comprimido — em vez disso sinalizamos erro
             raise RuntimeError("Unable to decompress zstd payload: pyzstd missing or decompression failed")
-    # fallback: se não reconhecido, tentar heurística segura
-    logger.warning("_decompress: unknown format flag %r; attempting to detect zstd magic", flag)
     if len(data) >= 5 and data[1:5] == b"\x28\xb5\x2f\xfd":
         try:
             import pyzstd
             return pyzstd.decompress(payload)
         except Exception:
             raise RuntimeError("Unknown blob format and pyzstd unavailable")
-    # último recurso: devolver como-is (não ideal)
     return payload
 
 
@@ -506,7 +438,6 @@ def _read_entry_content(entry) -> Optional[bytes]:
             if isinstance(result, memoryview) and len(result) > 0:
                 return bytes(result)
         except Exception:
-            logger.debug("_read_entry_content: method %s failed", method, exc_info=True)
             continue
 
     for attr in ("_data", "_content", "raw"):
@@ -515,16 +446,11 @@ def _read_entry_content(entry) -> Optional[bytes]:
             return bytes(val)
     return None
 
-
 # ---------------------------------------------------------------------------
 # TokenizerBridge (thread-safe, GGUF via env)
 # ---------------------------------------------------------------------------
 
 class TokenizerBridge:
-    """Singleton leve que carrega apenas o vocab (vocab_only=True).
-    Fornecer o caminho do GGUF via variável de ambiente SICDOX_GGUF é recomendado.
-    """
-
     _llm_vocab = None
     _lock = Lock()
 
@@ -548,7 +474,7 @@ class TokenizerBridge:
                         logger.exception("llama_cpp import falhou")
                         raise
                     gguf = cls.get_gguf_path()
-                    logger.info("Carregando vocab_only do GGUF: %s", gguf)
+                    logger.debug("Carregando vocab_only do GGUF: %s", gguf)
                     cls._llm_vocab = Llama(model_path=gguf, vocab_only=True, verbose=False)
         return cls._llm_vocab
 
@@ -560,29 +486,87 @@ class TokenizerBridge:
 
     @classmethod
     def bytes_to_text(cls, data: bytes) -> str:
-        # data expected to be token-array-bytes (length %4==0) after decompression.
         if not data:
             return ""
         if len(data) % 4 != 0:
-            # Não tentar decodificar comprimido ou corrompido como UTF-8 sem avisar.
-            logger.warning("bytes_to_text: data length %d not multiple of 4 — possible corrupted/compressed blob", len(data))
-            try:
-                # tentativa cuidadosa: devolve texto legível como fallback
-                return data.decode("utf-8", errors="ignore")
-            except Exception:
-                return ""
+            try: return data.decode("utf-8", errors="ignore")
+            except Exception: return ""
         try:
             vocab = cls.get_vocab()
             arr = array.array("i")
             arr.frombytes(data)
             tokens = arr.tolist()
             if tokens and (max(tokens) >= vocab.n_vocab() or min(tokens) < 0):
-                logger.warning("bytes_to_text: token ids outside vocab range; returning fallback decode")
                 return data.decode("utf-8", errors="ignore")
             return vocab.detokenize(tokens).decode("utf-8", errors="ignore")
         except Exception:
-            logger.exception("bytes_to_text failed; returning raw decode")
             return data.decode("utf-8", errors="ignore")
+
+
+# ---------------------------------------------------------------------------
+# LocalIndexCache (Gestor de RAM para a IA em Runtime)
+# ---------------------------------------------------------------------------
+
+class LocalIndexCache:
+    """
+    Mantém conexões de banco de dados e leitores de índice invertido vivos na memória RAM
+    para eliminar os custos de I/O em ambientes de execução contínua (como o cérebro da IA).
+    """
+    _cache = {}
+    _lock = Lock()
+
+    @classmethod
+    def get(cls, source_id: str) -> Tuple[Optional[sqlite3.Connection], Optional[InvertedIndexSearcher]]:
+        with cls._lock:
+            if source_id not in cls._cache:
+                db_path = _source_id_to_db(source_id)
+                inv_dir = INDEX_DIR / source_id
+                
+                con = None
+                searcher = None
+                
+                if db_path.exists():
+                    try:
+                        # check_same_thread=False permite que as diversas threads de contexto da IA acessem
+                        con = sqlite3.connect(str(db_path), check_same_thread=False)
+                        con.execute("PRAGMA query_only=1")
+                        # 64MB Cache de OS/RAM pre-carregado por DB (muito econômico e ultra rápido)
+                        con.execute("PRAGMA cache_size=-64000")
+                    except Exception:
+                        logger.error(f"Erro ao abrir SQLite cache para {source_id}", exc_info=True)
+                        
+                if inv_dir.exists():
+                    try:
+                        searcher = InvertedIndexSearcher(inv_dir)
+                    except Exception:
+                        logger.error(f"Erro ao abrir InvertedIndex cache para {source_id}", exc_info=True)
+                        
+                cls._cache[source_id] = (con, searcher)
+            return cls._cache[source_id]
+
+    @classmethod
+    def evict(cls, source_id: str):
+        """Remove e fecha instâncias de cache para permitir atualizações (Build) sem FileLocks."""
+        with cls._lock:
+            if source_id in cls._cache:
+                con, searcher = cls._cache.pop(source_id)
+                if con:
+                    try: con.close()
+                    except: pass
+                if searcher:
+                    try: searcher.close()
+                    except: pass
+                    
+    @classmethod
+    def preload(cls, source_ids: List[str] = None):
+        """Pré-carrega o Vocabulário LLM e os bancos de dados/índices solicitados na RAM."""
+        logger.info("[CACHE] Pré-carregando GGUF Vocab na memória RAM (Isto leva alguns segundos)...")
+        TokenizerBridge.get_vocab()
+        
+        if source_ids:
+            for sid in source_ids:
+                logger.info(f"[CACHE] Pré-carregando banco SQLite e InvertedIndex para: {sid}")
+                cls.get(sid)
 
 
 # ---------------------------------------------------------------------------
@@ -603,131 +587,103 @@ class LocalResult:
         return bool(self.title and self.body.strip())
 
     def get_snippet(self, query: str = "", max_chars: int = 1200, n_snippets: int = 3) -> str:
-        """
-        Retorna até `n_snippets` trechos relevantes com no máximo `max_chars` chars
-        no total. Se query vazia ou não encontrada, devolve os primeiros max_chars do body.
-        Mantém e preserva marcadores [CODE-BEGIN] / [MATH-BEGIN] se existirem.
-        """
-        if not self.ok:
-            return ""
+        if not self.ok: return ""
         text = self.body
-        if not text:
-            return ""
+        if not text: return ""
 
-        # normalize search tokens (simple words)
         q = (query or "").strip()
         if q:
             qlower = q.lower()
-            # localizar todas ocorrências de palavras (fallback: substring)
-            positions = []
-            # procura por palavras longas primeiro
-            words = [w for w in re.findall(r"[A-Za-z0-9_]{2,}", qlower)]
+            positions =[]
+            words =[w for w in re.findall(r"[A-Za-z0-9_]{2,}", qlower)]
             if words:
                 for w in words:
                     start = 0
                     while True:
                         idx = text.lower().find(w, start)
-                        if idx == -1:
-                            break
+                        if idx == -1: break
                         positions.append(idx)
                         start = idx + len(w)
             else:
-                # fallback substring
                 idx = text.lower().find(qlower)
-                if idx != -1:
-                    positions.append(idx)
+                if idx != -1: positions.append(idx)
 
-            # dedupe and sort
             positions = sorted(set(positions))
 
             if positions:
-                snippets = []
+                snippets =[]
                 used = 0
-                # escolher até n_snippets janelas em torno das posições (evitar sobreposição)
                 for pos in positions:
-                    if len(snippets) >= n_snippets:
-                        break
-                    # janela:  start..end
-                    left = max(0, pos - 120)   # 120 chars antes
-                    right = min(len(text), pos + 420)  # 420 after -> ~540 window
-                    # evitar sobreposição com snippet anterior
+                    if len(snippets) >= n_snippets: break
+                    left = max(0, pos - 120)
+                    right = min(len(text), pos + 420)
                     if snippets and left < snippets[-1][1]:
                         left = snippets[-1][1] + 1
                     snippets.append((left, right))
                     used += (right - left)
 
-                # juntar snippets respeitando max_chars
-                out_parts = []
+                out_parts =[]
                 total = 0
                 for left, right in snippets:
                     part = text[left:right].strip()
-                    # garantir que não corte código markers no meio
-                    # se começa dentro de [CODE-BEGIN], expandir até [CODE-END]
-                    if "[CODE-BEGIN" in part and "[CODE-END]" not in part:
-                        # expand to next code end
+                    real_left = left
+                    real_right = right
+                    
+                    # Proteção contra cortes no meio de códigos ou fórmulas matemáticas
+                    open_code = text.rfind("[CODE-BEGIN", 0, right)
+                    close_code = text.rfind("[CODE-END]", 0, right)
+                    if open_code > close_code:
                         end_idx = text.find("[CODE-END]", right)
-                        if end_idx != -1:
-                            part = text[left:end_idx + len("[CODE-END]")]
-                    # similar for math markers
-                    if "[MATH-BEGIN]" in part and "[MATH-END]" not in part:
+                        if end_idx != -1: real_right = max(real_right, end_idx + len("[CODE-END]"))
+
+                    open_math = text.rfind("[MATH-BEGIN", 0, right)
+                    close_math = text.rfind("[MATH-END]", 0, right)
+                    if open_math > close_math:
                         end_idx = text.find("[MATH-END]", right)
-                        if end_idx != -1:
-                            part = text[left:end_idx + len("[MATH-END]")]
-                    # highlight query occurrences (simple)
+                        if end_idx != -1: real_right = max(real_right, end_idx + len("[MATH-END]"))
+                    
+                    part = text[real_left:real_right]
+
                     if q:
                         try:
-                            # highlight words from `words`, wrap in ** **
                             for w in words:
-                                # case-preserving replace: use regex with IGNORECASE
+                                if w.upper() in["CODE", "BEGIN", "END", "MATH"]: continue
                                 part = re.sub(rf"(?i)\b{re.escape(w)}\b", lambda m: f"**{m.group(0)}**", part)
-                        except Exception:
-                            pass
-                    # append with ellipses
-                    if left > 0:
-                        part = "..." + part
-                    if right < len(text):
-                        part = part + "..."
+                        except Exception: pass
+                            
+                    if real_left > 0: part = "..." + part
+                    if real_right < len(text): part = part + "..."
+                        
                     out_parts.append(part)
                     total += len(part)
-                    if total >= max_chars:
-                        break
+                    if total >= max_chars: break
 
-                # fallback: no occurrences found -> return first N paragraphs (more context)
-                paras = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
-                if not paras:
-                    return ""
-                # escolha até 3 parágrafos que caibam em max_chars
-                out = []
-                total = 0
-                for p in paras[:6]:  # olhar até 6 parágrafos, pegar os melhores 1-3
-                    if total + len(p) + 2 > max_chars and out:
-                        break
-                    out.append(p)
-                    total += len(p) + 2
-                    if len(out) >= 3:
-                        break
-                snippet = "\n\n".join(out)
-                if len(snippet) > max_chars:
-                    snippet = snippet[:max_chars].rstrip() + "..."
-                return snippet
+                return "\n\n".join(out_parts)
 
-        # fallback: no occurrences found -> return the leading context (preserving code/math markers)
         leading = text[:max_chars]
-        # try to avoid cutting inside markers: if we cut inside [CODE-BEGIN], extend until [CODE-END] or trim to last newline
-        if "[CODE-BEGIN" in leading and "[CODE-END]" not in leading:
-            end_idx = text.find("[CODE-END]")
+        
+        # Proteção extra para fallback context
+        open_code = leading.rfind("[CODE-BEGIN")
+        close_code = leading.rfind("[CODE-END]")
+        if open_code > close_code:
+            end_idx = text.find("[CODE-END]", open_code)
             if end_idx != -1 and end_idx < max_chars * 3:
-                # append until code end (within reason)
                 leading = text[: end_idx + len("[CODE-END]")]
-        # normalize spaces/newlines
+                
+        open_math = leading.rfind("[MATH-BEGIN")
+        close_math = leading.rfind("[MATH-END]")
+        if open_math > close_math:
+            end_idx = text.find("[MATH-END]", open_math)
+            if end_idx != -1 and end_idx < max_chars * 3:
+                leading = text[: end_idx + len("[MATH-END]")]
+        
         leading = leading.strip()
         if len(leading) < len(text):
             leading = leading + "..."
         return leading
 
     def to_prompt_block(self, max_chars: int = 600, query: str = "") -> str:
-        if not self.ok:
-            return ""
+        if not self.ok: return ""
         snippet = self.get_snippet(query, max_chars)
         return f"[CTX-BEGIN]\nscope: {self.source} | {self.title}\n{snippet}\n[CTX-END]\n"
 
@@ -742,24 +698,19 @@ def _zim_to_source_id(zim_path: str | Path) -> str:
     name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
     return re.sub(r"_+", "_", name).strip("_").lower()
 
-
 def _source_id_to_db(source_id: str) -> Path:
     return INDEX_DIR / f"{source_id}.db"
-
 
 def _find_zim_for_source(source_id: str) -> Optional[Path]:
     if ZIM_DIR.exists():
         for zim in ZIM_DIR.glob("*.zim"):
-            if _zim_to_source_id(zim) == source_id:
-                return zim
+            if _zim_to_source_id(zim) == source_id: return zim
     return None
-
 
 def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str, str, str]]:
     import pyzim
 
     p = Path(zim_path).absolute()
-
     total_scanned = total_yielded = total_redirect = 0
     total_non_html = total_empty = total_error = 0
 
@@ -768,14 +719,8 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
             total_scanned += 1
 
             if verbose and total_scanned % 5000 == 0:
-                logger.info(
-                    "[ZIM] scanned=%d yielded=%d redirect=%d non_html=%d empty=%d",
-                    total_scanned,
-                    total_yielded,
-                    total_redirect,
-                    total_non_html,
-                    total_empty,
-                )
+                logger.info("[ZIM] scanned=%d yielded=%d redirect=%d non_html=%d empty=%d",
+                    total_scanned, total_yielded, total_redirect, total_non_html, total_empty)
 
             if getattr(entry, "is_redirect", False):
                 total_redirect += 1
@@ -783,8 +728,7 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
 
             ns = getattr(entry, "namespace", None)
             if ns is not None:
-                if isinstance(ns, bytes):
-                    ns = ns.decode("utf-8", errors="ignore")
+                if isinstance(ns, bytes): ns = ns.decode("utf-8", errors="ignore")
                 ns = str(ns).strip()
                 if ns in ("I", "-", "X"):
                     total_non_html += 1
@@ -797,14 +741,9 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
 
             head = content_bytes[:400].lower()
             is_html = (
-                b"<html" in head
-                or b"<!doctype" in head
-                or b"<body" in head
-                or b"<p" in head
-                or b"<div" in head
-                or b"<h1" in head
-                or b"<h2" in head
-                or content_bytes[:1] == b"<"
+                b"<html" in head or b"<!doctype" in head or b"<body" in head
+                or b"<p" in head or b"<div" in head or b"<h1" in head
+                or b"<h2" in head or content_bytes[:1] == b"<"
             )
             if not is_html:
                 total_non_html += 1
@@ -812,17 +751,14 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
 
             try:
                 title = getattr(entry, "title", "")
-                if isinstance(title, bytes):
-                    title = title.decode("utf-8", errors="ignore")
+                if isinstance(title, bytes): title = title.decode("utf-8", errors="ignore")
                 title = str(title).strip()
 
                 path = getattr(entry, "url", None) or getattr(entry, "path", "")
-                if isinstance(path, bytes):
-                    path = path.decode("utf-8", errors="ignore")
+                if isinstance(path, bytes): path = path.decode("utf-8", errors="ignore")
                 path = str(path).strip()
 
-                if not title:
-                    title = path.split("/")[-1].replace("_", " ").strip()
+                if not title: title = path.split("/")[-1].replace("_", " ").strip()
 
                 content = content_bytes.decode("utf-8", errors="replace")
                 total_yielded += 1
@@ -830,19 +766,11 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
 
             except Exception:
                 total_error += 1
-                logger.debug("Error parsing zim entry", exc_info=True)
                 continue
 
     if verbose:
-        logger.info(
-            "[ZIM] total: scanned=%d yielded=%d redirect=%d non_html=%d empty=%d error=%d",
-            total_scanned,
-            total_yielded,
-            total_redirect,
-            total_non_html,
-            total_empty,
-            total_error,
-        )
+        logger.info("[ZIM] total: scanned=%d yielded=%d redirect=%d non_html=%d empty=%d error=%d",
+            total_scanned, total_yielded, total_redirect, total_non_html, total_empty, total_error)
 
 
 # ---------------------------------------------------------------------------
@@ -851,50 +779,40 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
 
 def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int = 1000, verbose: bool = True) -> Path:
     try:
-        import pyzim  # noqa: F401
+        import pyzim 
     except ImportError:
         raise ImportError("pyzim não instalado. pip install pyzim")
 
     zim_path = str(zim_path)
-    if not Path(zim_path).exists():
-        raise FileNotFoundError(f"ZIM não encontrado: {zim_path}")
+    if not Path(zim_path).exists(): raise FileNotFoundError(f"ZIM não encontrado: {zim_path}")
 
-    # Garante que o vocab seja carregado no início (pode lançar FileNotFoundError)
     TokenizerBridge.get_vocab()
 
     if source_id is None:
         source_id = _zim_to_source_id(zim_path)
 
+    # Fundamental: Evitar erro de FileLock no Windows caso um servidor esteja com o cache carregado
+    LocalIndexCache.evict(source_id)
+
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     db_path = str(_source_id_to_db(source_id))
 
-    # --- Remover DB / índice existente para garantir rebuild limpo ---
     try:
         db_p = Path(db_path)
         inv_dir = INDEX_DIR / source_id
         if db_p.exists():
             logger.info("[SiCDox BUILD] DB existente encontrado, removendo para rebuild: %s", db_path)
-            # fechar handles não é possível aqui (esperamos que nenhum processo esteja usando),
-            # removemos arquivos sqlite auxiliares também (wal/shm).
             for suf in ("", "-wal", "-shm"):
                 f = db_p.with_name(db_p.name + suf)
                 try:
-                    if f.exists():
-                        f.unlink()
-                except Exception:
-                    logger.warning("Não foi possível remover %s (continuando)", f, exc_info=True)
-        # remove índice invertido antigo se existir
+                    if f.exists(): f.unlink()
+                except Exception: pass
         if inv_dir.exists():
-            logger.info("[SiCDox BUILD] Removendo diretório de índice invertido anterior: %s", inv_dir)
             try:
-                # usar rmtree para remover diretório recursivamente
                 import shutil
-
                 shutil.rmtree(inv_dir)
-            except Exception:
-                logger.warning("Falha ao remover índice invertido %s (continuando)", inv_dir, exc_info=True)
-    except Exception:
-        logger.exception("Erro ao tentar remover DB/índice existente; prosseguindo com build")
+            except Exception: pass
+    except Exception: pass
 
     if verbose:
         logger.info("[SiCDox BUILD] Construindo Banco Tokenizado... DB: %s", db_path)
@@ -907,11 +825,8 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
         con.execute("PRAGMA page_size=4096")
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=NORMAL")
-        # cache_size is in pages; use negative value to specify KB units (e.g. -20000 ~ 20MB depending on page_size)
-        try:
-            con.execute("PRAGMA cache_size = -20000")
-        except Exception:
-            pass
+        try: con.execute("PRAGMA cache_size = -20000")
+        except Exception: pass
 
         con.execute("""
         CREATE TABLE IF NOT EXISTS pages (
@@ -928,10 +843,7 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
         )
         """)
 
-        # Optional index for faster joins
         con.execute("CREATE INDEX IF NOT EXISTS idx_pages_hash ON pages(content_hash)")
-
-        # table for title trigrams (for fuzzy title search)
         con.execute("""
         CREATE TABLE IF NOT EXISTS title_trigrams (
             trigram TEXT,
@@ -942,59 +854,45 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
         con.execute("CREATE INDEX IF NOT EXISTS idx_title_trigrams_doc ON title_trigrams(doc_id)")
 
         con.execute("BEGIN")
-        # Preparações para otimização:
-        # - carrega vocab UMA vez antes do loop
-        # - reduz max chars tokenizados para diminuir custo
+
         vocab = TokenizerBridge.get_vocab()
-        MAX_TOKENIZE_CHARS = int(os.environ.get("SICDOX_MAX_CHARS", "4000"))
+        
+        MAX_TOKENIZE_CHARS = int(os.environ.get("SICDOX_MAX_CHARS", "64000"))
 
         count = deduplicated = 0
-        buf_pages: List[tuple] = []
+        buf_pages: List[tuple] =[]
         seen_hashes = set()
-        # Buffer para writes em batch do content_pool: mapa hash->blob
         content_pending: dict[str, bytes] = {}
+        title_trigrams_pending: List[tuple] =[]
         CONTENT_FLUSH_BATCH = int(os.environ.get("SICDOX_CONTENT_BATCH", "256"))
 
         def _flush_content_pending():
-            """Insere em bulk o que estiver pendente no content_pool e limpa o buffer."""
             nonlocal content_pending
-            if not content_pending:
-                return
+            if not content_pending: return
             items = list(content_pending.items())
             with orn_span("build.sql_insert", category="index"):
-                try:
-                    # executemany em lote para reduzir overhead
-                    con.executemany("INSERT OR IGNORE INTO content_pool (hash, token_blob) VALUES (?, ?)", items)
+                try: con.executemany("INSERT OR IGNORE INTO content_pool (hash, token_blob) VALUES (?, ?)", items)
                 except Exception:
-                    # fallback item-a-item se algo falhar (mais lento, mas resiliente)
-                    logger.debug("bulk insert failed; falling back to single inserts", exc_info=True)
                     for k, v in items:
-                        try:
-                            con.execute("INSERT OR IGNORE INTO content_pool (hash, token_blob) VALUES (?, ?)", (k, v))
-                        except Exception:
-                            logger.debug("failed single insert for %s", k, exc_info=True)
+                        try: con.execute("INSERT OR IGNORE INTO content_pool (hash, token_blob) VALUES (?, ?)", (k, v))
+                        except Exception: pass
             content_pending = {}
 
         for title, path, html in _iter_zim_entries(zim_path, verbose=verbose):
             with orn_span("build.strip_html", category="index"):
                 body = _strip_html(html, max_chars=MAX_TOKENIZE_CHARS)
 
-            if len(body.strip()) < 50:
-                continue
+            if len(body.strip()) < 50: continue
 
             with orn_span("build.tokenize", category="index"):
                 try:
-                    # tokeniza o corpo e o título (título terá peso maior no índice)
                     body_bytes = body.encode("utf-8")
-                    qtoks = vocab.tokenize(body_bytes, add_bos=False)  # lista de ints
+                    qtoks = vocab.tokenize(body_bytes, add_bos=False)
                     title_bytes = title.encode("utf-8")
                     ttoks = vocab.tokenize(title_bytes, add_bos=False)
-                    # payload armazenado no content_pool: apenas tokens do corpo (economiza espaço)
                     body_arr = array.array("i", qtoks)
                     payload = body_arr.tobytes()
-                except Exception:
-                    logger.debug("tokenize failed for title=%s", title, exc_info=True)
-                    continue
+                except Exception: continue
 
                 h = hashlib.md5(payload).hexdigest()
 
@@ -1003,37 +901,25 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
                 with orn_span("build.zstd_compress", category="index"):
                     compressed = _compress(payload)
 
-                # acumula em memória e escreve em bloco quando atingir CONTENT_FLUSH_BATCH
                 content_pending[h] = compressed
-                if len(content_pending) >= CONTENT_FLUSH_BATCH:
-                    _flush_content_pending()
+                if len(content_pending) >= CONTENT_FLUSH_BATCH: _flush_content_pending()
             else:
                 deduplicated += 1
 
             count += 1
             buf_pages.append((count, title, path, h))
             
-            # accumulate title trigrams for this doc
             tnorm = _normalize_text_for_match(title)
             trigs = _trigrams_for(tnorm)
-            # buffer inserts into in-memory list for batch insert later
-            if "title_trigrams_pending" not in locals():
-                title_trigrams_pending = []
-            for tg in trigs:
-                title_trigrams_pending.append((tg, count))
+            for tg in trigs: title_trigrams_pending.append((tg, count))
 
-            # flush periodically (same batch timing)
             if len(title_trigrams_pending) >= 2000:
                 with orn_span("build.sql_insert_trigrams", category="index"):
                     con.executemany("INSERT INTO title_trigrams (trigram, doc_id) VALUES (?, ?)", title_trigrams_pending)
-                title_trigrams_pending = []
+                title_trigrams_pending =[]
 
-            # Para melhorar relevância, duplicamos tokens do título ao passar ao inverted index
-            # (aumenta peso de termos que aparecem no título)
-            try:
-                combined_tokens = ttoks + ttoks + qtoks  # título tem peso 2
-            except Exception:
-                combined_tokens = qtoks
+            try: combined_tokens = ttoks + ttoks + qtoks
+            except Exception: combined_tokens = qtoks
 
             with orn_span("build.inverted_idx", category="index"):
                 inv_builder.add_document(count, combined_tokens)
@@ -1045,32 +931,35 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
                     con.execute("COMMIT")
                     con.execute("BEGIN")
                     buf_pages.clear()
-                if verbose:
-                    logger.info("[BUILD] %d artigos tokenizados...", count)
+                if verbose: logger.info("[BUILD] ⏳ %d artigos processados e salvos no DB...", count)
 
-        if buf_pages:
-            con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
-        # flush any remaining title trigram pending
-        if 'title_trigrams_pending' in locals() and title_trigrams_pending:
+        if verbose: logger.info("[BUILD] ZIM extraído por completo. Salvando registros finais no banco...")
+
+        if buf_pages: con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
+        _flush_content_pending()
+        
+        if title_trigrams_pending:
             con.executemany("INSERT INTO title_trigrams (trigram, doc_id) VALUES (?, ?)", title_trigrams_pending)
+            
         con.execute("COMMIT")
 
     except Exception:
         logger.exception("Erro durante build_index; rollback")
-        try:
-            con.rollback()
-        except Exception:
-            pass
+        try: con.rollback()
+        except Exception: pass
         raise
     finally:
         con.close()
 
+    if verbose: logger.info("[BUILD] Banco de dados finalizado. Ordenando Índice Invertido em memória...")
+
     inv_builder.finalize()
     inv_dir = INDEX_DIR / source_id
+
+    if verbose: logger.info("[BUILD] Gravando Índice Invertido no disco: %s (isso pode levar alguns minutos)...", inv_dir)
     inv_builder.write(inv_dir)
 
-    if verbose:
-        logger.info("[BUILD] Concluído: %d matrizes (Dedup: %d) em %.1fs", count, deduplicated, time.monotonic() - t0)
+    if verbose: logger.info("[BUILD] ✅ PROCESSO CONCLUÍDO: %d artigos (Dedup: %d) finalizados em %.1fs", count, deduplicated, time.monotonic() - t0)
 
     return Path(db_path)
 
@@ -1079,24 +968,17 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
 # ---------------------------------------------------------------------------
 
 def _simple_query_tokens(text: str) -> list[int]:
-    # Fallback rápido: hash de n-grams ou bytes simples
-    # NOTE: não compatível 1:1 com tokens do GGUF, mas dá resultados rápidos
-    # Implementação simples: split por palavras e use hash modulo 2^31
-    toks = []
-    for w in re.findall(r"[A-Za-z0-9]+", text.lower()):
+    toks =[]
+    for w in re.findall(r"[A-Za-z0-9_]+|[^\w\s]", text):
         h = int(hashlib.md5(w.encode("utf-8")).hexdigest()[:8], 16)
         toks.append(h & 0x7fffffff)
     return toks
 
 def _fuzzy_title_search(con: sqlite3.Connection, query: str, candidate_limit: int = 30, final_limit: int = 10):
-    """Retorna lista ordenada de doc_ids por similaridade/title-overlap."""
     qnorm = _normalize_text_for_match(query)
     trigs = list(_trigrams_for(qnorm))
-    if not trigs:
-        return []
+    if not trigs: return[]
 
-    # busca candidatos por overlap de trigramas (fast, via SQL aggregate)
-    # nota: usar parâmetros com lista -> construímos placeholders
     placeholders = ",".join("?" for _ in trigs)
     sql = f"""
       SELECT doc_id, COUNT(*) as cnt
@@ -1107,294 +989,204 @@ def _fuzzy_title_search(con: sqlite3.Connection, query: str, candidate_limit: in
       LIMIT ?
     """
     rows = con.execute(sql, (*trigs, candidate_limit)).fetchall()
-    if not rows:
-        return []
+    if not rows: return []
 
-    candidates = [r[0] for r in rows]
-    # fetch titles for candidates
+    candidates =[r[0] for r in rows]
     rows2 = con.execute(f"SELECT id, title FROM pages WHERE id IN ({','.join('?' for _ in candidates)})", candidates).fetchall()
     title_map = {r[0]: r[1] for r in rows2}
 
-    scored = []
+    scored =[]
     for doc_id in candidates:
         title = title_map.get(doc_id, "")
         score = _similarity_ratio(qnorm, _normalize_text_for_match(title))
-        # boost exact/prefix matches
         tnorm = _normalize_text_for_match(title)
-        if tnorm == qnorm:
-            score += 0.6
-        elif tnorm.startswith(qnorm):
-            score += 0.35
+        if tnorm == qnorm: score += 0.6
+        elif tnorm.startswith(qnorm): score += 0.35
         scored.append((doc_id, score))
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    return [doc_id for doc_id, _ in scored[:final_limit]]
+    return[doc_id for doc_id, _ in scored[:final_limit]]
 
-def search_local(query: str, source_id: str, limit: int = 3) -> List[LocalResult]:
+def search_local(query: str, source_id: str, limit: int = 3, code_only: bool = False) -> List[LocalResult]:
     if not query.strip():
-        return []
-
-    db_path = str(_source_id_to_db(source_id))
-    if not Path(db_path).exists():
-        return []
+        return[]
+        
+    source_id = re.sub(r"_+", "_", re.sub(r"[^a-zA-Z0-9_]", "_", source_id.replace("-", "_").replace(".", "_"))).strip("_").lower()
 
     t_start = time.perf_counter()
     label = f"{source_id}-local"
 
     try:
-        con = sqlite3.connect(db_path, check_same_thread=False)
-        con.execute("PRAGMA query_only=1")
-        results: List[LocalResult] = []
-        doc_ids: List[int] = []
+        con, searcher = LocalIndexCache.get(source_id)
+        if not con: return[]
 
-        inv_dir = INDEX_DIR / source_id
-        if inv_dir.exists():
-            # --- obter candidatos via inverted index (body) e fuzzy title (title) ---
-                # --- obter candidatos via inverted index (body) e fuzzy title (title) ---
-                candidates = []
-                body_ids: list[int] = []
+        results: List[LocalResult] =[]
+        doc_ids: List[int] =[]
+        candidates =[]
+        body_ids: list[int] =[]
 
-                # Normalize once
-                q_raw = query.strip()
-                qnorm = _normalize_text_for_match(q_raw)
+        q_raw = query.strip()
+        qnorm = _normalize_text_for_match(q_raw)
 
-                # 0) título exato (mais rápido e decisivo) -> se encontrar, retorna imediatamente
-                try:
-                    row = con.execute("SELECT p.id, p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE LOWER(p.title) = ? LIMIT 1", (qnorm,)).fetchone()
-                    if row:
-                        doc_id, title, path, blob = row
-                        try:
-                            decompressed = _decompress(blob)
-                            body = TokenizerBridge.bytes_to_text(decompressed)
-                        except Exception:
-                            body = ""
-                        # retorno imediato com o artigo exato no topo
-                        res = LocalResult(label, title, (body[len(title):].strip() if body.lower().startswith(title.lower()) else body), path)
-                        con.close()
-                        return [res]
-                except Exception:
-                    # não fatal — continuar com o fluxo normal
-                    logger.debug("exact title lookup failed", exc_info=True)
-
-                # Detecta queries que parecem fórmulas químicas (ex.: CH4, H2O, C6H6, subscripts removed)
-                _formula_like = bool(re.search(r"[A-Za-z].*\d|\d", q_raw)) and len(q_raw) <= 12  # heurística curta
-
-                # 1) tentar candidates pelo inverted index (body)
-                try:
-                    with InvertedIndexSearcher(inv_dir) as searcher:
-                        if _env_bool("SICDOX_FAST_MODE"):
-                            query_tokens = _simple_query_tokens(query)
-                        else:
-                            vocab = TokenizerBridge.get_vocab()
-                            query_tokens = vocab.tokenize(query.encode("utf-8"), add_bos=False)
-                        body_ids = searcher.search(query_tokens, limit=80) or []
-                        candidates.extend(body_ids)
-                except Exception:
-                    logger.debug("Inverted index search failed; continuing", exc_info=True)
-
-                # 2) title quick matches (exact/prefix/contains) — fast SQL
-                q_esc = _like_escape(q_raw)
-                exact = q_raw
-                starts = f"{q_esc}%"
-                contains = f"%{q_esc}%"
-                try:
-                    rows = con.execute(
-                        "SELECT p.id FROM pages p WHERE p.title = ? OR p.title LIKE ? ESCAPE '\\' OR p.title LIKE ? ESCAPE '\\' LIMIT ?",
-                        (exact, starts, contains, 80),
-                    ).fetchall()
-                    title_ids_quick = [r[0] for r in rows]
-                except Exception:
-                    title_ids_quick = []
-
-                # 3) if no quick title hits, try fuzzy trigram
-                if not title_ids_quick:
-                    try:
-                        title_ids_quick = _fuzzy_title_search(con, q_raw, candidate_limit=200, final_limit=60)
-                    except Exception:
-                        title_ids_quick = []
-
-                # union candidates keeping order (body first, then title)
-                for tid in title_ids_quick:
-                    if tid not in candidates:
-                        candidates.append(tid)
-
-                if not candidates:
-                    # nothing found
-                    con.close()
-                    return []
-
-                # --- fetch candidate blobs in one query ---
-                placeholders = ",".join("?" for _ in candidates)
-                rows = con.execute(
-                    f"SELECT p.id, p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE p.id IN ({placeholders})",
-                    candidates,
-                ).fetchall()
-                row_map = {r[0]: r for r in rows}
-
-                # prepare query token set (if tokenized)
-                qtoken_set = set(int(t) for t in (query_tokens or []))
-
-                scored = []
-                for cid in candidates:
-                    r = row_map.get(cid)
-                    if not r:
-                        continue
-                    doc_id, title, path, blob = r
-
-                    # tenta extrair tokens (lista de ints) e texto detokenizado
-                    tokens = None
-                    body_text = ""
+        # Skip exact title match Se a pessoa quer forçar pesquisa apenas por Código
+        if not code_only:
+            try:
+                row = con.execute("SELECT p.id, p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE LOWER(p.title) = ? LIMIT 1", (qnorm,)).fetchone()
+                if row:
+                    doc_id, title, path, blob = row
                     try:
                         decompressed = _decompress(blob)
-                        arr = array.array("i")
-                        arr.frombytes(decompressed)
-                        tokens = arr.tolist()
-                        body_text = TokenizerBridge.bytes_to_text(decompressed)
-                        
-                        body_text = _clean_body(body_text, max_chars=50_000)
-                        # se começou com title, remova
-                        if body_text.lower().startswith(title.lower()):
-                            body_text = re.sub(rf"^{re.escape(title)}\s*", "", body_text, flags=re.IGNORECASE).lstrip()
-                    except Exception:
-                        # fallback: tentar decodificar bruto para texto
-                        try:
-                            body_text = TokenizerBridge.bytes_to_text(_decompress(blob))
-                        except Exception:
-                            body_text = ""
+                        body = TokenizerBridge.bytes_to_text(decompressed)
+                    except Exception: body = ""
+                    res = LocalResult(label, title, (body[len(title):].strip() if body.lower().startswith(title.lower()) else body), path)
+                    return [res]
+            except Exception: pass
 
-                    # sinais a extrair
-                    dl = max(1, len(tokens) if tokens is not None else max(1, len(body_text.split())))
-                    if tokens is not None:
-                        positions = [i for i, tok in enumerate(tokens) if tok in qtoken_set]
-                        tf = len(positions)
-                        early_window = min(200, max(20, dl // 8))
-                        early_tf = sum(1 for p in positions if p < early_window)
-                        first_pos = min(positions) if positions else None
-                    else:
-                        # substring heuristic counts (word-level)
-                        words = [w for w in re.findall(r"[A-Za-z0-9]+", body_text.lower())]
-                        qwords = [w for w in re.findall(r"[A-Za-z0-9]+", q_raw.lower())]
-                        tf = sum(body_text.lower().count(w) for w in qwords if len(w) > 0)
-                        early_tf = sum(body_text[:400].lower().count(w) for w in qwords if len(w) > 0)
-                        positions = []
-                        first_pos = 0 if early_tf > 0 else None
+        _formula_like = bool(re.search(r"[A-Za-z].*\d|\d", q_raw)) and len(q_raw) <= 12
 
-                    # title signals
-                    tnorm = _normalize_text_for_match(title)
-                    title_boost = 0.0
-                    if tnorm == qnorm:
-                        title_boost = 3.0
-                    elif tnorm.startswith(qnorm):
-                        title_boost = 1.8
-                    else:
-                        title_sim = _similarity_ratio(qnorm, tnorm)
-                        title_boost = 0.9 * title_sim
+        if searcher:
+            try:
+                if _env_bool("SICDOX_FAST_MODE"):
+                    query_tokens = _simple_query_tokens(query)
+                else:
+                    vocab = TokenizerBridge.get_vocab()
+                    query_tokens = vocab.tokenize(query.encode("utf-8"), add_bos=False)
+                # Mais tolerante para trazer candidatos se estivermos no modo "só código"
+                body_ids = searcher.search(query_tokens, limit=120 if code_only else 80) or[]
+                candidates.extend(body_ids)
+            except Exception: pass
 
-                    # body signals
-                    density = tf / dl
-                    early_density = early_tf / max(1, dl)
-                    front_bonus = 1.0 if early_tf > 0 and (positions and min(positions) < max(10, dl // 20)) else 0.0
+        q_esc = _like_escape(q_raw)
+        exact = q_raw
+        starts = f"{q_esc}%"
+        contains = f"%{q_esc}%"
+        try:
+            rows = con.execute(
+                "SELECT p.id FROM pages p WHERE p.title = ? OR p.title LIKE ? ESCAPE '\\' OR p.title LIKE ? ESCAPE '\\' LIMIT ?",
+                (exact, starts, contains, 80),
+            ).fetchall()
+            title_ids_quick =[r[0] for r in rows]
+        except Exception: title_ids_quick =[]
 
-                    # special handling for formula-like queries: substring match priority
-                    formula_score = 0.0
-                    if _formula_like and body_text:
-                        # case-sensitive substring check first (chemical formulas are case-sensitive-ish)
-                        if q_raw in body_text:
-                            formula_score = 6.0
-                        elif q_raw.lower() in body_text.lower():
-                            formula_score = 2.0
+        if not title_ids_quick:
+            try: title_ids_quick = _fuzzy_title_search(con, q_raw, candidate_limit=200, final_limit=60)
+            except Exception: title_ids_quick =[]
 
-                    # combine signals into final score (weights tuned to favor title and early mentions)
-                    score = 0.0
-                    score += 120.0 * title_boost        # strong bias to title matches
-                    score += 300.0 * early_density      # emphasize appearances at start
-                    score += 120.0 * density            # normalized frequency in document
-                    score += 30.0 * tf                  # raw tf small bonus
-                    score += 80.0 * front_bonus         # very early occurrence bonus
-                    score += formula_score              # formula special boost
+        for tid in title_ids_quick:
+            if tid not in candidates: candidates.append(tid)
 
-                    # boost small: if candidate came from inverted body search, keep slight preference
-                    if cid in body_ids:
-                        score *= 1.03
+        if not candidates:
+            return[]
 
-                    scored.append((doc_id, score, title, path, body_text))
+        placeholders = ",".join("?" for _ in candidates)
+        rows = con.execute(
+            f"SELECT p.id, p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE p.id IN ({placeholders})",
+            candidates,
+        ).fetchall()
+        row_map = {r[0]: r for r in rows}
 
-                # sort & limit
-                scored.sort(key=lambda x: x[1], reverse=True)
-                top = scored[:limit]
+        qtoken_set = set(int(t) for t in (query_tokens or []))
+        qwords =[w for w in re.findall(r"[A-Za-z0-9_]+", q_raw.lower())]
 
-                # build results
-                results = []
-                for doc_id, score, title, path, body_text in top:
-                    body = body_text or ""
-                    body = re.sub(r"\n\s*\n", "\n\n", body).strip()
-                    # safer remove of leading title + following separators/newlines
-                    pat = rf"^\s*{re.escape(title)}\s*[:\-\|]?\s*(\r?\n)+"
-                    body = re.sub(pat, "", body, flags=re.IGNORECASE)
-                    # collapse remaining repeated blank lines
-                    body = re.sub(r"\n{3,}", "\n\n", body).lstrip()
-                    results.append(LocalResult(label, title, body, path))
+        scored =[]
+        for cid in candidates:
+            r = row_map.get(cid)
+            if not r: continue
+            doc_id, title, path, blob = r
 
-                con.close()
-                if _env_bool("VULCAN_TELEMETRY"):
-                    logger.info("[VULCAN PROFILER] search_semantic(%s) C++ ZSTD: %.2fms", source_id, (time.perf_counter() - t_start) * 1000)
-                return results
+            tokens = None
+            body_text = ""
+            try:
+                decompressed = _decompress(blob)
+                arr = array.array("i")
+                arr.frombytes(decompressed)
+                tokens = arr.tolist()
+                body_text = TokenizerBridge.bytes_to_text(decompressed)
+                
+                body_text = _clean_body(body_text, max_chars=100_000)
+                if body_text.lower().startswith(title.lower()):
+                    body_text = re.sub(rf"^{re.escape(title)}\s*", "", body_text, flags=re.IGNORECASE).lstrip()
+            except Exception:
+                try: body_text = TokenizerBridge.bytes_to_text(_decompress(blob))
+                except Exception: body_text = ""
 
-        for doc_id in doc_ids:
-            row = con.execute(
-                "SELECT p.title, p.path, c.token_blob FROM pages p JOIN content_pool c ON p.content_hash = c.hash WHERE p.id = ?",
-                (doc_id,),
-            ).fetchone()
-            if row:
-                title, path, blob = row
-                try:
-                    decompressed_bytes = _decompress(blob)
-                except RuntimeError as e:
-                    logger.warning("search_local: skipping doc %s due to decompression error: %s", doc_id, e)
-                    continue
-                body = TokenizerBridge.bytes_to_text(decompressed_bytes)
-                if not body.strip():
-                    # try fallback: if we have raw_html stored (content_raw) decode it; otherwise attempt to read ZIM entry
-                    try:
-                        # try to read raw content_pool raw_html table if present
-                        row2 = con.execute("SELECT raw_html FROM content_raw WHERE hash = (SELECT content_hash FROM pages WHERE id = ?)", (doc_id,)).fetchone()
-                        if row2 and row2[0]:
-                            raw = row2[0]
-                            # if stored compressed, use _decompress convention or decode
-                            try:
-                                raw_txt = _decompress(raw)
-                                body = raw_txt.decode("utf-8", errors="replace")
-                            except Exception:
-                                body = raw.decode("utf-8", errors="replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
-                    except Exception:
-                        pass
+            dl = max(1, len(tokens) if tokens is not None else max(1, len(body_text.split())))
+            
+            # FILTRO ESTRITO DE CÓDIGO
+            if code_only:
+                # Modificado para capturar a tag inteira, assim a linguagem (ex: python) também dá match
+                code_contents = re.findall(r"\[CODE-BEGIN.*?\[CODE-END\]", body_text, flags=re.DOTALL | re.IGNORECASE)
+                code_text = " \n ".join(code_contents).lower()
+                tf = sum(code_text.count(w) for w in qwords if len(w) > 0)
+                
+                if q_raw.lower() in code_text:
+                    tf += 20 # Bônus massivo para expressão exata dentro de bloco de código
+                    
+                if tf == 0:
+                    continue # Se a query não existe nas linhas de código, descarta o documento todo.
+                
+                early_tf = tf
+                positions =[] # Bypass
+            else:
+                if tokens is not None:
+                    positions =[i for i, tok in enumerate(tokens) if tok in qtoken_set]
+                    tf = len(positions)
+                    early_window = min(200, max(20, dl // 8))
+                    early_tf = sum(1 for p in positions if p < early_window)
+                    first_pos = min(positions) if positions else None
+                else:
+                    words = [w for w in re.findall(r"[A-Za-z0-9_]+", body_text.lower())]
+                    tf = sum(body_text.lower().count(w) for w in qwords if len(w) > 0)
+                    early_tf = sum(body_text[:400].lower().count(w) for w in qwords if len(w) > 0)
+                    positions =[]
+                    first_pos = 0 if early_tf > 0 else None
 
-                if len(body.strip()) < 40:
-                    logger.warning("SHORT_BODY id=%s title=%s body_len=%d blob_len=%d", doc_id, title, len(body), len(blob) if blob else 0)
+            tnorm = _normalize_text_for_match(title)
+            title_boost = 0.0
+            if tnorm == qnorm: title_boost = 3.0
+            elif tnorm.startswith(qnorm): title_boost = 1.8
+            else:
+                title_sim = _similarity_ratio(qnorm, tnorm)
+                title_boost = 0.9 * title_sim
 
-                if not body.strip():
-                    logger.debug("search_local: doc %s produced empty body after decode; skipping", doc_id)
-                    continue
+            density = tf / dl
+            early_density = early_tf / max(1, dl)
+            front_bonus = 1.0 if early_tf > 0 and (positions and min(positions) < max(10, dl // 20)) else 0.0
 
-                # Normaliza e limpa excessos de newlines/whitespace antes de armazenar
-                body = _clean_body(body, max_chars=50_000)
+            formula_score = 0.0
+            if _formula_like and body_text:
+                if q_raw in body_text: formula_score = 6.0
+                elif q_raw.lower() in body_text.lower(): formula_score = 2.0
 
-                # Se o body começa com o título repetido, remova o prefixo redundante
-                if body.lower().startswith(title.lower()):
-                    # tente remover apenas a primeira ocorrência e limpar espaços sobrando
-                    body = re.sub(rf"^{re.escape(title)}\s*", "", body, flags=re.IGNORECASE).lstrip()
+            score = 0.0
+            score += 120.0 * title_boost        
+            score += 300.0 * early_density      
+            score += 120.0 * density            
+            score += 30.0 * tf                  
+            score += 80.0 * front_bonus         
+            score += formula_score              
 
-                results.append(LocalResult(label, title, body, path))
+            if cid in body_ids: score *= 1.03
 
-        con.close()
-        if _env_bool("VULCAN_TELEMETRY"):
-            logger.info("[VULCAN PROFILER] search_semantic(%s) C++ ZSTD: %.2fms", source_id, (time.perf_counter() - t_start) * 1000)
+            scored.append((doc_id, score, title, path, body_text))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        top = scored[:limit]
+
+        results =[]
+        for doc_id, score, title, path, body_text in top:
+            body = body_text or ""
+            body = re.sub(r"\n\s*\n", "\n\n", body).strip()
+            pat = rf"^\s*{re.escape(title)}\s*[:\-\|]?\s*(\r?\n)+"
+            body = re.sub(pat, "", body, flags=re.IGNORECASE)
+            body = re.sub(r"\n{3,}", "\n\n", body).lstrip()
+            results.append(LocalResult(label, title, body, path))
+
         return results
 
     except Exception:
         logger.exception("search_local failed")
-        return []
-
+        return[]
 
 # ---------------------------------------------------------------------------
 # INFO / LIST
@@ -1412,13 +1204,11 @@ def index_info(source_id: str) -> dict:
             info["exists"] = True
             info["mode"] = "SiCDox (Tokenized)" if meta.get("sicdox_ver") else "Texto Puro"
             con.close()
-        except Exception:
-            logger.debug("index_info failed for %s", source_id, exc_info=True)
+        except Exception: pass
     return info
 
-
 def list_indexes() -> List[dict]:
-    seen, result = set(), []
+    seen, result = set(),[]
     if INDEX_DIR.exists():
         for db_file in sorted(INDEX_DIR.glob("*.db")):
             sid = db_file.stem
@@ -1432,14 +1222,12 @@ def list_indexes() -> List[dict]:
                 seen.add(sid)
     return result
 
-
 # ---------------------------------------------------------------------------
 # ZIM header probe / diagnose
 # ---------------------------------------------------------------------------
 
 _ZIM_MAGIC = 0x044D495A
 _ZIM_HEADER_SIZE = 80
-
 
 def _read_zim_header(zim_path: str) -> dict:
     with open(zim_path, "rb") as f:
@@ -1452,7 +1240,6 @@ def _read_zim_header(zim_path: str) -> dict:
     entry_count, cluster_count = struct.unpack_from("<II", raw, 24)
     return {"version": f"{major}.{minor}", "uuid": raw[8:24].hex(), "entry_count": entry_count, "cluster_count": cluster_count}
 
-
 def probe_zim(zim_path: str) -> None:
     try:
         info = _read_zim_header(zim_path)
@@ -1463,46 +1250,34 @@ def probe_zim(zim_path: str) -> None:
         print(f"  Clusters:      {info['cluster_count']:,}")
         print(f"  UUID:          {info['uuid']}")
         print(f"  Tamanho:       {size_mb} MB")
-    except Exception as e:
-        print(f"  [PROBE] FALHOU: {e}")
-
+    except Exception as e: print(f"[PROBE] FALHOU: {e}")
 
 def diagnose_zim(zim_path: str, n: int = 20) -> None:
-    try:
-        import pyzim
+    try: import pyzim
     except ImportError:
         print("  pyzim não instalado.")
         return
 
-    print(f"\n  [DIAGNOSE] {Path(zim_path).name} — primeiras {n} entradas")
+    print(f"\n[DIAGNOSE] {Path(zim_path).name} — primeiras {n} entradas")
     print(f"  {'#':<4} {'redirect':<10} {'namespace':<12} {'mime':<30} {'content_bytes':<14} {'title'}")
     print(f"  {'-'*100}")
 
     with pyzim.Zim.open(str(Path(zim_path).absolute()), mode="r") as zim:
         for i, entry in enumerate(zim.iter_entries()):
-            if i >= n:
-                break
+            if i >= n: break
             is_redir = getattr(entry, "is_redirect", "?")
             ns = getattr(entry, "namespace", "?")
-            if isinstance(ns, bytes):
-                ns = ns.decode("utf-8", errors="ignore")
+            if isinstance(ns, bytes): ns = ns.decode("utf-8", errors="ignore")
             mime = getattr(entry, "mimetype", None) or getattr(entry, "mime_type", "?")
-            if callable(mime):
-                mime = mime()
-            if isinstance(mime, bytes):
-                mime = mime.decode("utf-8", errors="ignore")
+            if callable(mime): mime = mime()
+            if isinstance(mime, bytes): mime = mime.decode("utf-8", errors="ignore")
             title = getattr(entry, "title", "?")
-            if isinstance(title, bytes):
-                title = title.decode("utf-8", errors="ignore")
+            if isinstance(title, bytes): title = title.decode("utf-8", errors="ignore")
             content = _read_entry_content(entry)
             clen = len(content) if content else 0
-            chead = ""
-            if content:
-                chead = content[:60].replace(b"\n", b" ").decode("utf-8", errors="ignore")
             print(f"  {i:<4} {str(is_redir):<10} {str(ns):<12} {str(mime)[:28]:<30} {clen:<14} {str(title)[:40]}")
 
     print()
-
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -1518,94 +1293,82 @@ def _cli_main(argv: Optional[List[str]] = None) -> int:
     b = sub.add_parser("build", help="Construir índice tokenizado")
     b.add_argument("zim", help="Caminho do arquivo .zim")
     b.add_argument("source_id", nargs="?", help="Source ID opcional")
+    
     s = sub.add_parser("search", help="Buscar no índice local")
     s.add_argument("source_id", help="Source ID")
-    s.add_argument("query", nargs=argparse.REMAINDER, help="Termos de busca")
+    s.add_argument("--code-only", action="store_true", help="Pesquisar apenas em blocos de código fonte (descartando o resto)")
+    s.add_argument("query", nargs="+", help="Termos de busca")
+    
     i = sub.add_parser("info", help="Informação do índice")
     i.add_argument("source_id", help="Source ID")
     sub.add_parser("list", help="Listar índices e ZIMs disponíveis")
     sub.add_parser("diagnose", help="Diagnose ZIM (primeiras entradas)").add_argument("zim", nargs=1)
+    
+    p = sub.add_parser("preload", help="Testa o tempo de carregamento do vocab e index na memória RAM")
+    p.add_argument("source_id", nargs="?", help="Source ID opcional para cachear DB")
 
     args = parser.parse_args(argv)
 
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    if args.verbose: logging.getLogger().setLevel(logging.DEBUG)
+    if args.gguf: os.environ[_GGUF_PATH_ENV] = args.gguf
 
-    if args.gguf:
-        os.environ[_GGUF_PATH_ENV] = args.gguf
-
-    # Chronos (opcional)
     chronos_recorder = None
     try:
         from doxoade.chronos import chronos_recorder
-
-        class FakeCommand:
-            name = f"INDEX-{args.cmd.upper() if args.cmd else 'NONE'}"
-
+        class FakeCommand: name = f"INDEX-{args.cmd.upper() if args.cmd else 'NONE'}"
         class FakeCtx:
             invoked_subcommand = None
             command = FakeCommand()
             obj = {}
-
         chronos_recorder.start_command(FakeCtx())
-        logger.info("[TELEMETRY] Chronos Nexus ativado! (Sessão: %s)", chronos_recorder.session_uuid)
-    except Exception as e:
-        logger.debug("Chronos não iniciado: %s", e)
+        logger.debug("[TELEMETRY] Chronos Nexus ativado! (Sessão: %s)", chronos_recorder.session_uuid)
+    except Exception as e: pass
 
     exit_code = 0
     t_start_global = time.perf_counter()
 
     try:
-        if args.cmd == "probe":
-            probe_zim(args.zim)
+        if args.cmd == "probe": probe_zim(args.zim)
         elif args.cmd == "build":
             build_index(args.zim, source_id=getattr(args, "source_id", None))
-            try:
-                GLOBAL_TELEMETRY.flush_json("telemetry/local_index_build.json")
-                logger.info("[TELEMETRY] ORN Spans salvos em telemetry/local_index_build.json")
-            except Exception:
-                logger.debug("Não foi possível salvar GLOBAL_TELEMETRY", exc_info=True)
+            try: GLOBAL_TELEMETRY.flush_json("telemetry/local_index_build.json")
+            except Exception: pass
         elif args.cmd == "search":
-            q = " ".join(args.query or [])
-            results = search_local(q, args.source_id)
+            q = " ".join(args.query or[])
+            results = search_local(q, args.source_id, code_only=getattr(args, "code_only", False))
             elapsed = round((time.perf_counter() - t_start_global) * 1000, 2)
-            if not results:
-                print("\n  Nenhum resultado para a busca.")
+            if not results: print("\n  Nenhum resultado para a busca.")
             else:
-                # tamanho de snippet via env (padrão 1200)
-                max_chars = int(os.environ.get("SICDOX_SNIPPET_CHARS", "1200"))
+                max_chars = int(os.environ.get("SICDOX_SNIPPET_CHARS", "2000"))
                 n_snips = int(os.environ.get("SICDOX_SNIPPETS", "3"))
                 for r in results:
                     snippet = r.get_snippet(q, max_chars=max_chars, n_snippets=n_snips)
                     print(f"\n  [{r.source}] {r.title}\n{snippet}\n  path: {r.path}")
             print(f"\n  Tempo: {elapsed}ms | {len(results)} resultado(s)")
+            print(f"  (DICA: Para velocidade extrema, chame LocalIndexCache.preload() dentro da IA ao invés do CLI)")
         elif args.cmd == "info":
-            for k, v in index_info(args.source_id).items():
-                print(f"  {k:<12}: {v}")
+            for k, v in index_info(args.source_id).items(): print(f"  {k:<12}: {v}")
         elif args.cmd == "list":
-            for info in list_indexes():
-                print(f"  {info['source_id']:<45} {info.get('articles', 0):>8}  {info.get('mode', '?')}")
+            for info in list_indexes(): print(f"  {info['source_id']:<45} {info.get('articles', 0):>8}  {info.get('mode', '?')}")
         elif args.cmd == "diagnose":
             diagnose_zim(args.zim[0], n=20)
+        elif args.cmd == "preload":
+            LocalIndexCache.preload([args.source_id] if args.source_id else[])
+            elapsed = round((time.perf_counter() - t_start_global) * 1000, 2)
+            print(f"\n[OK] Vocabulário GGUF e Banco(s) montados na RAM com sucesso em {elapsed}ms!")
         else:
             parser.print_help()
 
-    except Exception as e:
+    except Exception:
         exit_code = 1
-        logger.exception("CLI command failed")
         raise
-
     finally:
         if chronos_recorder:
             duration_ms = (time.perf_counter() - t_start_global) * 1000
-            try:
-                chronos_recorder.end_command(exit_code, duration_ms)
-                logger.info("[TELEMETRY] Dados gravados no banco de auditoria Doxoade.")
-            except Exception:
-                logger.debug("Erro ao salvar log do Chronos", exc_info=True)
+            try: chronos_recorder.end_command(exit_code, duration_ms)
+            except Exception: pass
 
     return exit_code
-
 
 if __name__ == "__main__":
     raise SystemExit(_cli_main())
