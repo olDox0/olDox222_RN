@@ -180,6 +180,95 @@ _RE_NEWL = re.compile(r"\n{3,}")
 _RE_URL = re.compile(r"https?://\S+")
 
 
+_CODE_BLOCK_SEARCH_RE = re.compile(
+    r"\[CODE-BEGIN\s*(?P<lang>[^\]\n]*)\]\n?(?P<body>.*?)\n?\[CODE-END\]",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_LANGUAGE_ALIASES = {
+    "py": "python",
+    "python": "python",
+    "js": "javascript",
+    "javascript": "javascript",
+    "ts": "typescript",
+    "typescript": "typescript",
+    "java": "java",
+    "c": "c",
+    "cpp": "cpp",
+    "c++": "cpp",
+    "csharp": "csharp",
+    "cs": "csharp",
+    "go": "go",
+    "golang": "go",
+    "rust": "rust",
+    "rb": "ruby",
+    "ruby": "ruby",
+    "php": "php",
+    "swift": "swift",
+    "kotlin": "kotlin",
+    "scala": "scala",
+}
+
+
+def _extract_code_blocks_for_search(body_text: str) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
+    for m in _CODE_BLOCK_SEARCH_RE.finditer(body_text or ""):
+        lang = (m.group("lang") or "").strip().lower()
+        body = (m.group("body") or "").strip()
+        blocks.append((lang, body))
+    return blocks
+
+
+def _canonical_query_languages(qwords: list[str]) -> set[str]:
+    langs: set[str] = set()
+    for w in qwords:
+        key = w.lower().strip()
+        if key in _LANGUAGE_ALIASES:
+            langs.add(_LANGUAGE_ALIASES[key])
+    return langs
+
+
+def _score_code_only_match(body_text: str, q_raw: str, qwords: list[str]) -> tuple[bool, float, int, int]:
+    """Retorna (passou, tf, termos_unicos, total_termos) para modo --code-only."""
+    blocks = _extract_code_blocks_for_search(body_text)
+    if not blocks:
+        return False, 0.0, 0, 0
+
+    all_code_text = "\n".join(
+        ((f"[lang:{lang}]\n" if lang else "") + body)
+        for lang, body in blocks
+    ).lower()
+
+    query_terms = [w for w in qwords if len(w) >= 2]
+    if not query_terms:
+        query_terms = [q_raw.lower()] if q_raw.strip() else []
+
+    phrase_match = q_raw.lower() in all_code_text
+    matched_terms = {w for w in query_terms if w in all_code_text}
+
+    query_langs = _canonical_query_languages(qwords)
+    if query_langs:
+        block_langs = {lang for lang, _ in blocks if lang}
+        normalized_block_langs = {
+            _LANGUAGE_ALIASES.get(lang, lang)
+            for lang in block_langs
+        }
+        if not (query_langs & normalized_block_langs):
+            if not any(lang in all_code_text for lang in query_langs):
+                return False, 0.0, len(matched_terms), len(query_terms)
+
+    if not phrase_match:
+        if len(query_terms) >= 2 and len(matched_terms) < 2:
+            return False, 0.0, len(matched_terms), len(query_terms)
+        if len(query_terms) >= 3 and (len(matched_terms) / max(1, len(query_terms))) < 0.67:
+            return False, 0.0, len(matched_terms), len(query_terms)
+
+    tf = float(sum(all_code_text.count(w) for w in query_terms))
+    tf += 18.0 if phrase_match else 0.0
+    tf += (len(matched_terms) / max(1, len(query_terms))) * 10.0
+    return tf > 0, tf, len(matched_terms), len(query_terms)
+
+
 def _normalize_math_text(text: str) -> str:
     """Normaliza fórmulas extraídas de HTML para leitura em terminal/contexto."""
     if not text:
@@ -1165,18 +1254,10 @@ def search_local(query: str, source_id: str, limit: int = 3, code_only: bool = F
             
             # FILTRO ESTRITO DE CÓDIGO
             if code_only:
-                # Modificado para capturar a tag inteira, assim a linguagem (ex: python) também dá match
-                code_contents = re.findall(r"\[CODE-BEGIN.*?\[CODE-END\]", body_text, flags=re.DOTALL | re.IGNORECASE)
-                code_text = " \n ".join(code_contents).lower()
-                tf = sum(code_text.count(w) for w in qwords if len(w) > 0)
-                
-                if q_raw.lower() in code_text:
-                    tf += 20 # Bônus massivo para expressão exata dentro de bloco de código
-                    
-                if tf == 0:
-                    continue # Se a query não existe nas linhas de código, descarta o documento todo.
-                
-                early_tf = tf
+                passed, tf, matched_terms, total_terms = _score_code_only_match(body_text, q_raw, qwords)
+                if not passed:
+                    continue
+                early_tf = tf + (8.0 if total_terms > 0 and matched_terms == total_terms else 0.0)
                 positions =[] # Bypass
             else:
                 if tokens is not None:
