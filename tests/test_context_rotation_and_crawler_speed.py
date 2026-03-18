@@ -70,7 +70,7 @@ def test_crawler_auto_prefers_local_before_cached_remote(monkeypatch, tmp_path) 
         def to_prompt_block(self, max_chars=1200):
             return "[CTX-BEGIN]local async[CTX-END]"
 
-    def fake_search_local(query: str, source_id: str, limit: int = 1):
+    def fake_search_local(query: str, source_id: str, limit: int = 1, code_only: bool = False):
         return [_LocalRes()]
 
     import engine.tools.crawler as crawler_mod
@@ -102,7 +102,7 @@ def test_crawler_local_source_prefers_code_index_for_code_query(monkeypatch, tmp
         def to_prompt_block(self, max_chars=1200):
             return "[CTX-BEGIN]dummy[CTX-END]"
 
-    def fake_search_local(query: str, source_id: str, limit: int = 1):
+    def fake_search_local(query: str, source_id: str, limit: int = 1, code_only: bool = False):
         if "computer" in source_id:
             return [_Res("Quicksort")]
         return [_Res("Sesquioxide")]
@@ -112,3 +112,63 @@ def test_crawler_local_source_prefers_code_index_for_code_query(monkeypatch, tmp
 
     result = crawler.search("quicksort python", source="local")
     assert result.source.startswith("wikipedia_pt_computer_maxi_2026_01")
+
+
+def test_crawler_local_forwards_code_only_to_local_index(monkeypatch, tmp_path) -> None:
+    idx_dir = tmp_path / "data" / "index"
+    idx_dir.mkdir(parents=True)
+    (idx_dir / "wiki_fake.db").write_text("x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    crawler = OrnCrawler()
+    monkeypatch.setattr(crawler, "check_deps", lambda: {"requests": True, "beautifulsoup4": True, "urllib.robotparser": True})
+
+    class _Res:
+        ok = True
+        title = "Local Code"
+
+        def to_prompt_block(self, max_chars=1200):
+            return "[CTX-BEGIN]local code[CTX-END]"
+
+    seen = {"code_only": None}
+
+    def fake_search_local(query: str, source_id: str, limit: int = 1, code_only: bool = False):
+        seen["code_only"] = code_only
+        return [_Res()]
+
+    import engine.tools.crawler as crawler_mod
+    monkeypatch.setattr(crawler_mod, "_get_local_index", lambda: (fake_search_local, lambda *_a, **_k: {}))
+
+    result = crawler.search("quicksort python", source="local", code_only=True)
+    assert result.ok
+    assert seen["code_only"] is True
+
+
+def test_crawler_auto_forwards_code_only_to_local_index(monkeypatch, tmp_path) -> None:
+    idx_dir = tmp_path / "data" / "index"
+    idx_dir.mkdir(parents=True)
+    (idx_dir / "wiki_fake.db").write_text("x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    crawler = OrnCrawler()
+    monkeypatch.setattr(crawler, "check_deps", lambda: {"requests": True, "beautifulsoup4": True, "urllib.robotparser": True})
+
+    class _Res:
+        ok = True
+        title = "Local Auto Code"
+
+        def to_prompt_block(self, max_chars=1200):
+            return "[CTX-BEGIN]local auto code[CTX-END]"
+
+    seen = {"code_only": None}
+
+    def fake_search_local(query: str, source_id: str, limit: int = 1, code_only: bool = False):
+        seen["code_only"] = code_only
+        return [_Res()]
+
+    import engine.tools.crawler as crawler_mod
+    monkeypatch.setattr(crawler_mod, "_get_local_index", lambda: (fake_search_local, lambda *_a, **_k: {}))
+
+    result = crawler.search("quicksort python", source="auto", code_only=True)
+    assert result.ok
+    assert seen["code_only"] is True

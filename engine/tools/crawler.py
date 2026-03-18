@@ -677,7 +677,7 @@ class OrnCrawler:
         return _session_cache.get(key)
 
     def search(self, query: str, source: str = "auto",
-               lang: str = "pt") -> CrawlerResult:
+               lang: str = "pt", code_only: bool = False) -> CrawlerResult:
         """
         Ponto de entrada principal.
 
@@ -712,7 +712,7 @@ class OrnCrawler:
                     if target_src and target_src not in src_id:
                         continue
 
-                    results = search_local(query, source_id=src_id, limit=1)
+                    results = search_local(query, source_id=src_id, limit=1, code_only=code_only)
                     if results and results[0].ok:
                         ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
                         return CrawlerResult(
@@ -726,7 +726,7 @@ class OrnCrawler:
 
 
         if source == "auto":
-            return self._auto_search(query, lang)
+            return self._auto_search(query, lang, code_only=code_only)
 
         if source == "wikipedia":
             cached = self._cached("wikipedia", query, lang)
@@ -784,7 +784,7 @@ class OrnCrawler:
                 src_id = LOCAL_SOURCES.get("stackexchange", "stackexchange")
             else:
                 src_id = LOCAL_SOURCES.get("wikipedia", "wikipedia")
-            results = search_local(query, source_id=src_id, limit=1)
+            results = search_local(query, source_id=src_id, limit=1, code_only=code_only)
             if results:
                 ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
                 return CrawlerResult(
@@ -800,7 +800,7 @@ class OrnCrawler:
         return CrawlerResult(source, query,
                              error=f"fonte desconhecida: {source!r}")
 
-    def _auto_search(self, query: str, lang: str) -> CrawlerResult:
+    def _auto_search(self, query: str, lang: str, code_only: bool = False) -> CrawlerResult:
         """
         Estratégia auto: tenta fontes por prioridade até encontrar resultado útil.
         """
@@ -815,7 +815,7 @@ class OrnCrawler:
                 # Vasculha todos os bancos locais que existirem
                 src_ids = [db_file.stem for db_file in sorted(index_dir.glob("*.db"))]
                 for src_id in self._rank_local_source_ids(src_ids, query):
-                    results = search_local(query, source_id=src_id, limit=1)
+                    results = search_local(query, source_id=src_id, limit=1, code_only=code_only)
                     if results and results[0].ok:
                         # Achou em algum ZIM! Retorna e para a busca.
                         ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
