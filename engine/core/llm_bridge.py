@@ -180,18 +180,28 @@ class BridgeConfig:
         parsed_use_mmap = self._normalize_optional_bool(env_use_mmap) if env_use_mmap is not None else None
         if parsed_use_mmap is not None:
             self.use_mmap = parsed_use_mmap
+        elif env_use_mmap is not None:
+            # inválido => fallback seguro (mantém carregamento estável)
+            self.use_mmap = True
         env_no_alloc = os.environ.get("ORN_NO_ALLOC")
         parsed_no_alloc = self._normalize_optional_bool(env_no_alloc) if env_no_alloc is not None else None
         if parsed_no_alloc is not None:
             self.no_alloc = parsed_no_alloc
+        elif env_no_alloc is not None:
+            # inválido => fallback compatível (evita no_alloc inesperado)
+            self.no_alloc = False
         env_pin_threads = os.environ.get("ORN_PIN_THREADS")
         parsed_pin_threads = self._normalize_optional_bool(env_pin_threads) if env_pin_threads is not None else None
         if parsed_pin_threads is not None:
             self.pin_threads = parsed_pin_threads
+        elif env_pin_threads is not None:
+            self.pin_threads = False
         env_cont_batching = os.environ.get("ORN_CONT_BATCHING")
         parsed_cont_batching = self._normalize_optional_bool(env_cont_batching) if env_cont_batching is not None else None
         if parsed_cont_batching is not None:
             self.cont_batching = parsed_cont_batching
+        elif env_cont_batching is not None:
+            self.cont_batching = False
         env_min_p = os.environ.get("ORN_MIN_P", "").strip()
         if env_min_p:
             try:
@@ -202,6 +212,7 @@ class BridgeConfig:
                 f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
                 line_n = exc_tb.tb_lineno if exc_tb else 0
                 print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
+                self.min_p = 0.01
 
         env_memo = os.environ.get("ORN_REPETITION_MEMO")
         parsed_memo = self._normalize_optional_bool(env_memo) if env_memo is not None else None
@@ -217,6 +228,7 @@ class BridgeConfig:
                 f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
                 line_n = exc_tb.tb_lineno if exc_tb else 0
                 print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
+                self.repetition_memo_size = 32
 
         env_rotation = os.environ.get("ORN_CONTEXT_ROTATION")
         parsed_rotation = self._normalize_optional_bool(env_rotation) if env_rotation is not None else None
@@ -672,7 +684,7 @@ class SiCDoxBridge:
             exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
             f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
             line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033[0m")
+            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(exc).__name__} | Value: {exc}\033[0m")
             msg = str(exc)
             if not any(token in msg for token in _UNSUPPORTED):
                 raise
@@ -725,7 +737,7 @@ class SiCDoxBridge:
             exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
             f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
             line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033[0m")
+            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(exc).__name__} | Value: {exc}\033[0m")
             if "min_p" not in str(exc):
                 raise
             call_kwargs.pop("min_p", None)

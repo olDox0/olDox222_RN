@@ -21,7 +21,6 @@ Comandos futuros:
   gen     → geração de código                    [Fase 4]
 """
 
-import os
 import sys
 import json
 import time
@@ -31,9 +30,6 @@ import click
 from pathlib import Path
 
 from engine.ui.display import Display
-from engine.telemetry.runtime import record, system_stats
-
-
 def _fmt_ms(value: float) -> str:
     value = float(value or 0)
     if value >= 1000:
@@ -139,7 +135,6 @@ def think(prompt: tuple[str, ...], context_file: str | None,
     """Pergunta livre ao Qwen. Ex: orn think 'como faço X em Python?'"""
     from engine.telemetry.runtime import record, system_stats
     import time
-    import os
 
     # permitir também via env var
     telemetry_enabled = telemetry or (os.environ.get("ORN_TELEMETRY", "") == "1")
@@ -388,7 +383,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                     "board_token_hint": board_meta.get("token_hint"),
                 }
                 record_direct_telemetry(payload)
-                Display.info(f"Telemetria gravada: telemetry/direct_runtime.jsonl")
+                Display.info("Telemetria gravada: telemetry/direct_runtime.jsonl")
             except Exception as _te:
                 Display.warn(f"Telemetria falhou: {_te}")
 
@@ -855,7 +850,7 @@ def brain(clear: bool, last: int, json_output: bool, profile: bool) -> None:
                 print(f"  - roles acum.:      {role_totals}")
 
         # ── Últimas N execuções resumidas (inferência) ─────────────────
-        Display.info(f"Últimas execuções (inferência):")
+        Display.info("Últimas execuções (inferência):")
         for e in recent_infer:
             ts    = e.get("captured_at_unix", 0)
             ptok  = e.get("prompt_tokens", "?")
