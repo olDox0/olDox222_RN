@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -177,3 +178,34 @@ class CodeDrawer:
         if best is None or best[0] <= 0:
             return None
         return best[1]
+
+    @staticmethod
+    def extract_code_blocks(text: str) -> list[str]:
+        pattern = re.compile(r"\[code-begin\](.*?)\[code-end\]", re.IGNORECASE | re.DOTALL)
+        blocks = [m.group(1).strip() for m in pattern.finditer(text or "")]
+        return [b for b in blocks if b]
+
+    def save_from_context(
+        self,
+        *,
+        name: str,
+        lang: str,
+        context: str,
+        inputs: list[str] | None = None,
+        outputs: list[str] | None = None,
+        tags: list[str] | None = None,
+    ) -> int:
+        blocks = self.extract_code_blocks(context)
+        saved = 0
+        for i, code in enumerate(blocks, start=1):
+            snippet_name = name if i == 1 else f"{name}_{i}"
+            self.upsert_snippet(
+                name=snippet_name,
+                lang=lang,
+                inputs=list(inputs or []),
+                outputs=list(outputs or []),
+                code=code,
+                tags=list(tags or []),
+            )
+            saved += 1
+        return saved

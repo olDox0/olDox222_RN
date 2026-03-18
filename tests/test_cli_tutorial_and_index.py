@@ -34,6 +34,7 @@ def test_orn_tutorial_lists_core_commands() -> None:
     assert "orn probe status" in result.output
     assert "orn index search" in result.output
     assert "orn drawer add" in result.output
+    assert "--drawer-first" in result.output
 
 
 def test_orn_index_help_is_forwarded_to_local_index(monkeypatch) -> None:
@@ -97,3 +98,23 @@ def test_orn_drawer_add_and_assemble(monkeypatch, tmp_path) -> None:
     )
     assert assemble.exit_code == 0
     assert "def quicksort" in assemble.output
+
+
+def test_orn_drawer_list_flag_alias(monkeypatch, tmp_path) -> None:
+    drawer_path = tmp_path / "drawer.json"
+    monkeypatch.setenv("ORN_CODE_DRAWER_PATH", str(drawer_path))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["drawer", "--list"])
+
+    assert result.exit_code == 0
+    assert "Drawer vazio" in result.output
+
+
+def test_orn_think_help_lists_drawer_flags() -> None:
+    runner = CliRunner()
+    result = runner.invoke(cli, ["think", "--help"])
+
+    assert result.exit_code == 0
+    assert "--drawer-first" in result.output
+    assert "--drawer-auto-save" in result.output

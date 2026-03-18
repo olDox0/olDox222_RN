@@ -25,6 +25,7 @@ import os
 import sys
 import json
 import time
+import re
 import click
 
 from pathlib import Path
@@ -38,6 +39,37 @@ def _fmt_ms(value: float) -> str:
     if value >= 1000:
         return f"{value / 1000.0:.3f}s"
     return f"{value:.3f}ms"
+
+
+def _guess_lang_from_prompt(prompt: str) -> str:
+    p = (prompt or "").lower()
+    if "python" in p:
+        return "python"
+    if "javascript" in p or "js" in p:
+        return "javascript"
+    if "typescript" in p or "ts" in p:
+        return "typescript"
+    if "java" in p:
+        return "java"
+    if "c++" in p or "cpp" in p:
+        return "cpp"
+    if "c#" in p or "csharp" in p:
+        return "csharp"
+    return "python"
+
+
+def _guess_function_name(prompt: str) -> str | None:
+    p = (prompt or "").lower()
+    tokens = re.findall(r"[a-z_][a-z0-9_]{2,}", p)
+    stop = {
+        "faca", "faça", "crie", "implemente", "codigo", "código", "em", "para",
+        "python", "javascript", "typescript", "java", "funcao", "função",
+        "algoritmo", "com", "sem", "uma", "um", "de", "do", "da",
+    }
+    for t in tokens:
+        if t not in stop:
+            return t
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -92,13 +124,18 @@ def process_result(result, **kwargs):
               help="Busca contexto online. Ex: 'asyncio' ou 'pypi:requests'")
 @click.option("--search-code-only", is_flag=True, default=False,
               help="Quando usar --search local/auto, restringe contexto local para blocos de código.")
+@click.option("--drawer-first", is_flag=True, default=False,
+              help="Tenta usar primeiro snippet do gaveteiro (repertório local) antes de buscar online.")
+@click.option("--drawer-auto-save/--no-drawer-auto-save", default=True,
+              help="Quando houver contexto [CODE-BEGIN], salva snippets no gaveteiro automaticamente.")
 @click.option("--no-auto", is_flag=True, default=False,
               help="Desativa busca autônoma (two-pass) nesta chamada.")
 @click.option("--telemetry", is_flag=True, default=False,
               help="Ativa telemetria detalhada para modo direto (grava telemetry/direct_runtime.jsonl).")
 def think(prompt: tuple[str, ...], context_file: str | None,
           raw: bool, tokens: int | None, direct: bool,
-          search: str | None, search_code_only: bool, no_auto: bool, telemetry: bool) -> None:
+          search: str | None, search_code_only: bool, drawer_first: bool,
+          drawer_auto_save: bool, no_auto: bool, telemetry: bool) -> None:
     """Pergunta livre ao Qwen. Ex: orn think 'como faço X em Python?'"""
     from engine.telemetry.runtime import record, system_stats
     import time
@@ -113,6 +150,33 @@ def think(prompt: tuple[str, ...], context_file: str | None,
 
     # Blocos de contexto acumulados — cada um no formato [CTX-BEGIN/END]
     context_blocks: list[str] = []
+
+    if drawer_first:
+        try:
+            from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
+            guessed_name = _guess_function_name(question)
+            guessed_lang = _guess_lang_from_prompt(question)
+            if guessed_name:
+                drawer_sn = CodeDrawer().assemble(
+                    name=guessed_name,
+                    lang=guessed_lang,
+                    inputs=[],
+                    outputs=[],
+                )
+                if drawer_sn is not None:
+                    Display.success(f"[DRAWER] Reaproveitando snippet: {drawer_sn.name} [{drawer_sn.lang}]")
+                    context_blocks.append(
+                        "[CTX-BEGIN]\n"
+                        f"scope: drawer:{drawer_sn.name}\n"
+                        "[CODE-BEGIN]\n"
+                        f"{drawer_sn.code.rstrip()}\n"
+                        "[CODE-END]\n"
+                        "[CTX-END]\n"
+                    )
+                else:
+                    Display.info("[DRAWER] Sem snippet compatível no repertório.")
+        except Exception as _de:
+            Display.warn(f"[DRAWER] Falha ao consultar gaveteiro: {_de}")
 
     # --search manual: busca e acumula bloco
     if search:
@@ -129,6 +193,21 @@ def think(prompt: tuple[str, ...], context_file: str | None,
             if result.ok:
                 Display.success(f"[CRAWLER] {result.source}: {result.title!r}")
                 context_blocks.append(result.to_prompt_block())
+                if drawer_auto_save:
+                    try:
+                        from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
+                        guessed_lang = _guess_lang_from_prompt(question)
+                        guessed_name = _guess_function_name(crawl_query) or _guess_function_name(question) or "snippet"
+                        saved_n = CodeDrawer().save_from_context(
+                            name=guessed_name,
+                            lang=guessed_lang,
+                            context=result.context or "",
+                            tags=[f"source:{result.source}", "crawler"],
+                        )
+                        if saved_n:
+                            Display.info(f"[DRAWER] {saved_n} snippet(s) salvos no repertório.")
+                    except Exception as _ds:
+                        Display.warn(f"[DRAWER] Falha ao salvar snippet: {_ds}")
             else:
                 Display.warn(f"[CRAWLER] {result.error}")
         except Exception as _ce:
@@ -460,6 +539,7 @@ def tutorial() -> None:
    orn drawer list --lang python
    orn drawer show quicksort --lang python
    orn drawer assemble --name quicksort --lang python --in "list[int]" --out "list[int]"
+   orn think "faça quicksort python" --drawer-first
 
 Dica: use `orn <comando> --help` para detalhes.
         """.strip()
@@ -472,9 +552,16 @@ def _csv_list(raw: str | None) -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
-@cli.group("drawer")
-def drawer() -> None:
+@cli.group("drawer", invoke_without_command=True)
+@click.option("--list", "list_flag", is_flag=True, default=False, help="Atalho para `orn drawer list`.")
+@click.pass_context
+def drawer(ctx: click.Context, list_flag: bool) -> None:
     """Gerencia snippets locais de código (gaveteiro do usuário)."""
+    if list_flag:
+        ctx.invoke(drawer_list, lang=None)
+        return
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
 
 
 @drawer.command("add")

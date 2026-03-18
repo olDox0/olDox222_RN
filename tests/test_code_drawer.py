@@ -45,3 +45,26 @@ def test_code_drawer_assemble_scores_name_and_io(tmp_path) -> None:
     )
     assert assembled is not None
     assert assembled.name == "quicksort"
+
+
+def test_code_drawer_save_from_context_extracts_code_blocks(tmp_path) -> None:
+    drawer = CodeDrawer(store_path=tmp_path / "drawer.json")
+    context = """
+[CTX-BEGIN]
+scope: test
+[CODE-BEGIN]
+def quicksort(x):
+    return sorted(x)
+[CODE-END]
+[CTX-END]
+"""
+    saved = drawer.save_from_context(
+        name="quicksort",
+        lang="python",
+        context=context,
+        tags=["crawler"],
+    )
+    assert saved == 1
+    got = drawer.get(name="quicksort", lang="python")
+    assert got is not None
+    assert "def quicksort" in got.code
