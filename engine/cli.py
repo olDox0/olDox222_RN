@@ -448,16 +448,117 @@ def tutorial() -> None:
    orn probe status
    orn probe status --json-output --out status.json
 
-5) Index local (atalho para engine.tools.local_index)
+   5) Index local (atalho para engine.tools.local_index)
    orn index list
    orn index info wikipedia_pt_computer_maxi_2026_01
    orn index search wikipedia_pt_computer_maxi_2026_01 "quicksort python"
    orn index search wikipedia_pt_computer_maxi_2026_01 "quicksort python" --code-only
    orn index preload wikipedia_pt_computer_maxi_2026_01
 
+6) Code Drawer / Code Assembler (sem gastar token com remontagem)
+   orn drawer add --name quicksort --lang python --in "list[int]" --out "list[int]" --file quicksort.py
+   orn drawer list --lang python
+   orn drawer show quicksort --lang python
+   orn drawer assemble --name quicksort --lang python --in "list[int]" --out "list[int]"
+
 Dica: use `orn <comando> --help` para detalhes.
         """.strip()
     )
+
+
+def _csv_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+@cli.group("drawer")
+def drawer() -> None:
+    """Gerencia snippets locais de código (gaveteiro do usuário)."""
+
+
+@drawer.command("add")
+@click.option("--name", required=True, help="Nome da função/bloco.")
+@click.option("--lang", required=True, help="Linguagem (ex: python).")
+@click.option("--in", "inputs", default="", help="Entradas CSV (ex: list[int],key).")
+@click.option("--out", "outputs", default="", help="Saídas CSV (ex: list[int]).")
+@click.option("--tags", default="", help="Tags CSV (opcional).")
+@click.option("--file", "code_file", type=click.Path(exists=True), default=None, help="Arquivo do snippet.")
+@click.option("--code", default=None, help="Código inline (alternativa ao --file).")
+def drawer_add(name: str, lang: str, inputs: str, outputs: str, tags: str,
+               code_file: str | None, code: str | None) -> None:
+    """Adiciona/atualiza snippet no drawer."""
+    from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
+
+    payload = code
+    if code_file:
+        payload = Path(code_file).read_text(encoding="utf-8", errors="replace")
+    if not payload:
+        raise click.ClickException("Informe --file ou --code.")
+
+    sn = CodeDrawer().upsert_snippet(
+        name=name,
+        lang=lang,
+        inputs=_csv_list(inputs),
+        outputs=_csv_list(outputs),
+        code=payload,
+        tags=_csv_list(tags),
+    )
+    Display.success(f"Snippet salvo: {sn.name} [{sn.lang}]")
+
+
+@drawer.command("list")
+@click.option("--lang", default=None, help="Filtra por linguagem.")
+def drawer_list(lang: str | None) -> None:
+    """Lista snippets salvos no drawer."""
+    from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
+
+    items = CodeDrawer().list_snippets(lang=lang)
+    if not items:
+        Display.warn("Drawer vazio.")
+        return
+    for sn in items:
+        Display.kv(
+            f"{sn.name} [{sn.lang}]",
+            f"in={','.join(sn.inputs) or '-'} out={','.join(sn.outputs) or '-'} tags={','.join(sn.tags) or '-'}",
+        )
+
+
+@drawer.command("show")
+@click.argument("name", required=True)
+@click.option("--lang", default=None, help="Linguagem do snippet.")
+def drawer_show(name: str, lang: str | None) -> None:
+    """Exibe o código bruto de um snippet."""
+    from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
+
+    sn = CodeDrawer().get(name=name, lang=lang)
+    if sn is None:
+        raise click.ClickException(f"Snippet não encontrado: {name!r}")
+    Display.code_block(sn.code)
+
+
+@drawer.command("assemble")
+@click.option("--name", required=True, help="Função alvo.")
+@click.option("--lang", required=True, help="Linguagem alvo.")
+@click.option("--in", "inputs", default="", help="Entradas CSV esperadas.")
+@click.option("--out", "outputs", default="", help="Saídas CSV esperadas.")
+def drawer_assemble(name: str, lang: str, inputs: str, outputs: str) -> None:
+    """Monta código por função + I/O usando snippets salvos."""
+    from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
+
+    sn = CodeDrawer().assemble(
+        name=name,
+        lang=lang,
+        inputs=_csv_list(inputs),
+        outputs=_csv_list(outputs),
+    )
+    if sn is None:
+        raise click.ClickException("Nenhum snippet compatível encontrado no drawer.")
+
+    Display.section("ASSEMBLER", f"{sn.name} [{sn.lang}]")
+    Display.kv("inputs", ", ".join(sn.inputs) if sn.inputs else "-")
+    Display.kv("outputs", ", ".join(sn.outputs) if sn.outputs else "-")
+    Display.code_block(sn.code)
 
 
 # ---------------------------------------------------------------------------
