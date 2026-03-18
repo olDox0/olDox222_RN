@@ -90,13 +90,15 @@ def process_result(result, **kwargs):
               help="Força modo direto (ignora servidor mesmo se online).")
 @click.option("--search", "-s", default=None, metavar="QUERY|FONTE:QUERY",
               help="Busca contexto online. Ex: 'asyncio' ou 'pypi:requests'")
+@click.option("--search-code-only", is_flag=True, default=False,
+              help="Quando usar --search local/auto, restringe contexto local para blocos de código.")
 @click.option("--no-auto", is_flag=True, default=False,
               help="Desativa busca autônoma (two-pass) nesta chamada.")
 @click.option("--telemetry", is_flag=True, default=False,
               help="Ativa telemetria detalhada para modo direto (grava telemetry/direct_runtime.jsonl).")
 def think(prompt: tuple[str, ...], context_file: str | None,
           raw: bool, tokens: int | None, direct: bool,
-          search: str | None, no_auto: bool, telemetry: bool) -> None:
+          search: str | None, search_code_only: bool, no_auto: bool, telemetry: bool) -> None:
     """Pergunta livre ao Qwen. Ex: orn think 'como faço X em Python?'"""
     from engine.telemetry.runtime import record, system_stats
     import time
@@ -123,7 +125,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         Display.info(f"[CRAWLER] Buscando: [{crawl_source}] {crawl_query!r}")
         try:
             crawler = OrnCrawler()
-            result  = crawler.search(crawl_query, source=crawl_source)
+            result  = crawler.search(crawl_query, source=crawl_source, code_only=search_code_only)
             if result.ok:
                 Display.success(f"[CRAWLER] {result.source}: {result.title!r}")
                 context_blocks.append(result.to_prompt_block())
@@ -173,7 +175,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                 Display.info(f"[AUTO] Buscando: {search_term!r}")
                 try:
                     from engine.tools.crawler import OrnCrawler   # noqa: PLC0415
-                    result = OrnCrawler().search(search_term, source="auto")
+                    result = OrnCrawler().search(search_term, source="auto", code_only=search_code_only)
                     if result.ok:
                         Display.success(
                             f"[AUTO] Contexto: {result.source} — {result.title!r}"
