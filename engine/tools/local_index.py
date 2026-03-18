@@ -871,7 +871,7 @@ def _find_zim_for_source(source_id: str) -> Optional[Path]:
             if _zim_to_source_id(zim) == source_id: return zim
     return None
 
-def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str, str, str]]:
+def _iter_zim_entries(zim_path: str, verbose: bool = True, start_scanned: int = 0) -> Iterator[tuple[int, str, str, str]]:
     import pyzim
 
     p = Path(zim_path).absolute()
@@ -881,6 +881,8 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
     with pyzim.Zim.open(str(p), mode="r") as zim:
         for entry in zim.iter_entries():
             total_scanned += 1
+            if start_scanned and total_scanned <= start_scanned:
+                continue
 
             if verbose and total_scanned % 5000 == 0:
                 logger.info("[ZIM] scanned=%d yielded=%d redirect=%d non_html=%d empty=%d",
@@ -926,7 +928,7 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True) -> Iterator[tuple[str
 
                 content = content_bytes.decode("utf-8", errors="replace")
                 total_yielded += 1
-                yield title, path, content
+                yield total_scanned, title, path, content
 
             except Exception:
                 total_error += 1
@@ -969,28 +971,49 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
 
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
     db_path = str(_source_id_to_db(source_id))
+    db_p = Path(db_path)
+    inv_dir = INDEX_DIR / source_id
+    resume_enabled = _env_bool("SICDOX_RESUME_BUILD", True)
+    build_inverted = _env_bool("SICDOX_BUILD_INVERTED", False)
+    start_scanned = 0
+    start_doc_id = 0
+    resume_mode = False
 
     try:
-        db_p = Path(db_path)
-        inv_dir = INDEX_DIR / source_id
-        if db_p.exists():
+        if db_p.exists() and resume_enabled:
+            probe = sqlite3.connect(db_path)
+            try:
+                probe.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+                meta = dict(probe.execute("SELECT key, value FROM meta").fetchall())
+                if meta.get("build_status") == "in_progress":
+                    resume_mode = True
+                    start_scanned = int(meta.get("build_scanned_entries", "0") or 0)
+                    start_doc_id = int(meta.get("build_docs_processed", "0") or 0)
+            finally:
+                probe.close()
+
+        if db_p.exists() and not resume_mode:
             logger.info("[SiCDox BUILD] DB existente encontrado, removendo para rebuild: %s", db_path)
             for suf in ("", "-wal", "-shm"):
                 f = db_p.with_name(db_p.name + suf)
                 try:
                     if f.exists(): f.unlink()
                 except Exception: pass
-        if inv_dir.exists():
+        if inv_dir.exists() and not resume_mode:
             try:
                 import shutil
                 shutil.rmtree(inv_dir)
             except Exception: pass
-    except Exception: pass
+    except Exception:
+        pass
 
     if verbose:
-        logger.info("[SiCDox BUILD] Construindo Banco Tokenizado... DB: %s", db_path)
+        if resume_mode:
+            logger.info("[SiCDox BUILD] Retomando build anterior... DB=%s start_scanned=%d docs=%d", db_path, start_scanned, start_doc_id)
+        else:
+            logger.info("[SiCDox BUILD] Construindo Banco Tokenizado... DB: %s", db_path)
 
-    inv_builder = InvertedIndexBuilder()
+    inv_builder = InvertedIndexBuilder() if build_inverted else None
     t0 = time.monotonic()
 
     con = sqlite3.connect(db_path, isolation_level=None)
@@ -1015,6 +1038,7 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
             token_blob BLOB
         )
         """)
+        con.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
 
         con.execute("CREATE INDEX IF NOT EXISTS idx_pages_hash ON pages(content_hash)")
         con.execute("""
@@ -1027,17 +1051,22 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
         con.execute("CREATE INDEX IF NOT EXISTS idx_title_trigrams_doc ON title_trigrams(doc_id)")
 
         con.execute("BEGIN")
+        con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('build_status', 'in_progress')")
+        con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('build_scanned_entries', ?)", (str(start_scanned),))
+        con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('build_docs_processed', ?)", (str(start_doc_id),))
 
         vocab = TokenizerBridge.get_vocab()
         
         MAX_TOKENIZE_CHARS = int(os.environ.get("SICDOX_MAX_CHARS", "64000"))
 
-        count = deduplicated = 0
+        count = start_doc_id
+        deduplicated = 0
         buf_pages: List[tuple] =[]
         seen_hashes = set()
         content_pending: dict[str, bytes] = {}
         title_trigrams_pending: List[tuple] =[]
         CONTENT_FLUSH_BATCH = int(os.environ.get("SICDOX_CONTENT_BATCH", "256"))
+        last_scanned = start_scanned
 
         def _flush_content_pending():
             nonlocal content_pending
@@ -1051,7 +1080,8 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
                         except Exception: pass
             content_pending = {}
 
-        for title, path, html in _iter_zim_entries(zim_path, verbose=verbose):
+        for scanned_idx, title, path, html in _iter_zim_entries(zim_path, verbose=verbose, start_scanned=start_scanned):
+            last_scanned = scanned_idx
             with orn_span("build.strip_html", category="index"):
                 body = _strip_html(html, max_chars=MAX_TOKENIZE_CHARS)
 
@@ -1094,13 +1124,16 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
             try: combined_tokens = ttoks + ttoks + qtoks
             except Exception: combined_tokens = qtoks
 
-            with orn_span("build.inverted_idx", category="index"):
-                inv_builder.add_document(count, combined_tokens)
+            if build_inverted and inv_builder is not None:
+                with orn_span("build.inverted_idx", category="index"):
+                    inv_builder.add_document(count, combined_tokens)
 
             if len(buf_pages) >= batch_size:
                 with orn_span("build.sql_commit", category="index"):
                     con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", buf_pages)
                     _flush_content_pending()
+                    con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('build_scanned_entries', ?)", (str(last_scanned),))
+                    con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('build_docs_processed', ?)", (str(count),))
                     con.execute("COMMIT")
                     con.execute("BEGIN")
                     buf_pages.clear()
@@ -1113,7 +1146,9 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
         
         if title_trigrams_pending:
             con.executemany("INSERT INTO title_trigrams (trigram, doc_id) VALUES (?, ?)", title_trigrams_pending)
-            
+        con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('build_scanned_entries', ?)", (str(last_scanned),))
+        con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('build_docs_processed', ?)", (str(count),))
+        con.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('build_status', 'completed')")
         con.execute("COMMIT")
 
     except Exception:
@@ -1124,13 +1159,15 @@ def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int 
     finally:
         con.close()
 
-    if verbose: logger.info("[BUILD] Banco de dados finalizado. Ordenando Índice Invertido em memória...")
-
-    inv_builder.finalize()
-    inv_dir = INDEX_DIR / source_id
-
-    if verbose: logger.info("[BUILD] Gravando Índice Invertido no disco: %s (isso pode levar alguns minutos)...", inv_dir)
-    inv_builder.write(inv_dir)
+    if build_inverted and inv_builder is not None:
+        if verbose: logger.info("[BUILD] Banco de dados finalizado. Ordenando Índice Invertido em memória...")
+        inv_builder.finalize()
+        inv_dir = INDEX_DIR / source_id
+        if verbose: logger.info("[BUILD] Gravando Índice Invertido no disco: %s (isso pode levar alguns minutos)...", inv_dir)
+        inv_builder.write(inv_dir)
+    else:
+        if verbose:
+            logger.info("[BUILD] Índice invertido em memória desativado (SICDOX_BUILD_INVERTED=0). Build persistente concluído sem pico de RAM.")
 
     if verbose: logger.info("[BUILD] ✅ PROCESSO CONCLUÍDO: %d artigos (Dedup: %d) finalizados em %.1fs", count, deduplicated, time.monotonic() - t0)
 
