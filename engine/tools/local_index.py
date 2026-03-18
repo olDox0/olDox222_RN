@@ -1560,7 +1560,7 @@ def _cli_main(argv: Optional[List[str]] = None) -> int:
                     rendered_snippet = _format_snippet_for_terminal(snippet)
                     print(f"\n  [{r.source}] {r.title}\n{rendered_snippet}\n  path: {r.path}")
             print(f"\n  Tempo: {elapsed}ms | {len(results)} resultado(s)")
-            print(f"  (DICA: Para velocidade extrema, chame LocalIndexCache.preload() dentro da IA ao invés do CLI)")
+            print("  (DICA: Para velocidade extrema, chame LocalIndexCache.preload() dentro da IA ao invés do CLI)")
         elif args.cmd == "info":
             for k, v in index_info(args.source_id).items(): print(f"  {k:<12}: {v}")
         elif args.cmd == "list":
