@@ -35,6 +35,7 @@ def test_orn_tutorial_lists_core_commands() -> None:
     assert "orn index search" in result.output
     assert "orn drawer add" in result.output
     assert "--drawer-first" in result.output
+    assert "--drawer-only" in result.output
 
 
 def test_orn_index_help_is_forwarded_to_local_index(monkeypatch) -> None:
@@ -117,4 +118,29 @@ def test_orn_think_help_lists_drawer_flags() -> None:
 
     assert result.exit_code == 0
     assert "--drawer-first" in result.output
+    assert "--drawer-only" in result.output
     assert "--drawer-auto-save" in result.output
+
+
+def test_orn_think_drawer_only_short_circuits_model(monkeypatch) -> None:
+    import engine.tools.code_drawer as code_drawer_mod
+
+    class _FakeDrawer:
+        def assemble(self, **kwargs):
+            class _Sn:
+                name = "quicksort"
+                lang = "python"
+                code = "def quicksort(x):\n    return sorted(x)\n"
+            return _Sn()
+
+    monkeypatch.setattr(code_drawer_mod, "CodeDrawer", _FakeDrawer)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["think", "faça quicksort python", "--drawer-first", "--drawer-only"],
+    )
+
+    assert result.exit_code == 0
+    assert "def quicksort" in result.output
+    assert "[drawer-only]" in result.output

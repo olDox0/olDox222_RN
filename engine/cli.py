@@ -123,6 +123,8 @@ def process_result(result, **kwargs):
               help="Quando usar --search local/auto, restringe contexto local para blocos de código.")
 @click.option("--drawer-first", is_flag=True, default=False,
               help="Tenta usar primeiro snippet do gaveteiro (repertório local) antes de buscar online.")
+@click.option("--drawer-only", is_flag=True, default=False,
+              help="Se achar snippet no gaveteiro, responde sem carregar modelo (modo ultra-rápido).")
 @click.option("--drawer-auto-save/--no-drawer-auto-save", default=True,
               help="Quando houver contexto [CODE-BEGIN], salva snippets no gaveteiro automaticamente.")
 @click.option("--no-auto", is_flag=True, default=False,
@@ -132,7 +134,7 @@ def process_result(result, **kwargs):
 def think(prompt: tuple[str, ...], context_file: str | None,
           raw: bool, tokens: int | None, direct: bool,
           search: str | None, search_code_only: bool, drawer_first: bool,
-          drawer_auto_save: bool, no_auto: bool, telemetry: bool) -> None:
+          drawer_only: bool, drawer_auto_save: bool, no_auto: bool, telemetry: bool) -> None:
     """Pergunta livre ao Qwen. Ex: orn think 'como faço X em Python?'"""
     from engine.telemetry.runtime import record, system_stats
     import time
@@ -146,6 +148,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
 
     # Blocos de contexto acumulados — cada um no formato [CTX-BEGIN/END]
     context_blocks: list[str] = []
+    drawer_snippet = None
 
     if drawer_first:
         try:
@@ -160,6 +163,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                     outputs=[],
                 )
                 if drawer_sn is not None:
+                    drawer_snippet = drawer_sn
                     Display.success(f"[DRAWER] Reaproveitando snippet: {drawer_sn.name} [{drawer_sn.lang}]")
                     context_blocks.append(
                         "[CTX-BEGIN]\n"
@@ -173,6 +177,16 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                     Display.info("[DRAWER] Sem snippet compatível no repertório.")
         except Exception as _de:
             Display.warn(f"[DRAWER] Falha ao consultar gaveteiro: {_de}")
+
+    if drawer_only and drawer_snippet is not None:
+        Display.banner()
+        Display.section("DRAWER-ONLY", f"{drawer_snippet.name} [{drawer_snippet.lang}]")
+        if raw:
+            print(drawer_snippet.code)
+        else:
+            Display.code_block(drawer_snippet.code)
+        Display.info("Tempo: ~0s  [drawer-only]")
+        return
 
     # --search manual: busca e acumula bloco
     if search:
@@ -536,6 +550,7 @@ def tutorial() -> None:
    orn drawer show quicksort --lang python
    orn drawer assemble --name quicksort --lang python --in "list[int]" --out "list[int]"
    orn think "faça quicksort python" --drawer-first
+   orn think "faça quicksort python" --drawer-first --drawer-only
 
 Dica: use `orn <comando> --help` para detalhes.
         """.strip()
