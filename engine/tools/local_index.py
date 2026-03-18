@@ -1234,6 +1234,7 @@ def search_local(query: str, source_id: str, limit: int = 3, code_only: bool = F
         doc_ids: List[int] =[]
         candidates =[]
         body_ids: list[int] =[]
+        query_tokens: list[int] = []
 
         q_raw = query.strip()
         qnorm = _normalize_text_for_match(q_raw)
