@@ -150,7 +150,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
     context_blocks: list[str] = []
     drawer_snippet = None
 
-    if drawer_first:
+    if drawer_first or drawer_only:
         try:
             from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
             guessed_name = _guess_function_name(question)
@@ -218,6 +218,19 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                             Display.info(f"[DRAWER] {saved_n} snippet(s) salvos no repertório.")
                     except Exception as _ds:
                         Display.warn(f"[DRAWER] Falha ao salvar snippet: {_ds}")
+                if drawer_only and drawer_snippet is None:
+                    try:
+                        from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
+                        guessed_lang = _guess_lang_from_prompt(question)
+                        guessed_name = _guess_function_name(crawl_query) or _guess_function_name(question) or "snippet"
+                        drawer_snippet = CodeDrawer().assemble(
+                            name=guessed_name,
+                            lang=guessed_lang,
+                            inputs=[],
+                            outputs=[],
+                        )
+                    except Exception as _dr:
+                        Display.warn(f"[DRAWER] Falha ao recarregar snippet: {_dr}")
             else:
                 Display.warn(f"[CRAWLER] {result.error}")
         except Exception as _ce:
@@ -236,6 +249,21 @@ def think(prompt: tuple[str, ...], context_file: str | None,
             )
         except OSError:
             pass
+
+    if drawer_only:
+        if drawer_snippet is not None:
+            Display.banner()
+            Display.section("DRAWER-ONLY", f"{drawer_snippet.name} [{drawer_snippet.lang}]")
+            if raw:
+                print(drawer_snippet.code)
+            else:
+                Display.code_block(drawer_snippet.code)
+            Display.info("Tempo: ~0s  [drawer-only]")
+            return
+        raise click.ClickException(
+            "Nenhum snippet compatível no drawer para --drawer-only. "
+            "Use --drawer-first com snippet salvo, ou rode sem --drawer-only."
+        )
 
     Display.banner()
     Display.thinking(question)

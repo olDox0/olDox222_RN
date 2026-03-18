@@ -138,9 +138,25 @@ def test_orn_think_drawer_only_short_circuits_model(monkeypatch) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["think", "faça quicksort python", "--drawer-first", "--drawer-only"],
+        ["think", "faça quicksort python", "--drawer-only"],
     )
 
     assert result.exit_code == 0
     assert "def quicksort" in result.output
     assert "[drawer-only]" in result.output
+
+
+def test_orn_think_drawer_only_without_snippet_fails_fast(monkeypatch) -> None:
+    import engine.tools.code_drawer as code_drawer_mod
+
+    class _FakeDrawer:
+        def assemble(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(code_drawer_mod, "CodeDrawer", _FakeDrawer)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["think", "faça quicksort python", "--drawer-only"])
+
+    assert result.exit_code != 0
+    assert "Nenhum snippet compatível no drawer" in result.output
