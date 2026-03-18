@@ -256,6 +256,16 @@ def test_bridge_memoization_prunes_old_entries() -> None:
     assert b._memo_get("c") == "3"
 
 
+def test_bridge_memo_put_first_insert_does_not_emit_forensic(capsys) -> None:
+    cfg = BridgeConfig(repetition_memo_enabled=True, repetition_memo_size=4)
+    b = SiCDoxBridge(cfg)
+
+    b._memo_put("primeira pergunta", "primeira resposta")
+    out = capsys.readouterr()
+
+    assert "is not in deque" not in (out.out + out.err)
+
+
 def test_bridge_config_context_rotation_env(monkeypatch) -> None:
     monkeypatch.setenv("ORN_CONTEXT_ROTATION", "0")
     monkeypatch.setenv("ORN_CONTEXT_COMPACT_RATIO", "0.6")

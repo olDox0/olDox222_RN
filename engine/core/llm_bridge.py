@@ -522,6 +522,12 @@ class SiCDoxBridge:
             f.write(json.dumps(data) + "\n")
     def _memo_key(self, prompt: str) -> str:
         return prompt.casefold().strip() # " ".join(prompt.lower().split())
+    def _memo_order_discard(self, key: str) -> None:
+        """Remove key do deque sem ruído quando ela não existe."""
+        try:
+            self._memo_order.remove(key)
+        except ValueError:
+            return
     def _memo_get(self, prompt: str) -> str | None:
         if not self._cfg.repetition_memo_enabled:
             return None
@@ -535,24 +541,10 @@ class SiCDoxBridge:
         if time.monotonic() - ts > ttl:
             # expired
             self._memo.pop(key, None)
-            try:
-                self._memo_order.remove(key)
-            except ValueError as e: 
-                import sys as _dox_sys, os as _dox_os
-                exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-                f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-                line_n = exc_tb.tb_lineno if exc_tb else 0
-                print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
+            self._memo_order_discard(key)
             return None
         # MRU refresh
-        try:
-            self._memo_order.remove(key)
-        except ValueError as e:
-            import sys as _dox_sys, os as _dox_os
-            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-            line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
+        self._memo_order_discard(key)
         self._memo_order.append(key)
         return answer
     def _memo_put(self, prompt: str, answer: str) -> None:
@@ -561,14 +553,7 @@ class SiCDoxBridge:
         key = self._memo_key(prompt)
         ts = time.monotonic()
         self._memo[key] = (answer, ts)
-        try:
-            self._memo_order.remove(key)
-        except ValueError as e:
-            import sys as _dox_sys, os as _dox_os
-            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-            line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
+        self._memo_order_discard(key)
         self._memo_order.append(key)
         # prune size
         while len(self._memo_order) > self._cfg.repetition_memo_size:
