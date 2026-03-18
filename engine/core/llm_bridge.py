@@ -89,13 +89,13 @@ class BridgeConfig:
     context_rotation: bool = True
     context_compact_ratio:   float = 0.7
     # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
-    cache_type_k: "q4_0" | None = None
-    cache_type_v: "q4_0" | None = None
+    cache_type_k: str | None = None
+    cache_type_v: str | None = None
     # Parâmetros RoPE para ajuste de extrapolação/contexto
-    rope_freq_base: 500000.0 | None = None
-    rope_freq_scale: 0.7 | None = None
+    rope_freq_base: float | None = None
+    rope_freq_scale: float | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
-    flash_attn: True | None = None
+    flash_attn: bool | None = None
     system_prompt: str = ("succinct and tightening writing portuguese")
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:

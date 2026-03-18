@@ -21,6 +21,7 @@ Comandos futuros:
   gen     → geração de código                    [Fase 4]
 """
 
+import os
 import sys
 import json
 import time
