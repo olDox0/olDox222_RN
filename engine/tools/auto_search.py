@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# engine/tools/auto_search.py
 """
 ORN — AutoSearch Decider (Hermes)
 Decide autonomamente se uma pergunta precisa de contexto externo.
@@ -17,7 +18,7 @@ God: Hermes — mensageiro que decide o que buscar antes de entregar.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Prompt de decisão — calibrado para Qwen 0.5B (max_tokens=20)
@@ -44,7 +45,8 @@ Rules:
 - SEARCH:<term> must be 1-3 words max
 - No explanation, no extra text
 
-Question: {question}"""
+Question: {question}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -52,34 +54,35 @@ Question: {question}"""
 # ---------------------------------------------------------------------------
 
 class AutoSearchDecider:
-    """Decide se uma pergunta precisa de busca externa antes da inferência.
-
-    OSL-17: Não instancia OrnCrawler nem SiCDoxBridge — recebe callables.
-    """
-
-    def decide(self, question: str,
-               server_ask_fn: Callable[[str, int], dict | None]) -> str | None:
-        """Executa a 1ª pass e retorna o termo de busca ou None.
-
-        Args:
-            question:      Pergunta original do usuário.
-            server_ask_fn: Função ask() do server_client — injetada pelo CLI.
-
-        Returns:
-            str  — termo de busca extraído ("asyncio", "KV-cache", etc.)
-            None — modelo decidiu que não precisa de busca, ou falhou.
+    def decide(self, question: str, server_ask: Callable[[str, int], Any]) -> str | None:
         """
-        if not question.strip():
+        Retorna um termo de busca ou None.
+        Espera que server_ask(prompt, max_tokens=...) devolva dict JSON ou str.
+        """
+        if not _should_auto_search(question):
             return None
 
-        prompt   = _build_decision_prompt(question)
-        response = server_ask_fn(prompt, 20)   # max_tokens=20 — barato
+        decision_prompt = _build_decision_prompt(question)
 
-        if response is None or response.get("error"):
-            return None   # servidor offline ou erro — não bloqueia o pipeline
+        try:
+            response = server_ask(decision_prompt, 20)
+        except TypeError:
+            # fallback caso a função injetada aceite só 1 argumento
+            response = server_ask(decision_prompt)
 
-        raw_text = response.get("output", "")
-        return _parse_response(raw_text)
+        if response is None:
+            return None
+
+        if isinstance(response, str):
+            text = response
+        elif isinstance(response, dict):
+            if response.get("error"):
+                return None
+            text = str(response.get("output", "")).strip()
+        else:
+            text = str(response).strip()
+
+        return _parse_response(text)
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +91,7 @@ class AutoSearchDecider:
 
 def _build_decision_prompt(question: str) -> str:
     """Monta o prompt da 1ª pass."""
-    return _DECISION_PROMPT.format(question=question.strip())
+    return _DECISION_PROMPT.format(question=(question or "").strip())
 
 
 def _parse_response(text: str) -> str | None:
@@ -96,26 +99,57 @@ def _parse_response(text: str) -> str | None:
 
     Parse defensivo — aceita variações razoáveis do Qwen 0.5B:
       "SEARCH:asyncio"      → "asyncio"
-      "SEARCH: KV cache"    → "KV cache"
-      "search:python list"  → "python list"
+      "SEARCH: KV cache"     → "KV cache"
+      "search:python list"   → "python list"
       "NO"                  → None
       "No, ..."             → None
-      qualquer outra coisa  → None  (fail-safe)
-
-    OSL-5.1: nunca levanta exceção — retorna None em caso de dúvida.
+      qualquer outra coisa   → None  (fail-safe)
     """
     if not text:
         return None
 
-    normalized = text.strip().lower()
+    raw = text.strip()
+    low = raw.lower()
 
-    if not normalized.startswith("search:"):
-        return None   # "NO", resposta vaga, alucinação — ignora
+    if low == "no":
+        return None
 
-    term = text.strip()[len("search:"):].strip()   # preserva case original
+    if not low.startswith("search:"):
+        return None
 
-    # Rejeita termo vazio ou muito longo (> 5 palavras = modelo alucinando)
-    if not term or len(term.split()) > 5:
+    term = raw[len("search:"):].strip()
+
+    if not term:
+        return None
+
+    if len(term.split()) > 3:
+        return None
+
+    bad_prefixes = (
+        "i'm sorry",
+        "sorry",
+        "hello",
+        "hi",
+        "sure",
+        "of course",
+        "i can't",
+        "i cannot",
+    )
+    low_term = term.lower()
+    if any(low_term.startswith(p) for p in bad_prefixes):
         return None
 
     return term
+
+
+def _should_auto_search(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+    if q.isdigit():
+        return False
+    if len(q) < 8:
+        return False
+    if len(q.split()) < 3:
+        return False
+    return True

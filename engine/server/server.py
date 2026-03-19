@@ -2,51 +2,88 @@
 # engine/server/server.py
 """
 ORN — SiCDox Server
-Servidor local de inferencia. Carrega o modelo UMA VEZ, serve para sempre.
+Servidor local de inferência. Carrega o modelo UMA VEZ, serve continuamente.
 
 Protocolo (TCP local):
-  Request:  JSON linha  {"prompt": "...", "max_tokens": 128}
-  Response: JSON linha  {"output": "...", "elapsed_s": 1.23, "error": null}
+  Request:  JSON linha {"prompt": "...", "max_tokens": 128}
+  Response: JSON linha {"output": "...", "elapsed_s": 1.23, "error": null}
 
-Comando especial (sem JSON):
-  b"STATUS\n"  -> JSON com uptime, requests, errors
+Comando especial:
+  b"STATUS\n" -> JSON com uptime, requests, errors e métricas
 
 OSL-3:  Modelo carregado uma vez no startup.
-OSL-7:  Toda requisicao retorna JSON com "error" explicito.
-OSL-15: Erros de inferencia nao derrubam o servidor.
-OSL-18: stdlib apenas (socket, json, threading, pathlib, subprocess).
-God: Hefesto — fornalha continua; a forja nao apaga entre pecas.
+OSL-7:  Toda requisição retorna JSON com "error" explícito.
+OSL-15: Erros de inferência não derrubam o servidor.
+OSL-18: stdlib + dependências do projeto.
+God: Hefesto — fornalha contínua; a forja não apaga entre peças.
 """
 
 from __future__ import annotations
 
-import traceback
-import time
-import threading
-import sys
-import subprocess
-import socket
-import signal
-import psutil
-import platform
-import os
 import json
-
+import os
+import platform
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import traceback
 from pathlib import Path
-from dataclasses import dataclass, field
+from typing import Any
 
 from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
 
+try:
+    import resource as _resource  # Unix only
+    _HAS_RESOURCE = True
+except ImportError:
+    _HAS_RESOURCE = False
+
+
+HOST = "127.0.0.1"
+PORT = 8371
+BACKLOG = 4
+RECV_SZ = 65536
+
+PID_FILE = Path("server.pid")
+LOG_FILE = Path("server.log")
+
+_llm = None
+_cfg = None
+_lock = threading.Lock()
+
+_stats: dict[str, Any] = {
+    "requests": 0,
+    "errors": 0,
+    "total_tokens": 0,
+    "total_elapsed_s": 0.0,
+    "start": None,
+    "infer_calls": 0,
+    "last_infer_s": 0.0,
+    "last_prompt_chars": 0,
+    "last_output_chars": 0,
+    "last_max_tokens": 0,
+    "sum_prompt_chars": 0,
+    "sum_output_chars": 0,
+    "last_llm_call_ms": 0.0,
+    "last_lock_wait_ms": 0.0,
+    "sum_llm_call_ms": 0.0,
+    "sum_lock_wait_ms": 0.0,
+}
+
+_boot_perf = {
+    "vulcan_boot_ms": 0.0,
+    "model_load_ms": 0.0,
+}
+
+_VULCAN_ACTIVE = False
+_VULCAN_MSG = ""
+
 
 # ---------------------------------------------------------------------------
-# [VULCAN] Bootstrap do MetaFinder
-# Deve ocorrer ANTES de qualquer import de terceiros (llama_cpp, etc.)
-#
-# Estrategia de localizacao do doxoade (em ordem de prioridade):
-#   1. Variavel DOXOADE_ROOT definida no ambiente
-#   2. Pasta local doxoade/ subindo a arvore a partir de __file__
-#   3. Pacote instalado no venv (importavel diretamente, sem sys.path extra)
-#      — caso tipico quando doxoade esta em site-packages
+# Bootstrap do doxoade / Vulcan
 # ---------------------------------------------------------------------------
 
 def _looks_like_doxoade_root(path_str: str | None) -> bool:
@@ -60,76 +97,58 @@ def _looks_like_doxoade_root(path_str: str | None) -> bool:
 
 
 def _discover_doxoade_root() -> str | None:
-    # 1) env explícita válida
     env_root = os.environ.get("DOXOADE_ROOT")
     if _looks_like_doxoade_root(env_root):
         return str(Path(env_root).resolve())
-    # 2) sobe árvore procurando pacote local
+
     here = Path(__file__).resolve()
     for parent in [here.parent, *here.parents]:
         if (parent / "doxoade" / "__init__.py").exists():
             return str(parent)
+
     return None
 
-def _vulcan_boot() -> tuple[bool, str]:
-    """
-    Garante que doxoade seja importavel e instala o VulcanMetaFinder.
-    Retorna (sucesso: bool, mensagem_detalhada: str).
-    OSL-15: nunca propaga excecao — falha = Python puro, servidor continua.
-    """
-    # ── Etapa 1: injetar sys.path se necessario ──────────────────────────────
 
+def _vulcan_boot() -> tuple[bool, str]:
     root = _discover_doxoade_root()
-    if root:
-        if root not in sys.path:
-            sys.path.insert(0, root)
+    if root and root not in sys.path:
+        sys.path.insert(0, root)
         os.environ["DOXOADE_ROOT"] = root
 
-    # pacote instalado no venv também é aceito sem sys.path extra
-
-    # ── Etapa 2: verificar se o import funciona ──────────────────────────────
     try:
         import doxoade  # noqa: F401
     except ImportError as exc:
         return False, (
             f"'doxoade' nao encontrado em sys.path nem instalado no venv.\n"
-            f"  ImportError: {exc}\n"
-            f"  Solucoes:\n"
-            f"    a) Execute na raiz do projeto: cd <raiz> && orn-server start\n"
-            f"    b) Instale o pacote: pip install -e <raiz>\n"
-            f"    c) Defina: set DOXOADE_ROOT=<raiz_que_contem_pasta_doxoade>"
+            f"ImportError: {exc}\n"
+            f"Solucoes:\n"
+            f"  a) Execute na raiz do projeto\n"
+            f"  b) pip install -e <raiz>\n"
+            f"  c) defina DOXOADE_ROOT=<raiz>\n"
         )
 
-    # ── Etapa 3: instalar MetaFinder ─────────────────────────────────────────
     try:
         from doxoade.tools.vulcan.runtime import find_vulcan_project_root, install_meta_finder
 
-        # Tenta localizar .doxoade/vulcan/bin a partir do CWD e de __file__
-        root = (
-            find_vulcan_project_root(Path.cwd())
-            or find_vulcan_project_root(__file__)
-        )
-        if root is None:
+        root_path = find_vulcan_project_root(Path.cwd()) or find_vulcan_project_root(__file__)
+        if root_path is None:
             return False, (
                 "doxoade importado OK, mas '.doxoade/vulcan/bin' nao encontrado.\n"
-                f"  Certifique-se de rodar 'doxoade vulcan lib' antes de iniciar o servidor.\n"
-                f"  CWD atual: {Path.cwd()}"
+                "Execute 'doxoade vulcan lib' antes de iniciar o servidor."
             )
 
-        install_meta_finder(root)
+        install_meta_finder(root_path)
 
-        lib_bin = root / ".doxoade" / "vulcan" / "lib_bin"
-        n_bins  = len(list(lib_bin.glob("*.pyd"))) if lib_bin.exists() else 0
-        return True, f"raiz='{root}' | {n_bins} binario(s) em lib_bin/"
-
+        lib_bin = root_path / ".doxoade" / "vulcan" / "lib_bin"
+        n_bins = len(list(lib_bin.glob("*.pyd"))) if lib_bin.exists() else 0
+        return True, f"raiz='{root_path}' | {n_bins} binario(s) em lib_bin/"
     except Exception:
         return False, f"MetaFinder falhou:\n{traceback.format_exc()}"
 
 
-# Ativa ANTES dos imports de terceiros
 _t_boot0 = time.monotonic()
 _VULCAN_ACTIVE, _VULCAN_MSG = _vulcan_boot()
-_VULCAN_BOOT_MS = round((time.monotonic() - _t_boot0) * 1000.0, 3)
+_boot_perf["vulcan_boot_ms"] = round((time.monotonic() - _t_boot0) * 1000.0, 3)
 
 if _VULCAN_ACTIVE:
     print(f"[VULCAN] OK — {_VULCAN_MSG}", flush=True)
@@ -140,219 +159,10 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Configuracao
-# ---------------------------------------------------------------------------
-
-# Importado no nível de módulo — evita reimport a cada chamada STATUS
-try:
-    import resource as _resource   # Unix only
-    _HAS_RESOURCE = True
-except ImportError:
-    _HAS_RESOURCE = False
-
-
-HOST     = "127.0.0.1"
-PORT     = 8371
-BACKLOG  = 4
-RECV_SZ  = 65536
-
-PID_FILE = Path("server.pid")
-LOG_FILE = Path("server.log")
-
-
-# ---------------------------------------------------------------------------
-# Estado global (OSL-3)
-# ---------------------------------------------------------------------------
-
-_llm   = None
-_cfg   = None
-_stats = {
-    "requests":          0,
-    "errors":            0,
-    "total_tokens":      0,
-    "total_elapsed_s":   0.0,
-    "start":             None,
-    "infer_calls":       0,
-    "last_infer_s":      0.0,
-    "last_prompt_chars": 0,
-    "last_output_chars": 0,
-    "last_max_tokens":   0,
-    "sum_prompt_chars":  0,
-    "sum_output_chars":  0,
-    "last_llm_call_ms":  0.0,
-    "last_lock_wait_ms": 0.0,
-    "sum_llm_call_ms":   0.0,
-    "sum_lock_wait_ms":  0.0,
-}
-
-_boot_perf = {
-    "vulcan_boot_ms": _VULCAN_BOOT_MS,
-    "model_load_ms": 0.0,
-}
-_lock = threading.Lock()
-
-# ------ auxiliares ------
-
-# Adicionar perto de globals
-_WORK_QUEUE = None
-_WORKER_STOP = threading.Event()
-
-def _worker_loop(work_q: "queue.Queue[tuple[bytes, socket.socket]]"):
-    while not _WORKER_STOP.is_set():
-        try:
-            payload, conn = work_q.get(timeout=1.0)
-        except queue.Empty:
-            continue
-        try:
-            # Reusar _handle logic: podemos separar uma função _process_payload(payload) que
-            # retorna resp dict (sem fechar conn).
-            try:
-                resp = _process_payload(payload)
-            except Exception as e:
-                resp = {"output": "", "elapsed_s": 0, "error": f"worker error: {e}"}
-            try:
-                conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode())
-            except Exception:
-                pass
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            work_q.task_done()
-
-def _process_payload(payload_bytes: bytes) -> dict:
-    """Extrai JSON, chama infer/_infer e retorna o response dict.
-       Reaproveita a lógica de _handle sem manipular sockets."""
-    resp: dict = {"output": "", "elapsed_s": 0, "error": "internal error"}
-    try:
-        line = payload_bytes.decode("utf-8").strip()
-        if not line:
-            return {"output": "", "elapsed_s": 0, "error": "payload vazio"}
-
-        # STATUS já tratado antes, mas redundância ok
-        if line.upper() == "STATUS":
-            # replicar snapshot do bloco STATUS do _handle
-            up  = round(time.monotonic() - _stats["start"], 1) if _stats["start"] else 0
-            # ... montar resp igual ao do STATUS ...
-            return {"status": "online", "uptime_s": up}  # resumido; copie os fields que preferir
-
-        req_data   = json.loads(line)
-        prompt     = str(req_data.get("prompt", "")).strip()
-        max_tokens = max(1, min(int(req_data.get("max_tokens", 128)), 2048))
-
-        if not prompt:
-            return {"output": "", "elapsed_s": 0, "error": "prompt vazio"}
-
-        with _lock:
-            _stats["requests"] += 1
-        try:
-            output, elapsed = _infer(prompt, max_tokens)
-            with _lock:
-                _stats["total_tokens"]      += max_tokens
-                _stats["total_elapsed_s"]   += elapsed
-                _stats["infer_calls"]        += 1
-                _stats["last_infer_s"]       = elapsed
-                _stats["last_prompt_chars"]  = len(prompt)
-                _stats["last_output_chars"]  = len(output)
-                _stats["last_max_tokens"]    = max_tokens
-                _stats["sum_prompt_chars"]  += len(prompt)
-                _stats["sum_output_chars"]  += len(output)
-            return {"output": output, "elapsed_s": elapsed, "error": None}
-        except Exception as e:
-            with _lock:
-                _stats["errors"] += 1
-            return {"output": "", "elapsed_s": 0, "error": str(e), "traceback": traceback.format_exc()}
-
-    except json.JSONDecodeError as e:
-        return {"output": "", "elapsed_s": 0, "error": f"JSON invalido: {e}"}
-    except Exception as e:
-        return {"output": "", "elapsed_s": 0, "error": f"worker handler: {e}", "traceback": traceback.format_exc()}
-
-# Substitua _serve por:
-
-def _serve() -> None:
-    import queue as _queue
-    global _WORK_QUEUE, _WORKER_STOP
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind((HOST, PORT))
-    srv.listen(BACKLOG)
-    srv.settimeout(1.0)
-    PID_FILE.write_text(str(os.getpid()))
-    print(f"[SRV] PID={os.getpid()}  Porta={PORT}", flush=True)
-
-    _WORK_QUEUE = _queue.Queue(maxsize=64)  # bounded: protege memória
-    # Escolha 1 worker se a inferência serializa bem com _lock; 1 evita contenda.
-    workers = []
-    for i in range(1):
-        th = threading.Thread(target=_worker_loop, args=(_WORK_QUEUE,), daemon=True)
-        th.start()
-        workers.append(th)
-
-    while True:
-        try:
-            conn, _ = srv.accept()
-            # leitura rápida da linha (non-blocking minimal): ler até \n com timeout curto
-            try:
-                conn.settimeout(0.5)
-                data = bytearray()
-                while True:
-                    chunk = conn.recv(RECV_SZ)
-                    if not chunk:
-                        break
-                    data.extend(chunk)
-                    if b"\n" in data:
-                        break
-                line = data.decode("utf-8").strip() if data else ""
-            except Exception:
-                # se falhou lendo rápido, feche a conexão para não travar accept loop
-                conn.close()
-                continue
-
-            if not line:
-                conn.sendall((json.dumps({"output":"","elapsed_s":0,"error":"payload vazio"}) + "\n").encode())
-                conn.close()
-                continue
-
-            if line.upper() == "STATUS":
-                resp = _handle_status()  # extrair função que monta o JSON de STATUS
-                try:
-                    conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode())
-                except Exception:
-                    pass
-                conn.close()
-                continue
-
-            # Push to work queue - se cheio, respondemos 503 curto
-            try:
-                _WORK_QUEUE.put_nowait((data, conn))
-            except _queue.Full:
-                try:
-                    conn.sendall((json.dumps({"output":"", "elapsed_s":0, "error":"server busy"}) + "\n").encode())
-                except Exception:
-                    pass
-                conn.close()
-                continue
-
-        except socket.timeout:
-            continue
-        except KeyboardInterrupt:
-            print("\n[SRV] Encerrando...", flush=True)
-            _WORKER_STOP.set()
-            _shutdown()
-            break
-        except Exception as e:
-            print(f"[SRV] accept error: {e}", flush=True)
-            traceback.print_exc()
-
-
-# ---------------------------------------------------------------------------
-# Boot do modelo
+# Telemetria / utilidades
 # ---------------------------------------------------------------------------
 
 def _observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") -> None:
-    """Registro fail-silent de métricas para fases internas do servidor."""
     try:
         GLOBAL_TELEMETRY.observe(
             name,
@@ -365,12 +175,72 @@ def _observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") 
     except Exception:
         pass
 
+
+def _flush_telemetry_snapshot() -> None:
+    try:
+        GLOBAL_TELEMETRY.flush_json(Path("telemetry") / "server_runtime.json")
+    except Exception:
+        pass
+
+
+def _system_perf_snapshot() -> dict[str, Any]:
+    rss_mb = 0.0
+    try:
+        if _HAS_RESOURCE:
+            rss_kb = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
+            if rss_kb > 10_000_000:
+                rss_mb = round(rss_kb / (1024.0 * 1024.0), 3)
+            else:
+                rss_mb = round(rss_kb / 1024.0, 3)
+    except Exception:
+        pass
+
+    load_1m = 0.0
+    try:
+        load_1m = round(float(os.getloadavg()[0]), 3)
+    except Exception:
+        pass
+
+    return {
+        "pid": os.getpid(),
+        "threads": threading.active_count(),
+        "cpu_count": os.cpu_count() or 0,
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "rss_mb": rss_mb,
+        "load_1m": load_1m,
+    }
+
+
+def _json_line(resp: dict[str, Any]) -> bytes:
+    return (json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _read_line_from_socket(conn: socket.socket, timeout: float = 10.0) -> str:
+    conn.settimeout(timeout)
+    data = bytearray()
+    while True:
+        chunk = conn.recv(RECV_SZ)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if b"\n" in data:
+            break
+    return data.decode("utf-8", errors="replace").strip()
+
+
+# ---------------------------------------------------------------------------
+# Modelo
+# ---------------------------------------------------------------------------
+
 def _load_model() -> None:
     global _llm, _cfg
+
     from engine.core.llm_bridge import BridgeConfig
     from llama_cpp import Llama
 
     _cfg = BridgeConfig()
+
     if not _cfg.model_path.exists():
         print(f"[ERRO] Modelo nao encontrado: {_cfg.model_path}", flush=True)
         sys.exit(1)
@@ -379,18 +249,20 @@ def _load_model() -> None:
     print(f"[BOOT] {_cfg.model_path.name}  [{backend}]", flush=True)
     print(f"[BOOT] n_threads={_cfg.n_threads}  n_ctx={_cfg.n_ctx}", flush=True)
 
-    t0   = time.monotonic()
-    kwargs = {
+    t0 = time.monotonic()
+
+    kwargs: dict[str, Any] = {
         "model_path": str(_cfg.model_path),
         "n_ctx": _cfg.n_ctx,
         "n_threads": _cfg.n_threads,
         "n_gpu_layers": _cfg.n_gpu_layers,
-        "verbose": False,
-        "use_mmap": _cfg.use_mmap,
-        "use_mlock": _cfg.use_mlock,
         "n_batch": _cfg.n_batch,
         "n_threads_batch": _cfg.n_threads_batch,
+        "use_mmap": _cfg.use_mmap,
+        "use_mlock": _cfg.use_mlock,
+        "verbose": False,
     }
+
     if _cfg.cache_type_k:
         kwargs["type_k"] = _cfg.cache_type_k
     if _cfg.cache_type_v:
@@ -420,30 +292,33 @@ def _load_model() -> None:
         for tok in unsupported:
             kwargs.pop(tok, None)
         _llm = Llama(**kwargs)
-    elapsed = round(time.monotonic() - t0, 1)
-    _boot_perf["model_load_ms"] = round(elapsed * 1000.0, 3)
-    _observe_telemetry("server.boot.model_load", _boot_perf["model_load_ms"], category="boot")
+
+    elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
+    _boot_perf["model_load_ms"] = elapsed_ms
+    _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
     _stats["start"] = time.monotonic()
-    print(f"[BOOT] Pronto em {elapsed}s — {HOST}:{PORT}", flush=True)
+    print(f"[BOOT] Pronto em {round(elapsed_ms / 1000.0, 1)}s — {HOST}:{PORT}", flush=True)
 
-
-# ---------------------------------------------------------------------------
-# Inferencia
-# ---------------------------------------------------------------------------
 
 @orn_probe(category="exec", critical=True, probe_name="server.infer")
 def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
+    if _llm is None or _cfg is None:
+        raise RuntimeError("Modelo nao carregado.")
+
     prompt_full = (
         f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{prompt}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )
-    t0 = time.monotonic()       # tempo total da inferência
-    t_wait0 = t0                # lock wait começa no mesmo instante
+
+    t0 = time.monotonic()
+    t_wait0 = t0
+
     with _lock:
         lock_wait_ms = (time.monotonic() - t_wait0) * 1000.0
         t_llm0 = time.monotonic()
-        infer_kwargs = {
+
+        infer_kwargs: dict[str, Any] = {
             "max_tokens": max_tokens,
             "stop": ["<|im_end|>", "</s>"],
             "echo": False,
@@ -462,31 +337,27 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
     _observe_telemetry("server.infer.lock_wait", lock_wait_ms)
     _observe_telemetry("server.infer.llm_call", llm_call_ms)
 
-    # Protege os contadores de timing com o mesmo lock usado pelo resto do _handle.
-    # Sem isso, writes simultâneos em sum_lock_wait_ms e sum_llm_call_ms causam
-    # race condition silenciosa — os valores divergem ao longo do tempo.
     with _lock:
-        _stats["last_lock_wait_ms"]  = round(lock_wait_ms, 4)
-        _stats["last_llm_call_ms"]   = round(llm_call_ms, 4)
-        _stats["sum_lock_wait_ms"]  += lock_wait_ms
-        _stats["sum_llm_call_ms"]   += llm_call_ms
+        _stats["last_lock_wait_ms"] = round(lock_wait_ms, 4)
+        _stats["last_llm_call_ms"] = round(llm_call_ms, 4)
+        _stats["sum_lock_wait_ms"] += lock_wait_ms
+        _stats["sum_llm_call_ms"] += llm_call_ms
 
     elapsed = round(time.monotonic() - t0, 3)
     return out["choices"][0]["text"].strip(), elapsed
 
 
 # ---------------------------------------------------------------------------
-# Handler de conexao
+# Status
 # ---------------------------------------------------------------------------
 
-def _telemetry_hotspots(limit: int = 3) -> list[dict]:
-    """Resumo de gargalos de telemetria para endpoint STATUS."""
+def _telemetry_hotspots(limit: int = 3) -> list[dict[str, Any]]:
     try:
         snap = GLOBAL_TELEMETRY.snapshot()
     except Exception:
         return []
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     for name, stats in snap.items():
         calls = int(stats.get("calls", 0) or 0)
         avg_ms = float(stats.get("avg_ms", 0) or 0)
@@ -503,169 +374,162 @@ def _telemetry_hotspots(limit: int = 3) -> list[dict]:
     rows.sort(key=lambda x: x["total_ms"], reverse=True)
     return rows[: max(1, limit)]
 
-def _flush_telemetry_snapshot() -> None:
-    try:
-        GLOBAL_TELEMETRY.flush_json(Path("telemetry") / "server_runtime.json")
-    except Exception:
-        # Telemetria nunca pode derrubar o servidor.
-        pass
 
-def _system_perf_snapshot() -> dict:
-    """Snapshot leve de sistema/processo para contexto de gargalo."""
-    rss_mb = 0.0
-    try:
-        if _HAS_RESOURCE:
-            rss_kb = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
-            # macOS entrega bytes, Linux KB; normalizamos aproximadamente.
-            if rss_kb > 10_000_000:
-                rss_mb = round(rss_kb / (1024.0 * 1024.0), 3)
-            else:
-                rss_mb = round(rss_kb / 1024.0, 3)
-    except Exception:
-        pass
+def _handle_status() -> dict[str, Any]:
+    up = round(time.monotonic() - _stats["start"], 1) if _stats["start"] else 0
+    req = _stats["requests"]
+    avg = round(_stats["total_elapsed_s"] / req, 3) if req > 0 else 0
+    infer_calls = _stats["infer_calls"]
 
-    load_1m = 0.0
-    try:
-        load_1m = round(float(os.getloadavg()[0]), 3)
-    except Exception:
-        pass
+    avg_prompt_chars = round(_stats["sum_prompt_chars"] / infer_calls, 2) if infer_calls else 0
+    avg_output_chars = round(_stats["sum_output_chars"] / infer_calls, 2) if infer_calls else 0
+    last_tokens_per_s = round((_stats["last_max_tokens"] / _stats["last_infer_s"]) if _stats["last_infer_s"] else 0, 3)
+    total_tokens_per_s = round((_stats["total_tokens"] / _stats["total_elapsed_s"]) if _stats["total_elapsed_s"] else 0, 3)
+    last_output_chars_per_s = round((_stats["last_output_chars"] / _stats["last_infer_s"]) if _stats["last_infer_s"] else 0, 3)
+    avg_lock_wait_ms = round((_stats["sum_lock_wait_ms"] / infer_calls) if infer_calls else 0, 4)
+    avg_llm_call_ms = round((_stats["sum_llm_call_ms"] / infer_calls) if infer_calls else 0, 4)
+    last_non_llm_ms = round(max((_stats["last_infer_s"] * 1000.0) - _stats["last_llm_call_ms"], 0.0), 4)
+    last_llm_share_pct = round((_stats["last_llm_call_ms"] / (_stats["last_infer_s"] * 1000.0) * 100.0) if _stats["last_infer_s"] else 0, 2)
 
     return {
-        "pid": os.getpid(),
-        "threads": threading.active_count(),
-        "cpu_count": os.cpu_count() or 0,
-        "platform": platform.platform(),
-        "python": platform.python_version(),
-        "rss_mb": rss_mb,
-        "load_1m": load_1m,
+        "status": "online",
+        "uptime_s": up,
+        "requests": req,
+        "errors": _stats["errors"],
+        "total_tokens": _stats["total_tokens"],
+        "avg_elapsed_s": avg,
+        "port": PORT,
+        "vulcan": _VULCAN_ACTIVE,
+        "vulcan_detail": _VULCAN_MSG,
+        "boot_perf": dict(_boot_perf),
+        "system_perf": _system_perf_snapshot(),
+        "ai_perf": {
+            "infer_calls": infer_calls,
+            "last_infer_s": _stats["last_infer_s"],
+            "last_max_tokens": _stats["last_max_tokens"],
+            "last_prompt_chars": _stats["last_prompt_chars"],
+            "last_output_chars": _stats["last_output_chars"],
+            "avg_prompt_chars": avg_prompt_chars,
+            "avg_output_chars": avg_output_chars,
+            "last_tokens_per_s": last_tokens_per_s,
+            "total_tokens_per_s": total_tokens_per_s,
+            "last_output_chars_per_s": last_output_chars_per_s,
+            "last_lock_wait_ms": _stats["last_lock_wait_ms"],
+            "last_llm_call_ms": _stats["last_llm_call_ms"],
+            "avg_lock_wait_ms": avg_lock_wait_ms,
+            "avg_llm_call_ms": avg_llm_call_ms,
+            "last_non_llm_ms": last_non_llm_ms,
+            "last_llm_share_pct": last_llm_share_pct,
+        },
+        "telemetry_hotspots": _telemetry_hotspots(),
     }
 
+
+# ---------------------------------------------------------------------------
+# Handler
+# ---------------------------------------------------------------------------
+
 def _handle(conn: socket.socket) -> None:
-    # OSL-7: resp sempre definida — cliente nunca fica pendurado sem resposta
-    resp: dict = {"output": "", "elapsed_s": 0, "error": "internal error"}
+    resp: dict[str, Any] = {"output": "", "elapsed_s": 0, "error": "internal error"}
 
     try:
-        conn.settimeout(10)
-        data = bytearray()   # bytearray.extend() é O(chunk) — bytes += é O(N²)
-        while True:
-            chunk = conn.recv(RECV_SZ)
-            if not chunk:
-                break
-            data.extend(chunk)
-            if b"\n" in data:
-                break
-
-        line = data.decode("utf-8").strip()
+        line = _read_line_from_socket(conn, timeout=10.0)
         if not line:
             resp = {"output": "", "elapsed_s": 0, "error": "payload vazio"}
             return
 
-        # STATUS especial
         if line.upper() == "STATUS":
-            up  = round(time.monotonic() - _stats["start"], 1) if _stats["start"] else 0
-            req = _stats["requests"]
-            avg = round(_stats["total_elapsed_s"] / req, 3) if req > 0 else 0
-            infer_calls = _stats["infer_calls"]
-            avg_prompt_chars = round(_stats["sum_prompt_chars"] / infer_calls, 2) if infer_calls else 0
-            avg_output_chars = round(_stats["sum_output_chars"] / infer_calls, 2) if infer_calls else 0
-            last_tokens_per_s = round((_stats["last_max_tokens"] / _stats["last_infer_s"]) if _stats["last_infer_s"] else 0, 3)
-            total_tokens_per_s = round((_stats["total_tokens"] / _stats["total_elapsed_s"]) if _stats["total_elapsed_s"] else 0, 3)
-            last_output_chars_per_s = round((_stats["last_output_chars"] / _stats["last_infer_s"]) if _stats["last_infer_s"] else 0, 3)
-            avg_lock_wait_ms = round((_stats["sum_lock_wait_ms"] / infer_calls) if infer_calls else 0, 4)
-            avg_llm_call_ms = round((_stats["sum_llm_call_ms"] / infer_calls) if infer_calls else 0, 4)
-            last_non_llm_ms = round(max((_stats["last_infer_s"] * 1000.0) - _stats["last_llm_call_ms"], 0.0), 4)
-            last_llm_share_pct = round((_stats["last_llm_call_ms"] / (_stats["last_infer_s"] * 1000.0) * 100.0) if _stats["last_infer_s"] else 0, 2)
-
-            resp = {
-                "status":         "online",
-                "uptime_s":       up,
-                "requests":       req,
-                "errors":         _stats["errors"],
-                "total_tokens":   _stats["total_tokens"],
-                "avg_elapsed_s":  avg,
-                "port":           PORT,
-                "vulcan":         _VULCAN_ACTIVE,
-                "vulcan_detail":  _VULCAN_MSG,
-                "boot_perf":      dict(_boot_perf),
-                "system_perf":    _system_perf_snapshot(),
-                "ai_perf": {
-                    "infer_calls": infer_calls,
-                    "last_infer_s": _stats["last_infer_s"],
-                    "last_max_tokens": _stats["last_max_tokens"],
-                    "last_prompt_chars": _stats["last_prompt_chars"],
-                    "last_output_chars": _stats["last_output_chars"],
-                    "avg_prompt_chars": avg_prompt_chars,
-                    "avg_output_chars": avg_output_chars,
-                    "last_tokens_per_s": last_tokens_per_s,
-                    "total_tokens_per_s": total_tokens_per_s,
-                    "last_output_chars_per_s": last_output_chars_per_s,
-                    "last_lock_wait_ms": _stats["last_lock_wait_ms"],
-                    "last_llm_call_ms": _stats["last_llm_call_ms"],
-                    "avg_lock_wait_ms": avg_lock_wait_ms,
-                    "avg_llm_call_ms": avg_llm_call_ms,
-                    "last_non_llm_ms": last_non_llm_ms,
-                    "last_llm_share_pct": last_llm_share_pct,
-                },
-                "telemetry_hotspots": _telemetry_hotspots(),
-            }
+            resp = _handle_status()
             return
 
-        req_data   = json.loads(line)
-        prompt     = str(req_data.get("prompt", "")).strip()
+        req_data = json.loads(line)
+        prompt = str(req_data.get("prompt", "")).strip()
         max_tokens = max(1, min(int(req_data.get("max_tokens", 128)), 2048))
 
         if not prompt:
             resp = {"output": "", "elapsed_s": 0, "error": "prompt vazio"}
-        else:
+            return
+
+        with _lock:
+            _stats["requests"] += 1
+
+        try:
+            output, elapsed = _infer(prompt, max_tokens)
             with _lock:
-                _stats["requests"] += 1
-            try:
-                output, elapsed = _infer(prompt, max_tokens)
-                # Bug fix: _stats é compartilhado entre threads — protegido com _lock.
-                # Sem o lock, operações += (read-modify-write) em threads concorrentes
-                # causam race condition silenciosa nos contadores.
-                with _lock:
-                    _stats["total_tokens"]      += max_tokens
-                    _stats["total_elapsed_s"]   += elapsed
-                    _stats["infer_calls"]        += 1
-                    _stats["last_infer_s"]        = elapsed
-                    _stats["last_prompt_chars"]   = len(prompt)
-                    _stats["last_output_chars"]   = len(output)
-                    _stats["last_max_tokens"]     = max_tokens
-                    _stats["sum_prompt_chars"]   += len(prompt)
-                    _stats["sum_output_chars"]   += len(output)
-                resp = {"output": output, "elapsed_s": elapsed, "error": None}
-            except Exception as e:
-                with _lock:
-                    _stats["errors"] += 1
-                resp = {
-                    "output":    "",
-                    "elapsed_s": 0,
-                    "error":     str(e),
-                    "traceback": traceback.format_exc(),
-                }
+                _stats["total_tokens"] += max_tokens
+                _stats["total_elapsed_s"] += elapsed
+                _stats["infer_calls"] += 1
+                _stats["last_infer_s"] = elapsed
+                _stats["last_prompt_chars"] = len(prompt)
+                _stats["last_output_chars"] = len(output)
+                _stats["last_max_tokens"] = max_tokens
+                _stats["sum_prompt_chars"] += len(prompt)
+                _stats["sum_output_chars"] += len(output)
+
+            resp = {"output": output, "elapsed_s": elapsed, "error": None}
+        except Exception as e:
+            with _lock:
+                _stats["errors"] += 1
+            resp = {
+                "output": "",
+                "elapsed_s": 0,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }
 
     except json.JSONDecodeError as e:
         resp = {"output": "", "elapsed_s": 0, "error": f"JSON invalido: {e}"}
     except Exception as e:
         resp = {
-            "output":    "",
+            "output": "",
             "elapsed_s": 0,
-            "error":     f"handler: {e}",
+            "error": f"handler: {e}",
             "traceback": traceback.format_exc(),
         }
     finally:
         try:
-            conn.settimeout(None)
-            conn.sendall((json.dumps(resp, ensure_ascii=False) + "\n").encode())
+            conn.sendall(_json_line(resp))
         except Exception:
             pass
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
-# Loop principal
+# Serve / shutdown
 # ---------------------------------------------------------------------------
+
+def _shutdown() -> None:
+    global _llm
+    if _llm is not None:
+        try:
+            _llm.close()
+        except Exception:
+            pass
+        _llm = None
+
+    if _VULCAN_ACTIVE:
+        try:
+            from doxoade.tools.vulcan.runtime import uninstall_meta_finder
+            uninstall_meta_finder()
+        except Exception:
+            pass
+
+    _flush_telemetry_snapshot()
+    PID_FILE.unlink(missing_ok=True)
+    print("[SRV] Modelo liberado.", flush=True)
+
+
+def _sigterm_handler(signum, frame):
+    print("[SRV] Sinal recebido — iniciando shutdown ordenado.", flush=True)
+    try:
+        _shutdown()
+    except Exception:
+        pass
+    sys.exit(0)
+
 
 def _serve() -> None:
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -689,34 +553,6 @@ def _serve() -> None:
         except Exception as e:
             print(f"[SRV] accept error: {e}", flush=True)
             traceback.print_exc()
-
-def _shutdown() -> None:
-    global _llm
-    if _llm is not None:
-        try:
-            _llm.close()
-        except Exception:
-            pass
-        _llm = None
-    if _VULCAN_ACTIVE:
-        try:
-            from doxoade.tools.vulcan.runtime import uninstall_meta_finder
-            uninstall_meta_finder()
-        except Exception:
-            pass
-    _flush_telemetry_snapshot()
-    PID_FILE.unlink(missing_ok=True)
-    print("[SRV] Modelo liberado.", flush=True)
-
-def _sigterm_handler(signum, frame):
-    """Handler local que garante shutdown ordenado quando o processo receber SIGTERM/SIGINT."""
-    print("[SRV] Sinal recebido — iniciando shutdown ordenado.", flush=True)
-    try:
-        _shutdown()
-    except Exception:
-        pass
-    # garante que o processo termine
-    sys.exit(0)
 
 
 # ---------------------------------------------------------------------------
@@ -789,11 +625,10 @@ class ServerCLI:
         if self._is_online():
             print(f"[SRV] Servidor ja rodando na porta {PORT}.")
             return
+
         if background:
-            # Context manager não aplicável aqui — o processo filho herda o fd.
-            # Mas garantimos que o handle do pai seja fechado após o Popen.
-            log = open(LOG_FILE, "w")
-            child_args = [sys.executable, "-m", "engine.server", "start"]
+            log = open(LOG_FILE, "w", encoding="utf-8")
+            child_args = [sys.executable, "-m", "engine.server.server", "start"]
             if cache_type_k:
                 child_args += ["--cache-type-k", cache_type_k]
             if cache_type_v:
@@ -819,7 +654,8 @@ class ServerCLI:
 
             subprocess.Popen(
                 child_args,
-                stdout=log, stderr=log,
+                stdout=log,
+                stderr=log,
                 env=self._start_env(
                     cache_type_k,
                     cache_type_v,
@@ -835,33 +671,32 @@ class ServerCLI:
                 ),
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
-            log.close()   # Bug fix: fecha o fd do processo pai após fork
+            log.close()
             print(f"[SRV] Iniciado em background. Log: {LOG_FILE}")
             print("[SRV] Aguarde ~5s e verifique: orn-server status")
-        else:
-            # Registra handlers para SIGINT/SIGTERM **no processo servidor** (main thread).
-            try:
-                signal.signal(signal.SIGTERM, _sigterm_handler)
-                signal.signal(signal.SIGINT, _sigterm_handler)
-            except Exception:
-                # Em alguns ambientes windows antigos ou embedded, signal pode levantar.
-                pass
+            return
 
-            self._apply_start_env(
-                cache_type_k,
-                cache_type_v,
-                active_window,
-                rope_freq_base,
-                rope_freq_scale,
-                flash_attn,
-                min_p,
-                pin_threads,
-                cont_batching,
-                no_mmap,
-                no_alloc,
-            )
-            _load_model()
-            _serve()
+        try:
+            signal.signal(signal.SIGTERM, _sigterm_handler)
+            signal.signal(signal.SIGINT, _sigterm_handler)
+        except Exception:
+            pass
+
+        self._apply_start_env(
+            cache_type_k,
+            cache_type_v,
+            active_window,
+            rope_freq_base,
+            rope_freq_scale,
+            flash_attn,
+            min_p,
+            pin_threads,
+            cont_batching,
+            no_mmap,
+            no_alloc,
+        )
+        _load_model()
+        _serve()
 
     def _stop(self) -> None:
         if not PID_FILE.exists():
@@ -876,33 +711,35 @@ class ServerCLI:
             return
 
         try:
-            # Tenta sinalizar o processo para terminar
             if os.name == "nt":
-                # Windows fallback: taskkill força a finalização por PID
-                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             else:
                 os.kill(pid, signal.SIGTERM)
 
-            # Aguarda o processo encerrar (timeout curto)
             wait_timeout = 5.0
             waited = 0.0
             interval = 0.1
             while waited < wait_timeout:
                 try:
-                    # envio de signal 0 verifica existência do processo (Unix)
-                    os.kill(pid, 0)
+                    if os.name != "nt":
+                        os.kill(pid, 0)
+                    else:
+                        proc = None
                     time.sleep(interval)
                     waited += interval
                 except OSError:
-                    # processo não existe mais
                     break
             else:
-                # ainda vivo → tenta SIGKILL (Unix)
-                try:
-                    if os.name != "nt":
+                if os.name != "nt":
+                    try:
                         os.kill(pid, signal.SIGKILL)
-                except Exception:
-                    pass
+                    except Exception:
+                        pass
 
             PID_FILE.unlink(missing_ok=True)
             print(f"[SRV] Encerrado (PID {pid}).")
@@ -917,9 +754,11 @@ class ServerCLI:
         if resp is None:
             print("[SRV] Offline.")
             return
+
         up = resp.get("uptime_s", 0)
         h, rem = divmod(int(up), 3600)
-        m, s   = divmod(rem, 60)
+        m, s = divmod(rem, 60)
+
         print("  Status:      ONLINE")
         print(f"  Uptime:      {h:02d}:{m:02d}:{s:02d}")
         print(f"  Requests:    {resp['requests']}")
@@ -932,6 +771,7 @@ class ServerCLI:
         if not resp.get("vulcan"):
             for line in resp.get("vulcan_detail", "").splitlines()[:4]:
                 print(f"               {line}")
+
         boot_perf = resp.get("boot_perf", {})
         if boot_perf:
             print("  Boot perf:")
@@ -973,10 +813,12 @@ class ServerCLI:
         if not prompt:
             print("[ERRO] Forneca um prompt: orn-server ask 'sua pergunta'")
             return
+
         resp = self._query(prompt, max_tokens)
         if resp is None:
             print("[ERRO] Servidor offline. Execute: orn-server start")
             return
+
         if resp.get("error"):
             print(f"[ERRO] {resp['error']}")
             if resp.get("traceback"):
@@ -1032,6 +874,7 @@ class ServerCLI:
             env["ORN_USE_MMAP"] = "0"
         if no_alloc:
             env["ORN_NO_ALLOC"] = "1"
+
         root = _discover_doxoade_root()
         if root:
             env["DOXOADE_ROOT"] = root
@@ -1072,10 +915,9 @@ class ServerCLI:
         print("  start --bg     inicia em background")
         print("  start --active-window 512")
         print("  start --cache-type-k q8_0 --cache-type-v q4_0")
-        print("  start --cache-type-k none --cache-type-v off   # desativa KV cache quantizado")
+        print("  start --cache-type-k none --cache-type-v off")
         print("  start --rope-freq-base 10000 --rope-freq-scale 1.0")
-        print("  start --rope-freq-base none --rope-freq-scale null")
-        print("  start --flash-attn on   # ou off/none")
+        print("  start --flash-attn on")
         print("  start --min-p 0.01")
         print("  start --pin-threads --cont-batching")
         print("  start --no-mmap --no-alloc")
@@ -1093,23 +935,20 @@ class ServerCLI:
         except (ConnectionRefusedError, OSError):
             return False
 
-    def _query_status(self) -> dict | None:
+    def _query_status(self) -> dict[str, Any] | None:
         return self._raw_query(b"STATUS\n")
 
-    def _query(self, prompt: str, max_tokens: int) -> dict | None:
-        payload = (json.dumps({"prompt": prompt, "max_tokens": max_tokens}) + "\n").encode()
+    def _query(self, prompt: str, max_tokens: int) -> dict[str, Any] | None:
+        payload = (json.dumps({"prompt": prompt, "max_tokens": max_tokens}) + "\n").encode("utf-8")
         return self._raw_query(payload)
 
-    def _raw_query(self, payload: bytes) -> dict | None:
+    def _raw_query(self, payload: bytes) -> dict[str, Any] | None:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(60.0)
                 s.connect((HOST, PORT))
                 s.settimeout(None)
                 s.sendall(payload)
-                # bytearray em vez de bytes — cada `+= chunk` em bytes cria um novo
-                # objeto copiando tudo (O(N²) para respostas longas do modelo).
-                # bytearray é mutável: extend é O(chunk) amortizado.
                 data = bytearray()
                 while True:
                     chunk = s.recv(65536)
@@ -1121,3 +960,12 @@ class ServerCLI:
             return json.loads(data.decode("utf-8").strip())
         except Exception:
             return None
+
+
+def main(argv: list[str] | None = None) -> None:
+    cli = ServerCLI()
+    cli.run(list(sys.argv[1:] if argv is None else argv))
+
+
+if __name__ == "__main__":
+    main()

@@ -27,6 +27,9 @@ Fluxo por query:
 
 from __future__ import annotations
 
+import ast
+import re
+
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -293,3 +296,67 @@ _ROLE_LABELS: dict[str, str] = {
     "counter":    "RESSALVAS",
     "format":     "FORMATO",
 }
+
+
+# ---------------------------------------------------------------------------
+# Redutor Cognitivo (Auxiliar da Lousa)
+# ---------------------------------------------------------------------------
+
+class CognitiveReducer:
+    """
+    Mastiga arquivos e cospe apenas o "esqueleto" cognitivo.
+    Reduz drasticamente o consumo de tokens (Prompt Eval) no LLM.
+    OSL-18: Usa apenas a Standard Library (ast, re).
+    """
+
+    @staticmethod
+    def reduce_file(filename: str, content: str, max_chars: int = 600) -> str:
+        """Roteia o arquivo para o mastigador correto com base na extensão."""
+        if not content or len(content) < max_chars:
+            return content # Se for pequeno, deixa passar
+
+        if filename.endswith(".py"):
+            return CognitiveReducer._reduce_python(content, max_chars)
+        
+        # Fallback genérico para outras linguagens: 
+        # Tira linhas vazias e tenta manter formato denso
+        return CognitiveReducer._reduce_generic(content, max_chars)
+
+    @staticmethod
+    def _reduce_python(code: str, max_chars: int) -> str:
+        """Usa AST para extrair apenas a assinatura de Classes e Funções."""
+        try:
+            tree = ast.parse(code)
+            lines =[]
+            
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef):
+                    lines.append(f"class {node.name}:")
+                    for item in node.body:
+                        if isinstance(item, ast.FunctionDef) or isinstance(item, ast.AsyncFunctionDef):
+                            lines.append(f"  def {item.name}(...)")
+                
+                elif isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
+                    lines.append(f"def {node.name}(...)")
+
+            summary = "\n".join(lines)
+            
+            # Se o arquivo for só um script solto sem funções, faz o corte genérico
+            if not summary.strip():
+                return CognitiveReducer._reduce_generic(code, max_chars)
+                
+            # Se a árvore for muito grande, trunca a própria árvore
+            return summary[:max_chars]
+            
+        except SyntaxError:
+            # Se o código estiver quebrado, fallback seguro
+            return CognitiveReducer._reduce_generic(code, max_chars)
+
+    @staticmethod
+    def _reduce_generic(text: str, max_chars: int) -> str:
+        """Limpa espaços e quebras de linha excessivas."""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        compact = "\n".join(lines)
+        if len(compact) > max_chars:
+            return compact[:max_chars] + "\n[... truncado]"
+        return compact

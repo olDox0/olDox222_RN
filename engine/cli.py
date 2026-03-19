@@ -31,6 +31,7 @@ import click
 from pathlib import Path
 
 from engine.ui.display import Display
+
 def _fmt_ms(value: float) -> str:
     value = float(value or 0)
     if value >= 1000:
@@ -136,17 +137,14 @@ def think(prompt: tuple[str, ...], context_file: str | None,
           search: str | None, search_code_only: bool, drawer_first: bool,
           drawer_only: bool, drawer_auto_save: bool, no_auto: bool, telemetry: bool) -> None:
     """Pergunta livre ao Qwen. Ex: orn think 'como faço X em Python?'"""
-    from engine.telemetry.runtime import record, system_stats
     import time
 
-    # permitir também via env var
-    telemetry_enabled = telemetry or (os.environ.get("ORN_TELEMETRY", "") == "1")
+    from engine.telemetry.runtime import record_direct
 
-    # Pergunta pura — imutável durante toda a montagem do prompt
-    question   = " ".join(prompt)
+    telemetry_enabled = telemetry or (os.environ.get("ORN_TELEMETRY", "") == "1")
+    question = " ".join(prompt).strip()
     max_tokens = tokens or 128
 
-    # Blocos de contexto acumulados — cada um no formato [CTX-BEGIN/END]
     context_blocks: list[str] = []
     drawer_snippet = None
 
@@ -155,6 +153,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
             from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
             guessed_name = _guess_function_name(question)
             guessed_lang = _guess_lang_from_prompt(question)
+
             if guessed_name:
                 drawer_sn = CodeDrawer().assemble(
                     name=guessed_name,
@@ -162,14 +161,22 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                     inputs=[],
                     outputs=[],
                 )
+
                 if drawer_sn is not None:
                     drawer_snippet = drawer_sn
                     Display.success(f"[DRAWER] Reaproveitando snippet: {drawer_sn.name} [{drawer_sn.lang}]")
+
+                    # contexto curto, não o código inteiro
+                    code_preview = drawer_sn.code.strip()
+                    if len(code_preview) > 1200:
+                        code_preview = "\n".join(code_preview.splitlines()[:24]) + "\n[...TRUNCADO...]"
+
                     context_blocks.append(
                         "[CTX-BEGIN]\n"
                         f"scope: drawer:{drawer_sn.name}\n"
+                        f"lang: {drawer_sn.lang}\n"
                         "[CODE-BEGIN]\n"
-                        f"{drawer_sn.code.rstrip()}\n"
+                        f"{code_preview}\n"
                         "[CODE-END]\n"
                         "[CTX-END]\n"
                     )
@@ -188,21 +195,23 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         Display.info("Tempo: ~0s  [drawer-only]")
         return
 
-    # --search manual: busca e acumula bloco
     if search:
-        from engine.tools.crawler import OrnCrawler   # noqa: PLC0415
+        from engine.tools.crawler import OrnCrawler  # noqa: PLC0415
+
         src_key, _, sq = search.partition(":")
         if sq:
             crawl_query, crawl_source = sq.strip(), src_key.strip()
         else:
             crawl_query, crawl_source = search.strip(), "auto"
+
         Display.info(f"[CRAWLER] Buscando: [{crawl_source}] {crawl_query!r}")
         try:
             crawler = OrnCrawler()
-            result  = crawler.search(crawl_query, source=crawl_source, code_only=search_code_only)
+            result = crawler.search(crawl_query, source=crawl_source, code_only=search_code_only)
             if result.ok:
                 Display.success(f"[CRAWLER] {result.source}: {result.title!r}")
                 context_blocks.append(result.to_prompt_block())
+
                 if drawer_auto_save:
                     try:
                         from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
@@ -218,6 +227,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                             Display.info(f"[DRAWER] {saved_n} snippet(s) salvos no repertório.")
                     except Exception as _ds:
                         Display.warn(f"[DRAWER] Falha ao salvar snippet: {_ds}")
+
                 if drawer_only and drawer_snippet is None:
                     try:
                         from engine.tools.code_drawer import CodeDrawer  # noqa: PLC0415
@@ -236,7 +246,6 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         except Exception as _ce:
             Display.warn(f"[CRAWLER] Erro: {_ce}")
 
-    # --file: lê arquivo e acumula bloco
     if context_file:
         try:
             with open(context_file, encoding="utf-8", errors="replace") as _cf:
@@ -250,16 +259,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         except OSError:
             pass
 
-    if drawer_only:
-        if drawer_snippet is not None:
-            Display.banner()
-            Display.section("DRAWER-ONLY", f"{drawer_snippet.name} [{drawer_snippet.lang}]")
-            if raw:
-                print(drawer_snippet.code)
-            else:
-                Display.code_block(drawer_snippet.code)
-            Display.info("Tempo: ~0s  [drawer-only]")
-            return
+    if drawer_only and drawer_snippet is None:
         raise click.ClickException(
             "Nenhum snippet compatível no drawer para --drawer-only. "
             "Use --drawer-first com snippet salvo, ou rode sem --drawer-only."
@@ -268,170 +268,130 @@ def think(prompt: tuple[str, ...], context_file: str | None,
     Display.banner()
     Display.thinking(question)
 
-    # ---------------------------------------------------------------
-    # MODO SERVIDOR
-    # ---------------------------------------------------------------
-    from engine.tools.server_client import is_server_online, ask as server_ask  # noqa
+    from engine.tools.server_client import is_server_online  # noqa: PLC0415
 
     use_server = (not direct) and is_server_online()
-
     if use_server:
-        Display.info("Modo servidor ativo — sem espera de load.")
+        Display.info("Modo servidor ativo — inferência instantânea...")
+    else:
+        Display.info("Modo direto — carregando modelo (rápido via mmap)...")
+    Display.separator()
 
-        # -----------------------------------------------------------
-        # TWO-PASS AUTÔNOMO
-        # Condições: servidor ativo + sem contexto manual + não desativado
-        # -----------------------------------------------------------
-        auto_search_ran = False
-        if not no_auto and not context_blocks:
-            from engine.tools.auto_search import AutoSearchDecider  # noqa: PLC0415
-            decider     = AutoSearchDecider()
-            search_term = decider.decide(question, server_ask)
+    if use_server and not no_auto and not context_blocks and _should_auto_search(question):
+        from engine.tools.auto_search import AutoSearchDecider  # noqa: PLC0415
+        from engine.tools.server_client import query as server_query  # noqa: PLC0415
 
-            if search_term:
-                Display.info(f"[AUTO] Buscando: {search_term!r}")
-                try:
-                    from engine.tools.crawler import OrnCrawler   # noqa: PLC0415
-                    result = OrnCrawler().search(search_term, source="auto", code_only=search_code_only)
-                    if result.ok:
-                        Display.success(
-                            f"[AUTO] Contexto: {result.source} — {result.title!r}"
-                        )
-                        context_blocks.append(result.to_prompt_block())
-                    else:
-                        Display.warn(
-                            f"[AUTO] Busca falhou ({result.error}). "
-                            f"Respondendo sem contexto externo."
-                        )
-                except Exception as _ae:
-                    Display.warn(f"[AUTO] Erro no crawler: {_ae}. Continuando sem contexto.")
-                auto_search_ran = True
-            else:
-                Display.info("[AUTO] Respondendo do conhecimento interno.")
-
-        # Monta prompt final: N blocos → [TASK] → question
-        if context_blocks:
-            full_prompt = "".join(context_blocks) + "\n[TASK]\n" + question
-        else:
-            full_prompt = question
-
-        Display.separator()
-
-        t0      = time.monotonic()
-        resp    = server_ask(full_prompt, max_tokens)
-        elapsed = round(time.monotonic() - t0, 3)
-
-        if resp is None:
-            Display.warn("Servidor desconectou. Caindo para modo direto...")
-            use_server = False   # fallback abaixo
-        elif resp.get("error"):
-            Display.error(f"Servidor retornou erro: {resp['error']}")
-            sys.exit(1)
-        else:
-            Display.separator()
-            if raw:
-                print(resp["output"])
-            else:
-                Display.code_block(resp["output"])
-            Display.separator()
-            mode_label = "[servidor+auto]" if auto_search_ran else "[servidor]"
-            Display.info(f"Tempo: {resp.get('elapsed_s', elapsed)}s  {mode_label}")
-            return
-
-    # ---------------------------------------------------------------
-    # MODO DIRETO: Executive + Bridge (carrega modelo aqui)
-    # Two-pass não roda no modo direto — custo proibitivo no N2808.
-    # --search e --file manuais funcionam normalmente.
-    # ---------------------------------------------------------------
-    if not use_server:
-        if context_blocks:
-            full_prompt = "".join(context_blocks) + "\n[TASK]\n" + question
-        else:
-            full_prompt = question
-
-        Display.info("Modo direto — carregando modelo (~80s no N2808)...")
-        Display.separator()
-
-        # instrumentacao de telemetria local (minima, fail-safe)
-        t_start = time.perf_counter()
-        model_load_s = None
-        infer_s = None
-        total_s = None
-
-        try:
-            from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
-            ex = SiCDoxExecutive()
-
-            # O Executive é lazy: o modelo só carrega dentro de process_goal.
-            # Medimos model_load_s com um hook: pedimos ao bridge para carregar
-            # antes de process_goal e capturamos o delta.
-            # Fallback: se bridge não expõe loaded_since_s, model_load_s fica None.
-            t_ml0 = time.perf_counter()
+        decider = AutoSearchDecider()
+        search_term = decider.decide(question, server_query)
+        if search_term:
+            Display.info(f"[AUTO] Buscando: {search_term!r}")
             try:
-                bridge = ex._get_bridge()
-                bridge._ensure_loaded()
+                from engine.tools.crawler import OrnCrawler  # noqa: PLC0415
+                result = OrnCrawler().search(search_term, source="auto", code_only=search_code_only)
+                if result.ok:
+                    Display.success(f"[AUTO] Contexto: {result.source}")
+                    context_blocks.append(result.to_prompt_block())
             except Exception:
                 pass
-            model_load_s = round(time.perf_counter() - t_ml0, 3)
 
-            try:
-                t_inf0 = time.perf_counter()
-                result = ex.process_goal(
-                    intent  = "think",
-                    payload = full_prompt,
-                    context = {"context_file": None, "max_tokens": max_tokens},
+    full_prompt = question
+    if context_blocks:
+        full_prompt = "".join(context_blocks) + "\n[TASK]\n" + question
+
+    t_start = time.perf_counter()
+    ex = None
+    result = None
+    from types import SimpleNamespace
+
+    try:
+        if use_server:
+            from engine.tools.server_client import query as server_query  # noqa: PLC0415
+
+            server_resp = server_query(full_prompt, max_tokens=max_tokens)
+
+            if not isinstance(server_resp, dict):
+                result = SimpleNamespace(
+                    success=False,
+                    output="",
+                    errors=["servidor offline ou resposta inválida"],
+                    metadata={"elapsed_s": round(time.perf_counter() - t_start, 3)},
                 )
-                t_inf1 = time.perf_counter()
-                infer_s = round(t_inf1 - t_inf0, 3)
-            finally:
-                ex.shutdown()
-
-        finally:
-            t_end = time.perf_counter()
-            total_s = round(t_end - t_start, 3)
-
-        if not result.success:
-            for err in result.errors:
-                Display.error(err)
-            sys.exit(1)
-
-        Display.separator()
-        if raw:
-            print(result.output)
+            else:
+                err = server_resp.get("error")
+                result = SimpleNamespace(
+                    success=not bool(err),
+                    output=str(server_resp.get("output", "")),
+                    errors=[str(err)] if err else [],
+                    metadata={
+                        "elapsed_s": float(server_resp.get("elapsed_s") or round(time.perf_counter() - t_start, 3))
+                    },
+                )
         else:
-            Display.code_block(result.output)
-        Display.separator()
-
-        # metadata do resultado pode conter elapsed (mantemos se existir)
-        reported_elapsed = result.metadata.get("elapsed_s") if getattr(result, "metadata", None) else None
-        Display.info(f"Tempo: {reported_elapsed or infer_s or '?'}s  [direto]")
-
-        # se telemetria ativada -> gravar e registrar em GLOBAL_TELEMETRY
-        if telemetry_enabled:
-            try:
-                from engine.telemetry.core import record_direct_telemetry  # noqa: PLC0415
-                board_meta = result.metadata.get("board", {}) if getattr(result, "metadata", None) else {}
-                payload = {
-                    "captured_at_unix": int(time.time()),
-                    "mode": "direct",
-                    "model_load_s": model_load_s,
-                    "infer_s": infer_s,
-                    "total_s": total_s,
-                    "reported_elapsed": reported_elapsed,
-                    "prompt_chars": len(full_prompt) if full_prompt else 0,
+            from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
+            ex = SiCDoxExecutive()
+            result = ex.process_goal(
+                intent="think",
+                payload=full_prompt,
+                context={
+                    "context_file": None,
                     "max_tokens": max_tokens,
-                    # blackboard
-                    "board_drafts":     board_meta.get("draft_count", 0),
-                    "board_by_role":    board_meta.get("by_role", {}),
-                    "board_token_hint": board_meta.get("token_hint"),
-                }
-                record_direct_telemetry(payload)
-                Display.info("Telemetria gravada: telemetry/direct_runtime.jsonl")
-            except Exception as _te:
-                Display.warn(f"Telemetria falhou: {_te}")
+                    "use_server": False,
+                },
+            )
+    finally:
+        if ex is not None:
+            ex.shutdown()
 
-        return
+    total_s = round(time.perf_counter() - t_start, 3)
 
+    if not result.success:
+        for err in result.errors:
+            Display.error(err)
+        raise SystemExit(1)
+
+    Display.separator()
+    if raw:
+        print(result.output)
+    else:
+        Display.code_block(result.output)
+    Display.separator()
+
+    reported_elapsed = result.metadata.get("elapsed_s") if getattr(result, "metadata", None) else None
+    mode_label = "[servidor]" if use_server else "[direto]"
+    Display.info(f"Tempo: {reported_elapsed or total_s}s  {mode_label}")
+
+    if telemetry_enabled and not use_server:
+        try:
+            board_meta = result.metadata.get("board", {}) if getattr(result, "metadata", None) else {}
+            payload = {
+                "captured_at_unix": int(time.time()),
+                "mode": "direct",
+                "model_load_s": None,
+                "infer_s": reported_elapsed or total_s,
+                "total_s": total_s,
+                "reported_elapsed": reported_elapsed,
+                "prompt_chars": len(full_prompt) if full_prompt else 0,
+                "max_tokens": max_tokens,
+                "board_drafts": board_meta.get("draft_count", 0),
+                "board_by_role": board_meta.get("by_role", {}),
+                "board_token_hint": board_meta.get("token_hint"),
+            }
+            record_direct(payload)
+            Display.info("Telemetria gravada: telemetry/direct_runtime.jsonl")
+        except Exception as _te:
+            Display.warn(f"Telemetria falhou: {_te}")
+
+def _should_auto_search(question: str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return False
+    if q.isdigit():
+        return False
+    if len(q) < 12:
+        return False
+    if len(q.split()) < 3:
+        return False
+    return True
 
 # ---------------------------------------------------------------------------
 # config — verificação de ambiente [Fase 1 ATIVO]

@@ -57,7 +57,7 @@ class BridgeConfig:
     )
     n_ctx:                   int  = 512   # era 2048 — reduz KV-cache pela metade
     active_window:           int  = 256    # era 1024 — proporcional
-    n_batch:                 int  = 64     # NOVO — era 512 (default llama.cpp)
+    n_batch:                 int  = 128     # NOVO — era 512 (default llama.cpp)
                                  # 64 = menos pressão de memória no N2808
     # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
     n_threads:               int = 2
@@ -66,14 +66,14 @@ class BridgeConfig:
     use_mmap: bool =         True        # mmap para pesos (carregamento preguiçoso)
     use_mlock: bool =        True       # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
     no_alloc: bool =         True        # Evita alocação interna inicial quando suportado pelo backend
-    pin_threads: bool =      True     # Fixa threads em núcleos quando suportado
+    pin_threads: bool =      False     # Fixa threads em núcleos quando suportado
     cont_batching: bool =    True   # Continuous batching quando suportado
     # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
     # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
     ttl_seconds:   int  =    400   # 1 hora (era 300s — inadequado para N2808)
     # max_tokens reduzido para testes — 679s foi causado por resposta gigante
     # Regra: 128 para testes rápidos, 512 para uso normal
-    max_tokens:    int   =   32
+    max_tokens:    int   =   64
     # Parâmetros de sampling (doc ORN_up — seção 3)
     # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
     temperature:    float =  0.45
@@ -96,7 +96,7 @@ class BridgeConfig:
     rope_freq_scale: float | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
     flash_attn: bool | None = None
-    system_prompt: str = ("succinct and tightening writing portuguese")
+    system_prompt: str = ("succinct. portuguese language") # system_prompt: str = "" 
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
         if value is None:
@@ -572,12 +572,7 @@ class SiCDoxBridge:
             oldest = self._memo_order.popleft()
             self._memo.pop(oldest, None)
     def shutdown(self) -> None:
-        """Libera modelo da RAM. Idempotente. OSL-3.
-        ATENÇÃO — Bug Python 3.12 (Relatório REP.INFRA.20260209.GOLD §5.2):
-          O destruidor do objeto Llama falha com TypeError: NoneType se o
-          objeto for coletado pelo GC sem .close() explícito.
-          .close() DEVE ser chamado antes de self._llm = None.
-        """
+        """Libera modelo da RAM. Idempotente."""
         if self._llm is not None:
             try:
                 self._llm.close()
@@ -587,8 +582,8 @@ class SiCDoxBridge:
                 f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
                 line_n = exc_tb.tb_lineno if exc_tb else 0
                 print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
-                pass   # .close() pode falhar se já destruído — ignorar
             self._llm = None
+
         self._load_time = None
         # ContextWindow preservada para retomada de sessão.
     def clear_context(self) -> None:
@@ -696,12 +691,18 @@ class SiCDoxBridge:
         
     def _build_prompt(self) -> str:
         turns = self._ctx._view_turns()
-
-        parts = []
+        parts: list[str] = []
         append = parts.append
 
-        if self._last_prompt == "":
-            append(self._system_prefix)
+        sys_content = self._cfg.system_prompt
+        if self._system_hint:
+            if sys_content:
+                sys_content += f"\n{self._system_hint}"
+            else:
+                sys_content = self._system_hint
+
+        if sys_content:
+            append(f"<|im_start|>system\n{sys_content}<|im_end|>\n")
 
         for t in turns:
             append(f"<|im_start|>{t['role']}\n{t['content']}<|im_end|>\n")
@@ -716,6 +717,7 @@ class SiCDoxBridge:
         """Chama o runtime Llama e retorna dict: {'text': str, 'usage': {...}}"""
         if self._llm is None:
             raise RuntimeError("Modelo não carregado.")
+
         t0 = time.perf_counter()
         call_kwargs = {
             "max_tokens": max_tokens,
@@ -729,27 +731,64 @@ class SiCDoxBridge:
 
         if self._cfg.min_p is not None:
             call_kwargs["min_p"] = self._cfg.min_p
+
         try:
-#            output = self._llm(prompt, **call_kwargs)
             output = self._llm(prompt, **call_kwargs)
         except TypeError as exc:
-            import sys as _dox_sys, os as _dox_os
-            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-            line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(exc).__name__} | Value: {exc}\033[0m")
-            if "min_p" not in str(exc):
+            msg = str(exc)
+            if "min_p" not in msg:
                 raise
             call_kwargs.pop("min_p", None)
             output = self._llm(prompt, **call_kwargs)
-#            output = self._llm(prompt, **call_kwargs)
+
         llm_ms = (time.perf_counter() - t0) * 1000.0
         text = output["choices"][0]["text"]
         usage = output.get("usage", {}) or {}
-        # normalize usage keys for compat
+
         usage = {
-            "prompt_tokens":     usage.get("prompt_tokens", 0),
+            "prompt_tokens": usage.get("prompt_tokens", 0),
             "completion_tokens": usage.get("completion_tokens", 0),
-            "total_tokens":      usage.get("total_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
         }
+
         return {"text": text, "usage": usage, "llm_call_ms": round(llm_ms, 3)}
+        
+#    def _call_engine(self, prompt: str, max_tokens: int, stream: bool = False):
+#        if self._llm is None:
+#            raise RuntimeError("Modelo não carregado.")
+#
+#        call_kwargs = {
+#            "max_tokens": max_tokens,
+#            "stop":["<|im_end|>", "</s>"],
+#            "echo": False,
+#            "temperature": self._cfg.temperature,
+#            "top_p": self._cfg.top_p,
+#            "top_k": self._cfg.top_k,
+#            "repeat_penalty": self._cfg.repeat_penalty,
+#            "stream": stream, # <--- ATIVA O STREAMING
+#        }
+#        
+#        if self._cfg.min_p is not None:
+#            call_kwargs["min_p"] = self._cfg.min_p
+#
+#        # Lógica de fallback de TypeError mantida...
+#        try:
+#            output = self._llm(prompt, **call_kwargs)
+#        except TypeError as exc:
+#            msg = str(exc)
+#            if "min_p" not in msg and "stream" not in msg:
+#                raise
+#            call_kwargs.pop("min_p", None)
+#            output = self._llm(prompt, **call_kwargs)
+#
+#        # SE FOR STREAM, DEVOLVE O GERADOR DIRETAMENTE
+#        if stream:
+#            return output 
+#
+#        # SE NÃO FOR STREAM, MANTÉM O COMPORTAMENTO ORIGINAL
+#        t0 = time.perf_counter()
+#        llm_ms = (time.perf_counter() - t0) * 1000.0
+#        text = output["choices"][0]["text"]
+#        usage = output.get("usage", {}) or {}
+#
+#        return {"text": text, "usage": usage, "llm_call_ms": round(llm_ms, 3)}

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# engine/tools/server_client.py
 """
 ORN — Server Client (Hermes)
 Cliente do SiCDox Server para uso pelo CLI/Executive.
@@ -29,18 +30,18 @@ PORT = 8371
 HOST       = "127.0.0.1"
 PID_FILE   = Path("web_server.pid")
 
-def ask(prompt: str, max_tokens: int = 128) -> dict[str, Any] | None:
-    """Envia prompt ao servidor. Retorna None se offline.
 
-    Fix: nao chama is_server_online() separado — conecta direto.
-    Se falhar na conexao, retorna None (caller faz fallback).
-    """
-    payload = (json.dumps({"prompt": prompt, "max_tokens": max_tokens}) + "\n").encode()
-    return _raw_query(payload)
+def ask(prompt: str, max_tokens: int = 128) -> str | None:
+    resp = query(prompt, max_tokens=max_tokens)
+    if resp is None:
+        return None
+    if resp.get("error"):
+        return None
+    return str(resp.get("output", ""))
 
 
 def is_server_online() -> bool:
-    """Verifica se servidor esta online. Timeout curto (1s)."""
+    """Checagem barata de disponibilidade."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(1.0)
@@ -49,35 +50,63 @@ def is_server_online() -> bool:
     except (ConnectionRefusedError, OSError):
         return False
 
-
 def status() -> dict[str, Any] | None:
-    """Consulta status. Retorna None se offline."""
+    """Retorna o JSON de status completo."""
     return _raw_query(b"STATUS\n")
 
 
+def query(prompt: str, max_tokens: int = 128) -> dict[str, Any] | None:
+    payload = (json.dumps({"prompt": prompt, "max_tokens": max_tokens}) + "\n").encode("utf-8")
+    return _raw_query(payload)
+
+
+def decide(question, server_ask):
+    response = server_ask(question)
+
+    if response is None:
+        return None
+
+    if isinstance(response, str):
+        response = {
+            "output": response,
+            "elapsed_s": 0,
+            "error": None,
+        }
+
+    if not isinstance(response, dict):
+        response = {
+            "output": str(response),
+            "elapsed_s": 0,
+            "error": None,
+        }
+
+    if response.get("error"):
+        return None
+
+    return response.get("output", "").strip() or None
+
+
 def _raw_query(payload: bytes) -> dict[str, Any] | None:
-    """Envia payload e recebe resposta JSON. Retorna None se falhar."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(2.0)
+            s.settimeout(60.0)
             s.connect((HOST, PORT))
-            s.settimeout(None)      # sem timeout durante inferencia longa
+            s.settimeout(None)
             s.sendall(payload)
-            data = b""
+
+            data = bytearray()
             while True:
                 chunk = s.recv(65536)
                 if not chunk:
                     break
-                data += chunk
+                data.extend(chunk)
                 if data.endswith(b"\n"):
                     break
-        return json.loads(data.decode("utf-8").strip())
-    except (ConnectionRefusedError, OSError):
+
+        resp = json.loads(data.decode("utf-8").strip())
+        return resp if isinstance(resp, dict) else None
+    except Exception:
         return None
-    except json.JSONDecodeError as e:
-        return {"output": "", "elapsed_s": 0, "error": f"JSON: {e}"}
-    except Exception as e:
-        return {"output": "", "elapsed_s": 0, "error": str(e)}
 
 # ---------------------------------------------------------------------------
 # HTML da interface — single file, zero dependencias externas

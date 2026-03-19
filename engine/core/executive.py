@@ -27,9 +27,13 @@ Fluxo futuro (audit, fix, gen):
 
 from __future__ import annotations
 
+import re
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any
+
+from engine.telemetry.forensic import emit_forensic_log
 
 
 # ---------------------------------------------------------------------------
@@ -47,11 +51,11 @@ class GoalResult:
         errors:   Erros não-fatais encontrados no pipeline.
         metadata: Dados extras — tempo de execução, tokens estimados, etc.
     """
-    success:  bool
-    intent:   str
-    output:   str             = ""
-    errors:   list[str]       = field(default_factory=list)
-    metadata: dict[str, Any]  = field(default_factory=dict)
+    success: bool
+    intent: str
+    output: str = ""
+    errors: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -65,36 +69,26 @@ class SiCDoxExecutive:
     OSL-16: Máx 500 linhas; lógica de cada intent vai para _run_*().
     """
 
-    def __init__(self) -> None:
-        self._infer_queue = None
-        self._bridge:    Any = None   # SiCDoxBridge  (Hefesto)
-        self._board:     Any = None   # DoxoBoard     (Hades)
-        self._validator: Any = None   # SiCDoxValidator (Anúbis)
-        self._planner:   Any = None   # ExecutivePlanner (Atena)
-        self._memory:    Any = None   # VectorDB      (Osíris)
+    def __init__(self, persistent: bool = True) -> None:
+        self._board: Any = None              # DoxoBoard (Hades)
+        self._bridge: Any = None              # SiCDoxBridge (Hefesto)
+        self._infer_queue: Any = None
+        self._memory: Any = None             # VectorDB (Osíris)
+        self._persistent = persistent
+        self._planner: Any = None            # ExecutivePlanner (Atena)
+        self._validator: Any = None          # SiCDoxValidator (Anúbis)
 
     # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
 
-    def process_goal(self, intent: str, payload: str,
-                     context: dict[str, Any] | None = None) -> GoalResult:
-        """Processa um goal recebido da CLI.
-
-        OSL-5.1: Valida intent e payload antes de qualquer dispatch.
-        OSL-7: Cada etapa tem retorno verificado.
-        OSL-15: Exceções internas viram GoalResult(success=False) — nunca
-                propagam para a CLI como exceção não tratada.
-
-        Args:
-            intent:  Tipo de ação: 'think' | 'audit' | 'fix' | 'gen' |
-                                   'brain' | 'graph' | 'config'.
-            payload: Conteúdo principal (prompt ou caminho de arquivo).
-            context: Dados extras opcionais passados pelo comando CLI.
-
-        Returns:
-            GoalResult com output e status do pipeline.
-        """
+    def process_goal(
+        self,
+        intent: str,
+        payload: str,
+        context: dict[str, Any] | None = None,
+    ) -> GoalResult:
+        """Processa um goal recebido da CLI."""
         if not intent:
             raise ValueError("intent não pode ser vazio.")
         if not payload:
@@ -106,46 +100,40 @@ class SiCDoxExecutive:
         try:
             result = self._dispatch(intent, payload, context)
         except NotImplementedError as exc:
-            result = GoalResult(
-                success=False, intent=intent,
-                errors=[f"[TODO] {exc}"],
-            )
-            import sys as _dox_sys, os as _dox_os
-            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-            line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033")
-
+            emit_forensic_log(exc, "_dispatch")
+            result = GoalResult(success=False, intent=intent, errors=[f"[TODO] {exc}"])
         except FileNotFoundError as exc:
+            emit_forensic_log(exc, "_dispatch")
+            result = GoalResult(success=False, intent=intent, errors=[f"[ARQUIVO] {exc}"])
+        except Exception as exc:
+            emit_forensic_log(exc, "_dispatch")
             result = GoalResult(
-                success=False, intent=intent,
-                errors=[f"[ARQUIVO] {exc}"],
-            )
-            import sys as _dox_sys, os as _dox_os
-            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-            line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033")
-
-        except Exception as exc:  # OSL-15: captura controlada
-            result = GoalResult(
-                success=False, intent=intent,
+                success=False,
+                intent=intent,
                 errors=[f"[ERRO INTERNO] {type(exc).__name__}: {exc}"],
             )
-            import sys as _dox_sys, os as _dox_os
-            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-            line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033")
-
 
         result.metadata["elapsed_s"] = round(time.monotonic() - t_start, 3)
         return result
 
-    def shutdown(self) -> None:
-        """Libera recursos. OSL-3: determinístico, não depende do GC."""
+    def shutdown(self, force: bool = False) -> None:
+        """Libera recursos. Só fecha o bridge se não estiver em modo persistente,
+        ou se force=True for explicitamente pedido."""
+        if self._persistent and not force:
+            return
+
+        if self._infer_queue is not None:
+            try:
+                self._infer_queue.shutdown()
+            except Exception:
+                pass
+            self._infer_queue = None
+
         if self._bridge is not None:
-            self._bridge.shutdown()
+            try:
+                self._bridge.shutdown()
+            except Exception:
+                pass
             self._bridge = None
 
     def bridge_stats(self) -> dict[str, Any]:
@@ -166,26 +154,30 @@ class SiCDoxExecutive:
     # Dispatcher central
     # ------------------------------------------------------------------
 
-    def _dispatch(self, intent: str, payload: str,
-                  context: dict[str, Any]) -> GoalResult:
-        """Roteia intent para o método _run_* correto.
-
-        OSL-5.1: intent desconhecido retorna GoalResult de erro, não exceção.
-        """
+    def _dispatch(
+        self,
+        intent: str,
+        payload: str,
+        context: dict[str, Any],
+    ) -> GoalResult:
+        """Roteia intent para o método _run_* correto."""
         routes: dict[str, Any] = {
             "think": self._run_think,
             "audit": self._run_audit,
-            "fix":   self._run_fix,
-            "gen":   self._run_gen,
+            "fix": self._run_fix,
+            "gen": self._run_gen,
             "brain": self._run_brain,
             "graph": self._run_graph,
         }
         runner = routes.get(intent)
         if runner is None:
             return GoalResult(
-                success=False, intent=intent,
-                errors=[f"Intent desconhecido: '{intent}'. "
-                        f"Opções: {list(routes.keys())}"],
+                success=False,
+                intent=intent,
+                errors=[
+                    f"Intent desconhecido: '{intent}'. "
+                    f"Opções: {list(routes.keys())}",
+                ],
             )
         return runner(payload, context)
 
@@ -194,124 +186,134 @@ class SiCDoxExecutive:
     # ------------------------------------------------------------------
 
     def _run_think(self, prompt: str, context: dict[str, Any]) -> GoalResult:
-        """Pipeline completo do comando `orn think`.
-
-        Etapas:
-          1. Abre sessão na lousa (workspace limpo).
-          2. Decompõe a query em rascunhos de raciocínio.
-          3. Injeta contexto de arquivo opcional (--file).
-          4. Constrói prompt = synthesis_block + [TASK].
-          5. Chama Bridge.ask().
-          6. Valida output via Validator.
-          7. Fecha sessão da lousa (descarta rascunhos).
-
-        OSL-7: sessão fechada em finally — sem vazamento entre queries.
-        """
-        bridge    = self._get_bridge()
+        _bridge = self._get_bridge()
         validator = self._get_validator()
-        board     = self._get_board()
+        board = self._get_board()
 
-        # 1. Workspace limpo para esta query
-        _session_opened = False
+        session_opened = False
         try:
             board.open_session(prompt)
-            _session_opened = True
+            session_opened = True
         except Exception as exc:
-            return GoalResult(
-                success=False, intent="think",
-                errors=[f"[BOARD] Falha ao abrir sessão: {exc}"],
-            )
-            import sys as _dox_sys, os as _dox_os
-            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-            line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {exc}\033")
-
+            return GoalResult(success=False, intent="think", errors=[f"[BOARD] Erro: {exc}"])
 
         try:
-            # 2. Popula lousa com rascunhos de raciocínio (rule-based, sem LLM)
             _decompose_query(board, prompt, context)
 
-            # 3. Contexto de arquivo opcional (--file)
             if context.get("context_file"):
                 file_content = _read_file_safe(context["context_file"])
                 if file_content:
                     board.post_draft(
-                        source  = "context_file",
-                        content = f"Arquivo '{context['context_file']}': {file_content[:120]}",
-                        role    = "evidence",
-                        weight  = 0.95,
+                        source="context_file",
+                        content=f"Arquivo '{context['context_file']}': {file_content[:120]}",
+                        role="evidence",
+                        weight=0.95,
                     )
 
-            # 4. Monta bloco de síntese (vai para system prompt, não para user turn)
             synthesis = board.build_synthesis_block(compact=True)
 
-            # 5. Inferência
-            #    synthesis → system_hint (instruções, não ecoadas pelo modelo)
-            #    prompt    → user turn puro (apenas a query)
-            token_hint = len((synthesis or "") + prompt) // 3 + 30
+            token_hint = 64
             max_tokens = context.get("max_tokens")
-            output = self._infer_queue.submit(
-                prompt,
-                max_tokens,
-                token_hint,
-                synthesis,
+
+            result = self._infer_queue.submit(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                token_hint=token_hint,
+                system_hint=synthesis,
             )
 
-            # 6. Validação (OSL-7)
+            if isinstance(result, Future):
+                output = result.result()
+            else:
+                output = result
+
             valid, motivo = validator.validar_output(output)
             if not valid:
                 return GoalResult(
-                    success=False, intent="think",
+                    success=False,
+                    intent="think",
                     errors=[f"Output inválido: {motivo}"],
                 )
 
-            # Captura estado da lousa antes de descartar (vai para metadata/telemetria)
             board_snapshot = board.session_info()
-            board_snapshot["token_hint"]  = token_hint
+            board_snapshot["token_hint"] = token_hint
             board_snapshot["system_hint"] = bool(synthesis)
 
-            result = GoalResult(success=True, intent="think", output=output)
-            result.metadata["board"] = board_snapshot
-            return result
+            result_goal = GoalResult(success=True, intent="think", output=output)
+            result_goal.metadata["board"] = board_snapshot
+            return result_goal
 
         finally:
-            # 7. OSL-3: descarta workspace — sem acúmulo entre queries.
-            # O guard _session_opened evita chamar close_session() se open_session()
-            # falhou, o que poderia causar erro ao fechar uma sessão inexistente.
-            if _session_opened:
+            if session_opened:
                 try:
                     board.close_session()
-                except Exception as e:
-                    import sys as _dox_sys, os as _dox_os
-                    exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-                    f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-                    line_n = exc_tb.tb_lineno if exc_tb else 0
-                    print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033")
-
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Fases futuras — stubs com NotImplementedError descritivo
     # ------------------------------------------------------------------
 
     def _run_audit(self, payload: str, context: dict[str, Any]) -> GoalResult:
-        """TODO Fase 2: ConceptMapper → prompt estruturado → LLM → relatório."""
         raise NotImplementedError("audit — implementar na Fase 2.")
 
     def _run_fix(self, payload: str, context: dict[str, Any]) -> GoalResult:
-        """TODO Fase 4: audit() + diff de patch + validação sintática."""
         raise NotImplementedError("fix — implementar na Fase 4.")
 
+    # Fase 4 — Geração (gen) via CodeAssembler (Cosmo Visão)
     def _run_gen(self, payload: str, context: dict[str, Any]) -> GoalResult:
-        """TODO Fase 4: generate_plan() + LLM + Validator._validar_python()."""
-        raise NotImplementedError("gen — implementar na Fase 4.")
+        assembler = self._get_assembler()
+        board = self._get_board()
+        
+        session_opened = False
+        try:
+            # 1. Abre a lousa para focar o contexto
+            board.open_session(f"Gerar arquitetura: {payload}")
+            session_opened = True
+            
+            board.post_draft(
+                source="executive",
+                content="Priorize a clareza dos contratos I/O (type hints).",
+                role="constraint",
+                weight=1.0,
+            )
+            
+            # 2. Chama o CodeAssembler (Dédalo)
+            # Ele fará as idas e vindas com o modelo para gerar e validar o esqueleto
+            assembly_result = assembler.assemble(payload)
+            
+            if not assembly_result["success"]:
+                return GoalResult(
+                    success=False,
+                    intent="gen",
+                    errors=[assembly_result["error"]],
+                    output=assembly_result["output"]
+                )
+            
+            # 3. Sucesso! Empacota e retorna
+            result_goal = GoalResult(
+                success=True, 
+                intent="gen", 
+                output=assembly_result["output"]
+            )
+            
+            board_snapshot = board.session_info()
+            result_goal.metadata["board"] = board_snapshot
+            result_goal.metadata["assembler_info"] = "Cosmo Visão I/O aplicada."
+            
+            return result_goal
+
+        finally:
+            if session_opened:
+                try:
+                    board.close_session()
+                except Exception:
+                    pass
 
     def _run_brain(self, payload: str, context: dict[str, Any]) -> GoalResult:
-        """TODO Fase 3: DoxoBoard.session_info() + VectorDB.stats()."""
         raise NotImplementedError("brain — implementar na Fase 3.")
 
     def _run_graph(self, payload: str, context: dict[str, Any]) -> GoalResult:
-        """TODO Fase 2: ConceptMapper.internalizar() + GraphInspector.show()."""
         raise NotImplementedError("graph — implementar na Fase 2.")
 
     # ------------------------------------------------------------------
@@ -324,13 +326,13 @@ class SiCDoxExecutive:
             from engine.runtime.infer_queue import InferQueue
 
             self._bridge = SiCDoxBridge()
-            self._infer_queue = InferQueue(self._bridge)
+            self._infer_queue = InferQueue(self._bridge, async_mode=False)
 
         return self._bridge
 
     def _get_board(self) -> Any:
         if self._board is None:
-            from engine.core.blackboard import DoxoBoard        # noqa: PLC0415
+            from engine.core.blackboard import DoxoBoard  # noqa: PLC0415
             self._board = DoxoBoard()
         return self._board
 
@@ -346,9 +348,15 @@ class SiCDoxExecutive:
             self._planner = ExecutivePlanner()
         return self._planner
 
+    def _get_assembler(self) -> Any:
+        if not hasattr(self, "_assembler") or self._assembler is None:
+            from engine.thinking.assembler import CodeAssembler  # noqa: PLC0415
+            self._assembler = CodeAssembler(self._get_bridge(), self._get_validator())
+        return self._assembler
+
     def _get_memory(self) -> Any:
         if self._memory is None:
-            from engine.memory.vector_db import VectorDB          # noqa: PLC0415
+            from engine.memory.vector_db import VectorDB  # noqa: PLC0415
             self._memory = VectorDB()
         return self._memory
 
@@ -357,111 +365,104 @@ class SiCDoxExecutive:
 # Utilitários internos (OSL-18: stdlib only)
 # ---------------------------------------------------------------------------
 
-# Constantes de decomposição movidas para módulo — evitam realocação a cada chamada.
+# Constantes de decomposição
 _LANG_MAP: tuple[tuple[str, str], ...] = (
-    ("python", "python"), ("py ",    "python"),
-    ("c++",    "c++"),    ("cpp",    "c++"),
-    (" c ",    "C"),      ("em c,",  "C"), ("em c.", "C"),
-    ("batch",  "batch"),  ("bat ",   "batch"),
+    ("python", "python"),
+    (r"\bpy\b", "python"),
+    (r"c\+\+", "c++"),
+    (r"\bcpp\b", "c++"),
+    (r"\bc\b", "C"),
+    (r"\bbatch\b", "batch"),
+    (r"\bbat\b", "batch script"),
 )
-_KW_EXPLAIN  = ("explique", "explica", "o que é", "como funciona", "define")
-_KW_GENERATE = ("crie", "escreva", "gere", "implemente", "faça", "cria")
-_KW_FIX      = ("corrija", "conserte", "bug", "erro", "fix")
-_KW_LIST     = ("liste", "quais são", "enumere", "mostre os")
+
+_KW_EXPLAIN = r"\b(explique|explica|o que é|como funciona|define)\b"
+_KW_GENERATE = r"\b(crie|escreva|gere|implemente|faça|cria)\b"
+_KW_FIX = r"\b(corrija|conserte|bug|erro|fix)\b"
+_KW_LIST = r"\b(liste|quais são|enumere|mostre)\b"
 
 
 def _decompose_query(board: Any, prompt: str, context: dict) -> None:
-    """Popula a lousa com rascunhos de raciocínio baseados em regras.
-
-    Orienta o modelo sobre o que é esperado sem custo extra de inferência.
-    Conteúdo dos drafts intencionalmente curto — cada char aqui custa token.
-
-    Args:
-        board:   DoxoBoard com sessão aberta.
-        prompt:  Query original do usuário.
-        context: Dict de contexto do Executive.
-    """
+    """Popula a lousa com rascunhos de raciocínio baseados em Regex (OSL-5)."""
     p = prompt.lower()
 
-    # Restrição de idioma (sempre presente, texto mínimo)
     board.post_draft(
-        source  = "decomposer",
-        content = "PT.conciso.",
-        role    = "constraint",
-        weight  = 1.0,
+        source="decomposer",
+        content="Responda em português, de forma concisa e direta.",
+        role="constraint",
+        weight=1.0,
     )
 
-    # Detecção de linguagem de programação
-    for kw, lang in _LANG_MAP:
-        if kw in p:
+    for pattern, lang in _LANG_MAP:
+        if re.search(pattern, p):
             board.post_draft(
-                source  = "decomposer",
-                content = f"lang:{lang}.",
-                role    = "constraint",
-                weight  = 0.95,
+                source="decomposer",
+                content=f"Código esperado em: {lang}.",
+                role="constraint",
+                weight=0.95,
             )
             break
 
-    # Tipo de tarefa (texto curto — o modelo entende diretivas concisas)
-    if any(kw in p for kw in _KW_EXPLAIN):
+    if re.search(_KW_EXPLAIN, p):
         board.post_draft(
-            source  = "decomposer",
-            content = "explicar.",
-            role    = "decomp",
-            weight  = 0.85,
+            source="decomposer",
+            content="Tarefa: explicação. Priorize clareza sobre completude.",
+            role="decomp",
+            weight=0.85,
         )
-    elif any(kw in p for kw in _KW_GENERATE):
+    elif re.search(_KW_GENERATE, p):
         board.post_draft(
-            source  = "decomposer",
-            content = "gerar artefato.",
-            role    = "decomp",
-            weight  = 0.85,
+            source="decomposer",
+            content="Tarefa: geração. Produza artefato conciso.",
+            role="decomp",
+            weight=0.85,
         )
-    elif any(kw in p for kw in _KW_FIX):
+    elif re.search(_KW_FIX, p):
         board.post_draft(
-            source  = "decomposer",
-            content = "corrigir:causa+fix.",
-            role    = "decomp",
-            weight  = 0.85,
+            source="decomposer",
+            content="Tarefa: correção. Identifique a causa e forneça o fix.",
+            role="decomp",
+            weight=0.85,
         )
-    elif any(kw in p for kw in _KW_LIST):
+    elif re.search(_KW_LIST, p):
         board.post_draft(
-            source  = "decomposer",
-            content = "lista numerada.",
-            role    = "format",
-            weight  = 0.8,
+            source="decomposer",
+            content="Formato esperado: lista numerada, itens curtos.",
+            role="format",
+            weight=0.80,
         )
 
-    # Escopo de arquivo (se --file fornecido)
     if context.get("context_file"):
         board.post_draft(
-            source  = "decomposer",
-            content = f"file:{context['context_file']}",
-            role    = "angle",
-            weight  = 0.9,
+            source="decomposer",
+            content=f"Arquivo alvo: {context['context_file']}",
+            role="angle",
+            weight=0.9,
         )
 
 
-def _read_file_safe(path: str, max_chars: int = 3000) -> str:
-    """Lê um arquivo de texto com limite de caracteres.
-
-    OSL-5.2: Valida path antes de abrir.
-    OSL-3: max_chars evita injetar arquivos gigantes no KV-cache.
-
-    Args:
-        path:      Caminho do arquivo.
-        max_chars: Limite de caracteres a incluir no contexto.
-
-    Returns:
-        Conteúdo do arquivo (truncado se necessário) ou string vazia se falhar.
-    """
+def _read_file_safe(path: str, bridge_active_window: int = 512) -> str:
+    """Lê um arquivo e aplica Redução Cognitiva para poupar o LLM."""
     if not path:
         return ""
+
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            content = fh.read(max_chars)
-        if len(content) == max_chars:
-            content += "\n[... arquivo truncado para caber no contexto ...]"
-        return content
-    except OSError:
+        from pathlib import Path
+        file_path = Path(path)
+        
+        # Lê um bom pedaço do arquivo (até 10KB) para análise
+        with file_path.open("r", encoding="utf-8", errors="replace") as fh:
+            raw_content = fh.read(10240) 
+        
+        # Calcula quantos caracteres podemos gastar (aprox 3 chars = 1 token)
+        max_chars = max(300, (bridge_active_window - 150) * 3)
+        
+        # Pede pro Redutor mastigar o código e devolver só o esqueleto
+        from engine.core.blackboard import CognitiveReducer
+        skeletal_code = CognitiveReducer.reduce_file(file_path.name, raw_content, max_chars=max_chars)
+        
+        return skeletal_code
+
+    except OSError as exc:
+        emit_forensic_log(exc, "_read_file_safe")
         return ""
