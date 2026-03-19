@@ -160,3 +160,39 @@ def test_orn_think_drawer_only_without_snippet_fails_fast(monkeypatch) -> None:
 
     assert result.exit_code != 0
     assert "Nenhum snippet compatível no drawer" in result.output
+
+
+def test_orn_think_search_code_only_uses_lower_default_tokens(monkeypatch) -> None:
+    import engine.tools.server_client as server_client_mod
+    import engine.core.executive as executive_mod
+
+    class _FakeExecutive:
+        captured_context = None
+
+        def process_goal(self, intent, payload, context):
+            _FakeExecutive.captured_context = context
+
+            class _Result:
+                success = True
+                output = "ok"
+                errors = []
+                metadata = {"elapsed_s": 0.01}
+
+            return _Result()
+
+        def shutdown(self):
+            return None
+
+    monkeypatch.setattr(server_client_mod, "is_server_online", lambda: False)
+    monkeypatch.setattr(executive_mod, "SiCDoxExecutive", _FakeExecutive)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["think", "buffer python", "--search-code-only", "--direct"],
+    )
+
+    assert result.exit_code == 0
+    assert _FakeExecutive.captured_context is not None
+    assert _FakeExecutive.captured_context["max_tokens"] == 96
+    assert _FakeExecutive.captured_context["search_code_only"] is True

@@ -380,15 +380,22 @@ _KW_EXPLAIN = r"\b(explique|explica|o que é|como funciona|define)\b"
 _KW_GENERATE = r"\b(crie|escreva|gere|implemente|faça|cria)\b"
 _KW_FIX = r"\b(corrija|conserte|bug|erro|fix)\b"
 _KW_LIST = r"\b(liste|quais são|enumere|mostre)\b"
+_KW_CODE_CONTEXT = (
+    r"\b(python|py|c\+\+|cpp|java|javascript|typescript|rust|go|script|código|codigo)\b"
+)
 
 
 def _decompose_query(board: Any, prompt: str, context: dict) -> None:
     """Popula a lousa com rascunhos de raciocínio baseados em Regex (OSL-5)."""
     p = prompt.lower()
+    has_code_context = bool(re.search(_KW_CODE_CONTEXT, p))
+    wants_explanation = bool(re.search(_KW_EXPLAIN, p))
+    wants_generation = bool(re.search(_KW_GENERATE, p))
+    has_code_block_ctx = "[code-begin]" in p or bool(context.get("search_code_only"))
 
     board.post_draft(
         source="decomposer",
-        content="Responda em português, de forma concisa e direta.",
+        content="Responda em português, objetivo, e sem repetir contexto bruto.",
         role="constraint",
         weight=1.0,
     )
@@ -403,14 +410,21 @@ def _decompose_query(board: Any, prompt: str, context: dict) -> None:
             )
             break
 
-    if re.search(_KW_EXPLAIN, p):
+    if wants_explanation:
         board.post_draft(
             source="decomposer",
             content="Tarefa: explicação. Priorize clareza sobre completude.",
             role="decomp",
             weight=0.85,
         )
-    elif re.search(_KW_GENERATE, p):
+        if has_code_context:
+            board.post_draft(
+                source="decomposer",
+                content="Inclua um exemplo mínimo em código além da explicação.",
+                role="format",
+                weight=0.83,
+            )
+    elif wants_generation:
         board.post_draft(
             source="decomposer",
             content="Tarefa: geração. Produza artefato conciso.",
@@ -430,6 +444,21 @@ def _decompose_query(board: Any, prompt: str, context: dict) -> None:
             content="Formato esperado: lista numerada, itens curtos.",
             role="format",
             weight=0.80,
+        )
+    elif has_code_context:
+        board.post_draft(
+            source="decomposer",
+            content="Tarefa: geração de código prático e curto.",
+            role="decomp",
+            weight=0.84,
+        )
+
+    if has_code_block_ctx and (has_code_context or wants_generation):
+        board.post_draft(
+            source="decomposer",
+            content="Formato: entregue primeiro um bloco de código útil e curto, sem prefácios longos.",
+            role="format",
+            weight=0.88,
         )
 
     if context.get("context_file"):

@@ -143,7 +143,11 @@ def think(prompt: tuple[str, ...], context_file: str | None,
 
     telemetry_enabled = telemetry or (os.environ.get("ORN_TELEMETRY", "") == "1")
     question = " ".join(prompt).strip()
-    max_tokens = tokens or 128
+    if tokens is not None:
+        max_tokens = tokens
+    else:
+        # Busca focada em código tende a precisar menos verbosidade.
+        max_tokens = 96 if search_code_only else 128
 
     context_blocks: list[str] = []
     drawer_snippet = None
@@ -335,6 +339,7 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                 context={
                     "context_file": None,
                     "max_tokens": max_tokens,
+                    "search_code_only": search_code_only,
                     "use_server": False,
                 },
             )
