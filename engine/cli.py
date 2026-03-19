@@ -229,6 +229,14 @@ def think(prompt: tuple[str, ...], context_file: str | None,
                         )
                         if saved_n:
                             Display.info(f"[DRAWER] {saved_n} snippet(s) salvos no repertório.")
+
+                        if search_code_only and drawer_snippet is None:
+                            drawer_snippet = CodeDrawer().assemble(
+                                name=guessed_name,
+                                lang=guessed_lang,
+                                inputs=[],
+                                outputs=[],
+                            )
                     except Exception as _ds:
                         Display.warn(f"[DRAWER] Falha ao salvar snippet: {_ds}")
 
@@ -268,6 +276,17 @@ def think(prompt: tuple[str, ...], context_file: str | None,
             "Nenhum snippet compatível no drawer para --drawer-only. "
             "Use --drawer-first com snippet salvo, ou rode sem --drawer-only."
         )
+
+    if search_code_only and drawer_snippet is not None and tokens is None:
+        # Fast-path: evita inferência quando já temos snippet local confiável.
+        Display.banner()
+        Display.section("SEARCH-CODE-ONLY FAST-PATH", f"{drawer_snippet.name} [{drawer_snippet.lang}]")
+        if raw:
+            print(drawer_snippet.code)
+        else:
+            Display.code_block(drawer_snippet.code)
+        Display.info("Tempo: ~0s  [search-code-only fast-path]")
+        return
 
     Display.banner()
     Display.thinking(question)

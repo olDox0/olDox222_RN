@@ -196,3 +196,56 @@ def test_orn_think_search_code_only_uses_lower_default_tokens(monkeypatch) -> No
     assert _FakeExecutive.captured_context is not None
     assert _FakeExecutive.captured_context["max_tokens"] == 96
     assert _FakeExecutive.captured_context["search_code_only"] is True
+
+
+def test_orn_think_search_code_only_fast_path_uses_drawer_snippet(monkeypatch) -> None:
+    import engine.tools.server_client as server_client_mod
+    import engine.tools.crawler as crawler_mod
+    import engine.tools.code_drawer as code_drawer_mod
+    import engine.core.executive as executive_mod
+
+    class _FakeCrawlerResult:
+        ok = True
+        source = "local"
+        title = "Z-buffer"
+        context = "[CODE-BEGIN]\ndef z_buffer(items):\n    return list(items)\n[CODE-END]"
+
+        def to_prompt_block(self):
+            return "[CTX-BEGIN]\n[CODE-BEGIN]\ndef z_buffer(items):\n    return list(items)\n[CODE-END]\n[CTX-END]"
+
+    class _FakeCrawler:
+        def search(self, *args, **kwargs):
+            return _FakeCrawlerResult()
+
+    class _FakeDrawer:
+        def save_from_context(self, **kwargs):
+            return 1
+
+        def assemble(self, **kwargs):
+            class _Sn:
+                name = "z_buffer"
+                lang = "python"
+                code = "def z_buffer(items):\n    return list(items)\n"
+            return _Sn()
+
+    class _FailExecutive:
+        def process_goal(self, *args, **kwargs):
+            raise AssertionError("Fast-path deveria evitar inferência no Executive.")
+
+        def shutdown(self):
+            return None
+
+    monkeypatch.setattr(server_client_mod, "is_server_online", lambda: False)
+    monkeypatch.setattr(crawler_mod, "OrnCrawler", _FakeCrawler)
+    monkeypatch.setattr(code_drawer_mod, "CodeDrawer", _FakeDrawer)
+    monkeypatch.setattr(executive_mod, "SiCDoxExecutive", _FailExecutive)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["think", "buffer python", "--search", "local:buffer python", "--search-code-only"],
+    )
+
+    assert result.exit_code == 0
+    assert "SEARCH-CODE-ONLY FAST-PATH" in result.output
+    assert "def z_buffer" in result.output
