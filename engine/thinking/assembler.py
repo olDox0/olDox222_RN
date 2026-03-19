@@ -1,35 +1,28 @@
 # -*- coding: utf-8 -*-
 """
 ORN — Code Assembler (Dédalo)
-Montador de códigos complexos por meio de Cosmo Visão I/O.
-OSL-18: Apenas Standard Library.
-"""
-import ast
+Montador de código por Cosmo Visão I/O com heurísticas de baixo custo.
 
-class CodeAssembler:
-    def __init__(self, bridge, validator):
-        self._bridge = bridge
-        self._validator = validator
-
-    def assemble_system(self, intent_prompt: str) -> str:
-        """Gera um sistema complexo dividindo-o em I/O e micro-geração."""
-        
-        # 1. Cosmo Visão: Pedir apenas o esqueleto e os contratos # -*- coding: utf-8 -*-
-# engine/thinking/assembler.py
-"""
-ORN — Code Assembler (Dédalo)
-Montador de códigos complexos por meio de Cosmo Visão I/O.
-
-OSL-18: Standard Library (usa ast.unparse nativo do Python 3.9+).
-God: Dédalo — o arquiteto do labirinto, constrói por partes.
+Objetivo: reduzir inferência de modelos pequenos priorizando contratos de
+entrada/saída (I/O), com prompts curtos e recuperação determinística.
 """
 
 from __future__ import annotations
+
 import ast
+import re
 from typing import Any
 
+
 class CodeAssembler:
-    """Orquestra a geração de código em fases (Esqueleto -> Validação -> Implementação)."""
+    """Orquestra geração estrutural em fases de baixo custo.
+
+    Fluxo:
+      1) Extrai pistas de I/O do intent (heurística local, sem inferência).
+      2) Solicita ao LLM somente um esqueleto Python com type hints.
+      3) Valida sintaxe e aplica até 2 reparos curtos.
+      4) Se falhar, retorna fallback determinístico mínimo.
+    """
 
     def __init__(self, bridge: Any, validator: Any):
         self._bridge = bridge
@@ -37,65 +30,117 @@ class CodeAssembler:
 
     def assemble(self, intent_prompt: str) -> dict[str, Any]:
         """Executa a Cosmo Visão I/O para gerar código estruturado."""
-        
-        # FASE 1: Cosmo Visão (Esqueleto e Contratos I/O)
-        skeleton_prompt = (
-            f"Atue como um Arquiteto de Software Sênior.\n"
-            f"Crie APENAS as assinaturas de classes e funções em Python para resolver o seguinte problema: {intent_prompt}\n"
-            f"REGRAS OBRIGATÓRIAS:\n"
-            f"1. Use type hints rigorosos (Input/Output).\n"
-            f"2. Use 'pass' no corpo de todas as funções.\n"
-            f"3. Não escreva a lógica agora, apenas a estrutura."
-        )
-        
-        # Pedimos ao Hefesto (LLM) o esqueleto. Usamos max_tokens baixo para ser rápido.
-        raw_skeleton = self._bridge.ask(skeleton_prompt, max_tokens=256)
+        io_hint = self._extract_io_hint(intent_prompt)
+        skeleton_prompt = self._build_skeleton_prompt(intent_prompt, io_hint)
+
+        raw_skeleton = self._bridge.ask(skeleton_prompt, max_tokens=220)
         clean_skeleton = self._extract_code_block(raw_skeleton)
 
-        # FASE 2: Validação e Correção de Erro (O Crivo)
         tree, error = self._validate_and_parse(clean_skeleton)
-        
-        # Se o modelo alucinou na sintaxe, entramos no loop de correção rápida
         retries = 0
         while tree is None and retries < 2:
             rescue_prompt = (
-                f"O código gerou um erro de sintaxe: {error}\n"
-                f"Corrija APENAS a sintaxe do código abaixo:\n```python\n{clean_skeleton}\n```"
+                "Corrija APENAS a sintaxe Python do código abaixo. "
+                "Não adicione explicações.\n"
+                f"```python\n{clean_skeleton}\n```"
             )
-            raw_skeleton = self._bridge.ask(rescue_prompt, max_tokens=256)
+            raw_skeleton = self._bridge.ask(rescue_prompt, max_tokens=180)
             clean_skeleton = self._extract_code_block(raw_skeleton)
             tree, error = self._validate_and_parse(clean_skeleton)
             retries += 1
 
         if tree is None:
+            fallback = self._deterministic_fallback(io_hint)
             return {
-                "success": False, 
-                "output": clean_skeleton, 
-                "error": f"Falha de sintaxe irreparável após {retries} tentativas: {error}"
+                "success": False,
+                "output": fallback,
+                "error": f"Falha sintática após {retries} tentativas: {error}",
+                "strategy": "fallback",
             }
 
-        # O Esqueleto é válido! Usamos ast.unparse para formatá-padrão (Python 3.9+)
-        formatted_skeleton = ast.unparse(tree)
+        formatted = ast.unparse(tree)
+        ok, reason = self._validator.validar_output(formatted, lang="python")
+        if not ok:
+            fallback = self._deterministic_fallback(io_hint)
+            return {
+                "success": False,
+                "output": fallback,
+                "error": f"Validação rejeitou saída: {reason}",
+                "strategy": "fallback",
+            }
 
-        # Retornamos o esqueleto validado (No futuro, a Fase 3 expande os 'pass' aqui)
         return {
             "success": True,
-            "output": formatted_skeleton,
-            "error": None
+            "output": formatted,
+            "error": None,
+            "strategy": "io_heuristic",
+            "io_hint": io_hint,
         }
 
+    def assemble_system(self, intent_prompt: str) -> str:
+        """Compat: retorna apenas texto final para chamadas antigas."""
+        result = self.assemble(intent_prompt)
+        return result["output"]
+
+    def _build_skeleton_prompt(self, intent_prompt: str, io_hint: str) -> str:
+        return (
+            "Você é um arquiteto de software focado em I/O.\n"
+            "Gere SOMENTE código Python com contratos claros de entrada e saída.\n"
+            "Regras: type hints obrigatórios, docstring curta, corpo com pass.\n"
+            "Sem explicação, sem markdown fora de bloco de código.\n"
+            f"Pistas de I/O detectadas: {io_hint}\n"
+            f"Problema: {intent_prompt}"
+        )
+
+    def _extract_io_hint(self, intent_prompt: str) -> str:
+        """Extrai pistas de I/O via heurística textual barata.
+
+        Não tenta entender tudo; apenas reduz ambiguidade para o LLM.
+        """
+        text = intent_prompt.lower()
+        in_hints: list[str] = []
+        out_hints: list[str] = []
+
+        if re.search(r"\b(json|yaml|csv|arquivo|file)\b", text):
+            in_hints.append("input_document")
+        if re.search(r"\b(api|http|request|endpoint)\b", text):
+            in_hints.append("remote_payload")
+        if re.search(r"\b(stream|fila|queue|evento)\b", text):
+            in_hints.append("event_stream")
+
+        if re.search(r"\b(relat[oó]rio|summary|resumo)\b", text):
+            out_hints.append("report_text")
+        if re.search(r"\b(c[oó]digo|code|script)\b", text):
+            out_hints.append("code_artifact")
+        if re.search(r"\b(log|telemetria|m[ée]trica)\b", text):
+            out_hints.append("observability")
+
+        if not in_hints:
+            in_hints.append("generic_input")
+        if not out_hints:
+            out_hints.append("generic_output")
+
+        return f"IN={','.join(in_hints)}; OUT={','.join(out_hints)}"
+
     def _extract_code_block(self, text: str) -> str:
-        """Limpa a resposta do LLM, extraindo apenas o bloco de código."""
+        """Extrai bloco de código de resposta LLM."""
         if "```python" in text:
-            return text.split("```python")[1].split("```")[0].strip()
-        elif "```" in text:
-            return text.split("```")[1].split("```")[0].strip()
+            return text.split("```python", 1)[1].split("```", 1)[0].strip()
+        if "```" in text:
+            return text.split("```", 1)[1].split("```", 1)[0].strip()
         return text.strip()
 
     def _validate_and_parse(self, code: str) -> tuple[ast.AST | None, str | None]:
-        """Tenta compilar a árvore sintática (AST). Retorna erro se falhar."""
         try:
-            tree = ast.parse(code)
-            return tree, None
-        except SyntaxError as e:
-            return None, f"Linha {e.lineno}: {e.msg}"
+            return ast.parse(code), None
+        except SyntaxError as exc:
+            return None, f"Linha {exc.lineno}: {exc.msg}"
+
+    def _deterministic_fallback(self, io_hint: str) -> str:
+        """Fallback estável para não bloquear o fluxo da CLI."""
+        return (
+            "from typing import Any\n\n"
+            "def assemble_io_contract(payload: Any) -> dict[str, Any]:\n"
+            f"    \"\"\"Fallback determinístico. {io_hint}\"\"\"\n"
+            "    pass\n"
+        )
