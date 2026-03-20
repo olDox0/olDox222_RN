@@ -70,6 +70,20 @@ def _guess_function_name(prompt: str) -> str | None:
     return None
 
 
+def _is_probably_python_snippet(code: str) -> bool:
+    txt = (code or "").strip().lower()
+    if not txt:
+        return False
+    strong_signals = ("def ", "class ", "import ", "from ", "return ", "lambda ")
+    if any(sig in txt for sig in strong_signals):
+        return True
+    # Evita fast-path em pseudoalgoritmo textual.
+    pseudo_signals = ("algoritmo", "início", "inicio", "fim", "lista of", "para cada")
+    if any(sig in txt for sig in pseudo_signals):
+        return False
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Grupo raiz
 # ---------------------------------------------------------------------------
@@ -277,7 +291,12 @@ def think(prompt: tuple[str, ...], context_file: str | None,
             "Use --drawer-first com snippet salvo, ou rode sem --drawer-only."
         )
 
-    if search_code_only and drawer_snippet is not None and tokens is None:
+    if (
+        search_code_only
+        and drawer_snippet is not None
+        and tokens is None
+        and _is_probably_python_snippet(getattr(drawer_snippet, "code", ""))
+    ):
         # Fast-path: evita inferência quando já temos snippet local confiável.
         Display.banner()
         Display.section("SEARCH-CODE-ONLY FAST-PATH", f"{drawer_snippet.name} [{drawer_snippet.lang}]")

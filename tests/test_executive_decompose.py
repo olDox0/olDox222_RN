@@ -6,7 +6,11 @@ sys.modules.setdefault(
     types.SimpleNamespace(emit_forensic_log=lambda *args, **kwargs: None),
 )
 
-from engine.core.executive import _decompose_query
+from engine.core.executive import (
+    _decompose_query,
+    _looks_degenerate_think_output,
+    _deterministic_code_answer,
+)
 
 
 class _Board:
@@ -42,3 +46,10 @@ def test_decompose_adds_format_hint_when_search_code_only_context_present():
 
     texts = _contents(board)
     assert any("entregue primeiro um bloco de código útil e curto" in t for t in texts)
+
+
+def test_degenerate_output_detection_and_deterministic_softmax_answer():
+    assert _looks_degenerate_think_output("buffer python", "[TASK]\nbuffer python") is True
+    answer = _deterministic_code_answer("faça softmax python")
+    assert "def softmax" in answer
+    assert "math.exp" in answer

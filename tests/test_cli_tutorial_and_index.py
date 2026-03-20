@@ -249,3 +249,66 @@ def test_orn_think_search_code_only_fast_path_uses_drawer_snippet(monkeypatch) -
     assert result.exit_code == 0
     assert "SEARCH-CODE-ONLY FAST-PATH" in result.output
     assert "def z_buffer" in result.output
+
+
+def test_orn_think_search_code_only_skips_fast_path_for_pseudocode(monkeypatch) -> None:
+    import engine.tools.server_client as server_client_mod
+    import engine.tools.crawler as crawler_mod
+    import engine.tools.code_drawer as code_drawer_mod
+    import engine.core.executive as executive_mod
+
+    class _FakeCrawlerResult:
+        ok = True
+        source = "local"
+        title = "Z-buffer"
+        context = "[CODE-BEGIN]\nAlgoritmo Z-Buffer\nInício\nfim\n[CODE-END]"
+
+        def to_prompt_block(self):
+            return "[CTX-BEGIN]\n[CODE-BEGIN]\nAlgoritmo Z-Buffer\nInício\nfim\n[CODE-END]\n[CTX-END]"
+
+    class _FakeCrawler:
+        def search(self, *args, **kwargs):
+            return _FakeCrawlerResult()
+
+    class _FakeDrawer:
+        def save_from_context(self, **kwargs):
+            return 1
+
+        def assemble(self, **kwargs):
+            class _Sn:
+                name = "buffer"
+                lang = "python"
+                code = "Algoritmo Z-Buffer\nInício\nfim\n"
+            return _Sn()
+
+    class _FakeExecutive:
+        called = False
+
+        def process_goal(self, *args, **kwargs):
+            _FakeExecutive.called = True
+
+            class _Result:
+                success = True
+                output = "ok"
+                errors = []
+                metadata = {"elapsed_s": 0.01}
+
+            return _Result()
+
+        def shutdown(self):
+            return None
+
+    monkeypatch.setattr(server_client_mod, "is_server_online", lambda: False)
+    monkeypatch.setattr(crawler_mod, "OrnCrawler", _FakeCrawler)
+    monkeypatch.setattr(code_drawer_mod, "CodeDrawer", _FakeDrawer)
+    monkeypatch.setattr(executive_mod, "SiCDoxExecutive", _FakeExecutive)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["think", "buffer python", "--search", "local:buffer python", "--search-code-only"],
+    )
+
+    assert result.exit_code == 0
+    assert "SEARCH-CODE-ONLY FAST-PATH" not in result.output
+    assert _FakeExecutive.called is True
