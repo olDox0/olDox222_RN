@@ -26,7 +26,6 @@ import sys
 import json
 import time
 import re
-import ast
 import subprocess
 import click
 
@@ -530,29 +529,8 @@ def _collect_python_files(target: Path) -> list[Path]:
 
 
 def _lint_python_text(text: str) -> list[str]:
-    issues: list[str] = []
-    for ln, raw in enumerate(text.splitlines(), start=1):
-        if "\t" in raw:
-            issues.append(f"L{ln}: evitar TAB; use espaços.")
-        if raw.rstrip() != raw:
-            issues.append(f"L{ln}: trailing whitespace.")
-        if len(raw) > 120:
-            issues.append(f"L{ln}: linha acima de 120 chars ({len(raw)}).")
-
-    try:
-        tree = ast.parse(text)
-    except SyntaxError as exc:
-        issues.append(f"L{exc.lineno}: SyntaxError: {exc.msg}")
-        return issues
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ExceptHandler) and node.type is None:
-            issues.append(f"L{node.lineno}: bare except detectado.")
-        if isinstance(node, ast.ImportFrom) and any(n.name == "*" for n in node.names):
-            issues.append(f"L{node.lineno}: import * não permitido.")
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"eval", "exec"}:
-            issues.append(f"L{node.lineno}: uso de {node.func.id} não permitido.")
-    return issues
+    from engine.tools.code_sandbox import lint_python_text  # noqa: PLC0415
+    return lint_python_text(text)
 
 
 @cli.command("diagnose")

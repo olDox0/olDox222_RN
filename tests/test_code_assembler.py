@@ -1,4 +1,5 @@
 from engine.thinking.assembler import CodeAssembler
+from pathlib import Path
 
 
 class _BridgeOK:
@@ -48,6 +49,7 @@ def test_assemble_uses_io_heuristics_and_succeeds():
     assert "IN=input_document,remote_payload" in result["io_hint"]
     assert "OUT=report_text,code_artifact,observability" in result["io_hint"]
     assert "class Pipeline" in result["output"]
+    assert Path(result["staged_path"]).exists()
 
 
 def test_assemble_retries_syntax_fix_and_recovers():
@@ -69,3 +71,24 @@ def test_assemble_fallback_when_syntax_never_recovers():
     assert result["success"] is False
     assert result["strategy"] == "fallback"
     assert "assemble_io_contract" in result["output"]
+
+
+def test_assemble_refines_when_diagnostic_finds_issue():
+    class _BridgeRefine:
+        def __init__(self):
+            self.calls = 0
+
+        def ask(self, prompt: str, max_tokens: int = 0) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                return "```python\ndef sample(a: int) -> int:\n    try:\n        return a\n    except:\n        return a\n```"
+            return "```python\ndef sample(a: int) -> int:\n    return a\n```"
+
+    bridge = _BridgeRefine()
+    assembler = CodeAssembler(bridge=bridge, validator=_Validator())
+    result = assembler.assemble("criar função python")
+
+    assert result["success"] is True
+    assert bridge.calls == 2
+    assert result["diagnostic_issues"]
+    assert "return a" in result["output"]

@@ -13,6 +13,7 @@ import ast
 import re
 from typing import Any
 
+from engine.tools.code_sandbox import diagnose_python_file, stage_code
 
 class CodeAssembler:
     """Orquestra geração estrutural em fases de baixo custo.
@@ -69,12 +70,20 @@ class CodeAssembler:
                 "strategy": "fallback",
             }
 
+        staged_path = stage_code(formatted, stem="assembler")
+        diag_issues = diagnose_python_file(staged_path)
+        if diag_issues:
+            formatted = self._refine_with_diagnostics(formatted, diag_issues)
+            staged_path = stage_code(formatted, stem="assembler_refined")
+
         return {
             "success": True,
             "output": formatted,
             "error": None,
             "strategy": "io_heuristic",
             "io_hint": io_hint,
+            "staged_path": str(staged_path),
+            "diagnostic_issues": diag_issues[:8],
         }
 
     def assemble_system(self, intent_prompt: str) -> str:
@@ -144,3 +153,20 @@ class CodeAssembler:
             f"    \"\"\"Fallback determinístico. {io_hint}\"\"\"\n"
             "    pass\n"
         )
+
+    def _refine_with_diagnostics(self, code: str, issues: list[str]) -> str:
+        """Envia código estagiado + diagnóstico para melhoria rápida pelo LLM."""
+        fix_prompt = (
+            "Corrija APENAS os problemas listados no código Python.\n"
+            "Mantenha assinatura e intenção original. Responda só com código.\n"
+            f"Problemas:\n- " + "\n- ".join(issues[:6]) + "\n"
+            f"```python\n{code}\n```"
+        )
+        raw = self._bridge.ask(fix_prompt, max_tokens=220)
+        candidate = self._extract_code_block(raw)
+        tree, _ = self._validate_and_parse(candidate)
+        if tree is None:
+            return code
+        fixed = ast.unparse(tree)
+        ok, _ = self._validator.validar_output(fixed, lang="python")
+        return fixed if ok else code
