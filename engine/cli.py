@@ -26,6 +26,8 @@ import sys
 import json
 import time
 import re
+import ast
+import subprocess
 import click
 
 from pathlib import Path
@@ -519,6 +521,84 @@ def _show_config() -> None:
     else:
         for issue in issues:
             Display.warn(issue)
+
+
+def _collect_python_files(target: Path) -> list[Path]:
+    if target.is_file():
+        return [target] if target.suffix.lower() == ".py" else []
+    return sorted(p for p in target.rglob("*.py") if p.is_file())
+
+
+def _lint_python_text(text: str) -> list[str]:
+    issues: list[str] = []
+    for ln, raw in enumerate(text.splitlines(), start=1):
+        if "\t" in raw:
+            issues.append(f"L{ln}: evitar TAB; use espaços.")
+        if raw.rstrip() != raw:
+            issues.append(f"L{ln}: trailing whitespace.")
+        if len(raw) > 120:
+            issues.append(f"L{ln}: linha acima de 120 chars ({len(raw)}).")
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        issues.append(f"L{exc.lineno}: SyntaxError: {exc.msg}")
+        return issues
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.type is None:
+            issues.append(f"L{node.lineno}: bare except detectado.")
+        if isinstance(node, ast.ImportFrom) and any(n.name == "*" for n in node.names):
+            issues.append(f"L{node.lineno}: import * não permitido.")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"eval", "exec"}:
+            issues.append(f"L{node.lineno}: uso de {node.func.id} não permitido.")
+    return issues
+
+
+@cli.command("diagnose")
+@click.argument("target", type=click.Path(exists=True), default=".")
+@click.option("--run", "run_script", is_flag=True, default=False, help="Executa script em modo isolado (-I).")
+@click.option("--timeout", type=int, default=8, help="Timeout de execução do script em segundos.")
+def diagnose(target: str, run_script: bool, timeout: int) -> None:
+    """Diagnóstico local (stdlib): sintaxe + linter básico + execução isolada opcional."""
+    target_path = Path(target)
+    files = _collect_python_files(target_path)
+    if not files:
+        raise click.ClickException("Nenhum arquivo .py encontrado no alvo.")
+
+    total_issues = 0
+    for file_path in files:
+        text = file_path.read_text(encoding="utf-8", errors="replace")
+        issues = _lint_python_text(text)
+        if issues:
+            total_issues += len(issues)
+            Display.warn(f"[DIAG] {file_path} -> {len(issues)} issue(s)")
+            for item in issues[:8]:
+                Display.info(f"  - {item}")
+
+    run_fail = False
+    if run_script and target_path.is_file() and target_path.suffix.lower() == ".py":
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-I", str(target_path)],
+                capture_output=True,
+                text=True,
+                timeout=max(1, timeout),
+            )
+            if proc.returncode != 0:
+                run_fail = True
+                Display.warn(f"[RUN] retorno={proc.returncode}")
+                if proc.stderr.strip():
+                    Display.info(proc.stderr.strip().splitlines()[-1])
+        except subprocess.TimeoutExpired:
+            run_fail = True
+            Display.warn("[RUN] timeout expirado.")
+
+    if total_issues == 0 and not run_fail:
+        Display.success("Diagnóstico OK: sem issues detectadas.")
+        return
+
+    raise SystemExit(1)
 
 
 

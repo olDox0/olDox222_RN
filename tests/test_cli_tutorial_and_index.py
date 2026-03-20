@@ -312,3 +312,25 @@ def test_orn_think_search_code_only_skips_fast_path_for_pseudocode(monkeypatch) 
     assert result.exit_code == 0
     assert "SEARCH-CODE-ONLY FAST-PATH" not in result.output
     assert _FakeExecutive.called is True
+
+
+def test_orn_diagnose_passes_on_clean_file(tmp_path) -> None:
+    script = tmp_path / "ok.py"
+    script.write_text("def add(a: int, b: int) -> int:\n    return a + b\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["diagnose", str(script), "--run"])
+
+    assert result.exit_code == 0
+    assert "Diagnóstico OK" in result.output
+
+
+def test_orn_diagnose_fails_on_bare_except(tmp_path) -> None:
+    script = tmp_path / "bad.py"
+    script.write_text("try:\n    x = 1\nexcept:\n    x = 2\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["diagnose", str(script)])
+
+    assert result.exit_code != 0
+    assert "bare except detectado" in result.output
