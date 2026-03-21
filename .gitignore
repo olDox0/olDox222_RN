@@ -22,6 +22,7 @@ chief_dossier.json
 doxoade_report.json
 Exemplo/
 tmp/
+.orn/
 .dox_agent_workspace/
 .dox_lab/
 tests/
@@ -49,6 +50,7 @@ pytest_temp_dir/
 .doxoade/vulcan/foundry/
 data/
 telemetry/
+test1.py
 
 # --- Arquivos de Configuração de IDE ---
 .vscode/

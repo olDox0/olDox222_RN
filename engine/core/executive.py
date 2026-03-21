@@ -35,6 +35,8 @@ from typing import Any
 
 from engine.telemetry.forensic import emit_forensic_log
 
+from engine.thinking.code_hook import apply_code_hook     # Argos
+from engine.thinking.drawer_router import DrawerRouter
 
 # ---------------------------------------------------------------------------
 # Tipos de contrato (OSL-7)
@@ -212,8 +214,30 @@ class SiCDoxExecutive:
 
             synthesis = board.build_synthesis_block(compact=True)
 
+            # Limita system_hint: cada token de prompt custa igual a
+            # um token gerado no N2808 — evita prefill caro.
+            if synthesis and len(synthesis) > 240:
+                synthesis = synthesis[:240].rsplit(" ", 1)[0] + " […]"
+
             token_hint = 64
-            max_tokens = context.get("max_tokens")
+            max_tokens = context.get("max_tokens") or _adaptive_max_tokens(prompt)
+
+            # ── DrawerRouter: tenta código pré-pronto (Hermes) ────────
+            # Se o DrawerRouter encontrar e validar um snippet no CodeDrawer,
+            # ele injeta o código na lousa como evidência de peso 1.0 e retorna
+            # max_tokens_hint=64. O bridge.ask() subsequente só escreve a
+            # explicação — não regenera o código do zero.
+            route = self._get_drawer_router().route(
+                prompt,
+                board=board,
+            )
+            if route.hit:
+                # Código já na lousa → LLM só explica
+                max_tokens = route.max_tokens_hint or 64
+                # Reconstrói synthesis com o código injetado
+                synthesis = board.build_synthesis_block(compact=True)
+                if synthesis and len(synthesis) > 240:
+                    synthesis = synthesis[:240].rsplit(" ", 1)[0] + " […]"
 
             result = self._infer_queue.submit(
                 prompt=prompt,
@@ -229,6 +253,16 @@ class SiCDoxExecutive:
 
             if _looks_degenerate_think_output(prompt, output):
                 output = _deterministic_code_answer(prompt)
+
+            # ── Hook: diagnostica código no output e corrige se necessário ──
+            output = apply_code_hook(
+                output,
+                task=prompt,
+                bridge=_bridge,
+                validator=validator,
+                max_retries=1,        # 1 fix attempt dentro do think (rápido)
+                run_isolated=True,    # executa python -I para validar
+            )
 
             valid, motivo = validator.validar_output(output)
             if not valid:
@@ -356,6 +390,11 @@ class SiCDoxExecutive:
             from engine.thinking.assembler import CodeAssembler  # noqa: PLC0415
             self._assembler = CodeAssembler(self._get_bridge(), self._get_validator())
         return self._assembler
+
+    def _get_drawer_router(self) -> DrawerRouter:
+        if not hasattr(self, "_drawer_router") or self._drawer_router is None:
+            self._drawer_router = DrawerRouter(max_fix_attempts=1)
+        return self._drawer_router
 
     def _get_memory(self) -> Any:
         if self._memory is None:
@@ -513,6 +552,18 @@ def _looks_degenerate_think_output(prompt: str, output: str) -> bool:
         return True
     if "não tenho acesso a um contexto específico" in out:
         return True
+    # Modelo recusou a tarefa (prompt system contradiz a query)
+    _REFUSALS = (
+        "não tenho capacidade de produzir",
+        "não posso fornecer um bloco",
+        "como assistente de ia, não",
+        "desculpe, mas não posso",
+    )
+    if any(r in out for r in _REFUSALS):
+        return True
+    # Saudação — modelo perdeu o contexto da task
+    if out.startswith(("olá", "olá!", "oi!", "hello", "hi!")):
+        return True
     return False
 
 
@@ -547,3 +598,33 @@ def _deterministic_code_answer(prompt: str) -> str:
         "    \"\"\"Fallback determinístico para resposta degenerada do modelo.\"\"\"\n"
         "    return data\n"
     )
+
+_KW_CODE_GEN = re.compile(
+    r"\b(faça|crie|escreva|gere|implemente|cria|make|write|implement|create)\b",
+    re.IGNORECASE,
+)
+_KW_LANG = re.compile(
+    r"\b(python|py|c\+\+|cpp|javascript|typescript|rust|go|java|batch|script)\b",
+    re.IGNORECASE,
+)
+
+
+def _adaptive_max_tokens(prompt: str) -> int:
+    """Retorna limite de tokens adequado para o tipo de resposta esperada.
+
+    Regra simples baseada em regex — zero custo de inferência:
+      - Geração de código  → 192  (precisa de espaço para função completa)
+      - Contexto de código → 128  (pergunta sobre código, resposta média)
+      - Texto puro        →  64  (explicação curta, resposta mais rápida)
+
+    Calibrado para Celeron N2808 @ ~1.4 t/s:
+      64  tokens ≈  46s
+      128 tokens ≈  91s
+      192 tokens ≈ 137s
+    """
+    p = prompt or ""
+    if _KW_CODE_GEN.search(p) and _KW_LANG.search(p):
+        return 192   # geração explícita de código em linguagem específica
+    if _KW_LANG.search(p):
+        return 128   # pergunta sobre código mas sem verbo de geração
+    return 64        # resposta de texto puro

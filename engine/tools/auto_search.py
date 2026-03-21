@@ -141,8 +141,40 @@ def _parse_response(text: str) -> str | None:
 
     return term
 
+# em auto_search.py — adicionar no _should_auto_search()
+
+_NEVER_SEARCH: frozenset[str] = frozenset({
+    # Algoritmos de ordenação
+    "quicksort", "bubblesort", "mergesort", "heapsort", "insertionsort",
+    "selectionsort", "timsort", "radixsort", "countingsort", "shellsort",
+    # Busca
+    "binary search", "busca binária", "busca linear", "linear search",
+    "bfs", "dfs", "breadth first", "depth first",
+    # Estruturas de dados clássicas
+    "linked list", "lista ligada", "stack", "pilha", "queue", "fila",
+    "hash table", "hash map", "tabela hash", "árvore binária", "binary tree",
+    "heap", "trie", "grafo", "graph",
+    # ML / IA — conceitos fundamentais
+    "softmax", "relu", "sigmoid", "backprop", "backpropagation",
+    "gradient descent", "kv-cache", "attention", "transformer",
+    "embedding", "tokenizer", "loss function",
+    # Python stdlib / sintaxe
+    "recursion", "recursão", "big o", "complexidade", "decorator",
+    "generator", "iterator", "context manager", "list comprehension",
+    "lambda", "closure", "type hint", "dataclass",
+    # Buffer / estruturas de dados Python
+    "deque", "ring buffer", "circular buffer", "buffer",
+})
+
 
 def _should_auto_search(question: str) -> bool:
+    """Decide se vale chamar o modelo para a decisão de busca.
+
+    Ordem de verificação (mais barato primeiro):
+      1. Filtros triviais (vazio, numérico, muito curto)
+      2. Blacklist local — conceitos clássicos nunca precisam de busca
+      3. Aprovado — deixa o modelo decidir (two-pass normal)
+    """
     q = (question or "").strip()
     if not q:
         return False
@@ -152,4 +184,22 @@ def _should_auto_search(question: str) -> bool:
         return False
     if len(q.split()) < 3:
         return False
+
+    # Blacklist local: O(n) em termos pequenos, roda em <0.1ms
+    q_low = q.lower()
+    if any(kw in q_low for kw in _NEVER_SEARCH):
+        return False
+
     return True
+
+#def _should_auto_search(question: str) -> bool:
+#    q = (question or "").strip()
+#    if not q:
+#        return False
+#    if q.isdigit():
+#        return False
+#    if len(q) < 8:
+#        return False
+#    if len(q.split()) < 3:
+#        return False
+#    return True

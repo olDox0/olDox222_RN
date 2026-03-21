@@ -615,8 +615,109 @@ def _read_entry_content(entry) -> Optional[bytes]:
 # ---------------------------------------------------------------------------
 
 class TokenizerBridge:
+    """Tokenizador thread-safe com fast-path via servidor ORN.
+
+    Hierarquia de fallback (mais rápido → mais lento):
+      1. Servidor ORN (socket 127.0.0.1:8371) — modelo já carregado, zero overhead.
+      2. vocab_only local                      — carga ~10s no N2808, só se servidor offline.
+
+    O fast-path elimina os ~120 hits de profiler em local_index.py:642 que
+    apareciam na telemetria toda vez que 'orn think' subia um processo novo.
+    """
+
     _llm_vocab = None
     _lock = Lock()
+
+    # Cache de disponibilidade do servidor: None = não testado ainda,
+    # True = online, False = offline (reavalia após _SERVER_RETRY_S segundos).
+    _server_ok: bool | None = None
+    _server_fail_time: float = 0.0
+    _SERVER_HOST  = "127.0.0.1"
+    _SERVER_PORT  = int(os.environ.get("ORN_SERVER_PORT", "8371"))
+    _SERVER_RETRY_S: float = 30.0   # após falha, tenta de novo em 30s
+
+    # ------------------------------------------------------------------ #
+    # Fast-path: delega ao servidor ORN via socket                        #
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def _server_available(cls) -> bool:
+        """Verifica disponibilidade do servidor com back-off simples."""
+        import socket as _sock
+        import time as _time
+
+        if cls._server_ok is False:
+            if _time.monotonic() - cls._server_fail_time < cls._SERVER_RETRY_S:
+                return False
+
+        try:
+            with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+                s.settimeout(0.3)
+                s.connect((cls._SERVER_HOST, cls._SERVER_PORT))
+            cls._server_ok = True
+            return True
+        except OSError:
+            cls._server_ok = False
+            cls._server_fail_time = _time.monotonic()
+            return False
+
+    @classmethod
+    def _server_tokenize(cls, text: str) -> list[int] | None:
+        """Pede ao servidor para tokenizar 'text'. Retorna None em falha."""
+        import json as _json, socket as _sock
+        try:
+            payload = (_json.dumps({"tokenize": text}) + "\n").encode("utf-8")
+            with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+                s.settimeout(5.0)
+                s.connect((cls._SERVER_HOST, cls._SERVER_PORT))
+                s.sendall(payload)
+                data = bytearray()
+                while True:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if data.endswith(b"\n"):
+                        break
+            resp = _json.loads(data.decode("utf-8").strip())
+            if resp.get("error"):
+                return None
+            return resp.get("tokens")   # list[int]
+        except Exception:
+            cls._server_ok = False
+            cls._server_fail_time = __import__("time").monotonic()
+            return None
+
+    @classmethod
+    def _server_detokenize(cls, tokens: list[int]) -> str | None:
+        """Pede ao servidor para detokenizar. Retorna None em falha."""
+        import json as _json, socket as _sock
+        try:
+            payload = (_json.dumps({"detokenize": tokens}) + "\n").encode("utf-8")
+            with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+                s.settimeout(5.0)
+                s.connect((cls._SERVER_HOST, cls._SERVER_PORT))
+                s.sendall(payload)
+                data = bytearray()
+                while True:
+                    chunk = s.recv(65536)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if data.endswith(b"\n"):
+                        break
+            resp = _json.loads(data.decode("utf-8").strip())
+            if resp.get("error"):
+                return None
+            return resp.get("text")   # str
+        except Exception:
+            cls._server_ok = False
+            cls._server_fail_time = __import__("time").monotonic()
+            return None
+
+    # ------------------------------------------------------------------ #
+    # Fallback: vocab_only local (caminho original)                       #
+    # ------------------------------------------------------------------ #
 
     @classmethod
     def get_gguf_path(cls) -> str:
@@ -642,8 +743,18 @@ class TokenizerBridge:
                     cls._llm_vocab = Llama(model_path=gguf, vocab_only=True, verbose=False)
         return cls._llm_vocab
 
+    # ------------------------------------------------------------------ #
+    # API pública (server-first, fallback local)                          #
+    # ------------------------------------------------------------------ #
+
     @classmethod
     def text_to_bytes(cls, text: str) -> bytes:
+        # Fast-path: servidor
+        if cls._server_available():
+            tokens = cls._server_tokenize(text)
+            if tokens is not None:
+                return array.array("i", tokens).tobytes()
+        # Fallback: vocab_only local
         vocab = cls.get_vocab()
         tokens = vocab.tokenize(text.encode("utf-8"), add_bos=False)
         return array.array("i", tokens).tobytes()
@@ -656,10 +767,18 @@ class TokenizerBridge:
             try: return data.decode("utf-8", errors="ignore")
             except Exception: return ""
         try:
-            vocab = cls.get_vocab()
             arr = array.array("i")
             arr.frombytes(data)
             tokens = arr.tolist()
+
+            # Fast-path: servidor
+            if cls._server_available():
+                result = cls._server_detokenize(tokens)
+                if result is not None:
+                    return result
+
+            # Fallback: vocab_only local
+            vocab = cls.get_vocab()
             if tokens and (max(tokens) >= vocab.n_vocab() or min(tokens) < 0):
                 return data.decode("utf-8", errors="ignore")
             return vocab.detokenize(tokens).decode("utf-8", errors="ignore")
@@ -716,10 +835,14 @@ class LocalIndexCache:
                 con, searcher = cls._cache.pop(source_id)
                 if con:
                     try: con.close()
-                    except: pass
+                    except Exception as e:
+                        import logging as _dox_log
+                        _dox_log.error(f"[INFRA] evict: {e}")
                 if searcher:
                     try: searcher.close()
-                    except: pass
+                    except Exception as e:
+                        import logging as _dox_log
+                        _dox_log.error(f"[INFRA] evict: {e}")
                     
     @classmethod
     def preload(cls, source_ids: List[str] = None):

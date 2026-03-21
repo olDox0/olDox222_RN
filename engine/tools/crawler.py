@@ -40,22 +40,46 @@ from dataclasses import dataclass
 from typing import Optional
 import re
 
-# Importação lazy de dependências opcionais
+# ---------------------------------------------------------------------------
+# Importação lazy de dependências opcionais — carregadas UMA VEZ e cacheadas.
+# Antes: _get_requests() executava `import requests` a cada chamada (~7x/run),
+# re-carregando certifi + urllib3 no N2808 a cada vez (76 hits no profiler).
+# Agora: import acontece só no primeiro acesso; demais chamadas lêem a variável.
+# ---------------------------------------------------------------------------
+
+_requests_cached:    object | None = None   # módulo requests ou None
+_http_adapter_cached: object | None = None   # HTTPAdapter ou None
+_retry_cached:        object | None = None   # Retry ou None
+_bs4_cached:          object | None = None   # BeautifulSoup ou None
+_requests_loaded      = False
+_bs4_loaded           = False
+
+
 def _get_requests():
-    try:
-        import requests
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
-        return requests, HTTPAdapter, Retry
-    except ImportError:
-        return None, None, None
+    global _requests_cached, _http_adapter_cached, _retry_cached, _requests_loaded
+    if not _requests_loaded:
+        _requests_loaded = True
+        try:
+            import requests as _req
+            from requests.adapters import HTTPAdapter as _HA
+            from urllib3.util.retry import Retry as _Rt
+            _requests_cached, _http_adapter_cached, _retry_cached = _req, _HA, _Rt
+        except ImportError:
+            pass
+    return _requests_cached, _http_adapter_cached, _retry_cached
+
 
 def _get_bs4():
-    try:
-        from bs4 import BeautifulSoup
-        return BeautifulSoup
-    except ImportError:
-        return None
+    global _bs4_cached, _bs4_loaded
+    if not _bs4_loaded:
+        _bs4_loaded = True
+        try:
+            from bs4 import BeautifulSoup as _BS4
+            _bs4_cached = _BS4
+        except ImportError:
+            pass
+    return _bs4_cached
+
 
 def _get_local_index():
     try:

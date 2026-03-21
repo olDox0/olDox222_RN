@@ -53,6 +53,7 @@ LOG_FILE = Path("server.log")
 _llm = None
 _cfg = None
 _lock = threading.Lock()
+_system_tokens = None
 
 _stats: dict[str, Any] = {
     "requests": 0,
@@ -297,6 +298,19 @@ def _load_model() -> None:
     _boot_perf["model_load_ms"] = elapsed_ms
     _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
     _stats["start"] = time.monotonic()
+
+    global _system_tokens
+    try:
+        system_str = f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
+        try:
+            _system_tokens = _llm.tokenize(system_str.encode("utf-8"), special=True)
+        except TypeError:
+            _system_tokens = _llm.tokenize(system_str.encode("utf-8"))
+    except Exception:
+        _system_tokens = None
+
+    elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
+
     print(f"[BOOT] Pronto em {round(elapsed_ms / 1000.0, 1)}s — {HOST}:{PORT}", flush=True)
 
 
@@ -305,11 +319,28 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
     if _llm is None or _cfg is None:
         raise RuntimeError("Modelo nao carregado.")
 
-    prompt_full = (
-        f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
-        f"<|im_start|>user\n{prompt}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
-    )
+    global _system_tokens
+    prompt_input = None
+
+    # Tenta usar os tokens pré-calculados (Prompt Caching) para pular processamento
+    if _system_tokens is not None:
+        try:
+            user_str = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+            try:
+                user_tokens = _llm.tokenize(user_str.encode("utf-8"), special=True)
+            except TypeError:
+                user_tokens = _llm.tokenize(user_str.encode("utf-8"))
+            prompt_input = _system_tokens + user_tokens
+        except Exception:
+            pass
+
+    # Fallback caso a tokenização manual falhe
+    if prompt_input is None:
+        prompt_input = (
+            f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
+            f"<|im_start|>user\n{prompt}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
 
     t0 = time.monotonic()
     t_wait0 = t0
@@ -331,9 +362,24 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
         if _cfg.min_p is not None:
             infer_kwargs["min_p"] = float(_cfg.min_p)
 
-        out = _llm(prompt_full, **infer_kwargs)
-        llm_call_ms = (time.monotonic() - t_llm0) * 1000.0
+        # Chama o LLM passando a lista de tokens numéricos (MUITO mais rápido) ou a string bruta
+        try:
+            out = _llm(prompt_input, **infer_kwargs)
+        except Exception:
+            # Se a versão do llama-cpp-python não aceitar lista de tokens, faz fallback seguro pra string
+            if isinstance(prompt_input, list):
+                fallback_str = (
+                    f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
+                    f"<|im_start|>user\n{prompt}<|im_end|>\n"
+                    f"<|im_start|>assistant\n"
+                )
+                out = _llm(fallback_str, **infer_kwargs)
+            else:
+                raise
 
+    llm_call_ms = (time.monotonic() - t_llm0) * 1000.0
+
+    # VVV ADICIONE ESTE BLOCO DE VOLTA VVV
     _observe_telemetry("server.infer.lock_wait", lock_wait_ms)
     _observe_telemetry("server.infer.llm_call", llm_call_ms)
 
@@ -443,6 +489,32 @@ def _handle(conn: socket.socket) -> None:
             return
 
         req_data = json.loads(line)
+
+        if "tokenize" in req_data:
+            text = str(req_data["tokenize"])
+            try:
+                if _llm is None:
+                    resp = {"tokens": [], "error": "modelo não carregado"}; return
+                try:
+                    tokens = _llm.tokenize(text.encode("utf-8"), add_bos=False)
+                except TypeError:
+                    tokens = _llm.tokenize(text.encode("utf-8"))
+                resp = {"tokens": list(tokens), "error": None}
+            except Exception as exc:
+                resp = {"tokens": [], "error": str(exc)}
+            return
+
+        if "detokenize" in req_data:
+            tokens = req_data["detokenize"]
+            try:
+                if _llm is None:
+                    resp = {"text": "", "error": "modelo não carregado"}; return
+                text = _llm.detokenize([int(t) for t in tokens]).decode("utf-8", errors="ignore")
+                resp = {"text": text, "error": None}
+            except Exception as exc:
+                resp = {"text": "", "error": str(exc)}
+            return
+
         prompt = str(req_data.get("prompt", "")).strip()
         max_tokens = max(1, min(int(req_data.get("max_tokens", 128)), 2048))
 

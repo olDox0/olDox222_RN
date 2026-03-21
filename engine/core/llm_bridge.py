@@ -30,14 +30,16 @@ ARCHAEOLOGY NOTE (2026-02-01 layer 1) — recuperar na Fase 4:
 """
 from __future__ import annotations
 from collections import deque
+
 import time
 import os
 import json
 
-from typing import Any
-from pathlib import Path
-from dataclasses import dataclass
+from typing                   import Any
+from pathlib                  import Path
+from dataclasses              import dataclass
 from engine.telemetry.runtime import record_direct  # noqa: PLC0415
+from engine.core.prompt_utils import pitstop        # noqa: PLC0415
 # ---------------------------------------------------------------------------
 # Configuração de memória
 # ---------------------------------------------------------------------------
@@ -89,8 +91,8 @@ class BridgeConfig:
     context_rotation: bool = True
     context_compact_ratio:   float = 0.7
     # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
-    cache_type_k: str | None = None
-    cache_type_v: str | None = None
+    cache_type_k: q8_0 | None = None
+    cache_type_v: q8_0 | None = None
     # Parâmetros RoPE para ajuste de extrapolação/contexto
     rope_freq_base: float | None = None
     rope_freq_scale: float | None = None
@@ -402,6 +404,15 @@ class SiCDoxBridge:
         max_tokens = max_tokens or self._cfg.max_tokens
         self._system_hint = system_hint or ""
 
+        # ③ Inference Pitstop — limpa prompt e ajusta max_tokens ANTES de
+        #   qualquer operação cara (load, push no ctx, build prompt).
+        #   Inclui: ④ Remove Redundant Terms + ② Compression.
+        prompt, max_tokens = pitstop(
+            prompt,
+            max_tokens,
+            active_window=self._cfg.active_window,
+        )
+
         # ── Profiler: inicia sessão de medição ─────────────────────────
         prof = self._prof
         _span = prof.span if prof is not None else lambda _: self._NULL_SPAN
@@ -455,7 +466,12 @@ class SiCDoxBridge:
 
         # ── prompt_build ───────────────────────────────────────────────
         with _span("prompt_build"):
-            built = self._build_prompt()
+            token_ids = self._build_prompt_tokens()  # lista de int ou None
+            if token_ids is None:
+                # Fallback: string (versão original — zero risco)
+                built: str | list[int] = self._build_prompt()
+            else:
+                built = token_ids  # passa lista de tokens diretamente
         self._system_hint = ""
 
         # ── llm_call ───────────────────────────────────────────────────
@@ -713,19 +729,49 @@ class SiCDoxBridge:
         self._last_prompt = prompt
         return prompt
         
-    def _call_engine(self, prompt: str, max_tokens: int) -> dict:
-        """Chama o runtime Llama e retorna dict: {'text': str, 'usage': {...}}"""
+    def _call_engine(self, prompt: str | list[int], max_tokens: int) -> dict:
+        """Chama o runtime Llama e retorna dict: {'text': str, 'usage': {...}}
+
+        Aceita prompt como str (compatibilidade) ou list[int] (pré-tokenizado).
+        Quando list[int], o motor pula a etapa de tokenização do prompt — ganho
+        visível em hardware lento como o N2808.
+
+        Stop tokens adaptativos:
+          - Se o prompt não abriu um bloco ```, para em <|im_end|> como antes.
+          - Se o prompt abriu um bloco ```, NÃO para em ``` — espera o fechamento.
+        """
+        import time as _time
         if self._llm is None:
             raise RuntimeError("Modelo não carregado.")
 
-        t0 = time.perf_counter()
+        # Detecta bloco de código aberto — funciona tanto para str quanto para
+        # list[int] (no caso de tokens, decodifica para verificar backticks).
+        if isinstance(prompt, str):
+            open_fences = prompt.count("```")
+        else:
+            # Para lista de tokens: decodifica só para verificar — sem custo
+            # perceptível (operação feita no Python, não no motor).
+            try:
+                decoded = self._llm.detokenize(prompt).decode("utf-8", errors="ignore")
+                open_fences = decoded.count("```")
+            except Exception:
+                open_fences = 0
+
+        code_is_open = (open_fences % 2) == 1
+
+        if code_is_open:
+            stop_tokens = ["<|im_end|>", "</s>", "\n```\n", "\n``` "]
+        else:
+            stop_tokens = ["<|im_end|>", "</s>"]
+
+        t0 = _time.perf_counter()
         call_kwargs = {
-            "max_tokens": max_tokens,
-            "stop": ["<|im_end|>", "</s>"],
-            "echo": False,
-            "temperature": self._cfg.temperature,
-            "top_p": self._cfg.top_p,
-            "top_k": self._cfg.top_k,
+            "max_tokens":    max_tokens,
+            "stop":          stop_tokens,
+            "echo":          False,
+            "temperature":   self._cfg.temperature,
+            "top_p":         self._cfg.top_p,
+            "top_k":         self._cfg.top_k,
             "repeat_penalty": self._cfg.repeat_penalty,
         }
 
@@ -741,54 +787,73 @@ class SiCDoxBridge:
             call_kwargs.pop("min_p", None)
             output = self._llm(prompt, **call_kwargs)
 
-        llm_ms = (time.perf_counter() - t0) * 1000.0
-        text = output["choices"][0]["text"]
-        usage = output.get("usage", {}) or {}
+        llm_ms = (_time.perf_counter() - t0) * 1000.0
+        text    = output["choices"][0]["text"]
+        usage   = output.get("usage", {}) or {}
 
         usage = {
-            "prompt_tokens": usage.get("prompt_tokens", 0),
-            "completion_tokens": usage.get("completion_tokens", 0),
-            "total_tokens": usage.get("total_tokens", 0),
+            "prompt_tokens":      usage.get("prompt_tokens", 0),
+            "completion_tokens":  usage.get("completion_tokens", 0),
+            "total_tokens":       usage.get("total_tokens", 0),
         }
 
         return {"text": text, "usage": usage, "llm_call_ms": round(llm_ms, 3)}
-        
-#    def _call_engine(self, prompt: str, max_tokens: int, stream: bool = False):
-#        if self._llm is None:
-#            raise RuntimeError("Modelo não carregado.")
-#
-#        call_kwargs = {
-#            "max_tokens": max_tokens,
-#            "stop":["<|im_end|>", "</s>"],
-#            "echo": False,
-#            "temperature": self._cfg.temperature,
-#            "top_p": self._cfg.top_p,
-#            "top_k": self._cfg.top_k,
-#            "repeat_penalty": self._cfg.repeat_penalty,
-#            "stream": stream, # <--- ATIVA O STREAMING
-#        }
-#        
-#        if self._cfg.min_p is not None:
-#            call_kwargs["min_p"] = self._cfg.min_p
-#
-#        # Lógica de fallback de TypeError mantida...
-#        try:
-#            output = self._llm(prompt, **call_kwargs)
-#        except TypeError as exc:
-#            msg = str(exc)
-#            if "min_p" not in msg and "stream" not in msg:
-#                raise
-#            call_kwargs.pop("min_p", None)
-#            output = self._llm(prompt, **call_kwargs)
-#
-#        # SE FOR STREAM, DEVOLVE O GERADOR DIRETAMENTE
-#        if stream:
-#            return output 
-#
-#        # SE NÃO FOR STREAM, MANTÉM O COMPORTAMENTO ORIGINAL
-#        t0 = time.perf_counter()
-#        llm_ms = (time.perf_counter() - t0) * 1000.0
-#        text = output["choices"][0]["text"]
-#        usage = output.get("usage", {}) or {}
-#
-#        return {"text": text, "usage": usage, "llm_call_ms": round(llm_ms, 3)}
+
+    def _build_prompt_tokens(self) -> list[int] | None:
+        """Constrói prompt como lista de token IDs reutilizando _system_tokens.
+
+        ② Pré-tokenização: o bloco system já foi tokenizado em _load();
+        aqui só tokenizamos as turns dinâmicas e o marcador de assistente.
+
+        Returns:
+            list[int] com todos os tokens prontos para o motor, ou None
+            se a tokenização falhar (caller usa fallback de string).
+        """
+        if self._system_tokens is None or self._llm is None:
+            return None
+
+        try:
+            turns = self._ctx._view_turns()
+            tokens: list[int] = list(self._system_tokens)
+
+            hint = self._system_hint
+            if hint:
+                # System hint é dinâmico — tokeniza e injeta após system base.
+                hint_str = f"\n{hint}"
+                # Remove o token <|im_end|> final do system_prefix antes de injetar
+                # (último token do system_tokens é o fim do bloco system).
+                # Estratégia segura: reconstrói system completo com hint.
+                sys_with_hint = (
+                    f"<|im_start|>system\n"
+                    f"{self._cfg.system_prompt}\n{hint}"
+                    f"<|im_end|>\n"
+                )
+                try:
+                    tokens = list(
+                        self._llm.tokenize(sys_with_hint.encode("utf-8"), special=True)
+                    )
+                except TypeError:
+                    tokens = list(
+                        self._llm.tokenize(sys_with_hint.encode("utf-8"))
+                    )
+            # else: usa self._system_tokens sem modificação (zero custo)
+
+            for t in turns:
+                chunk = f"<|im_start|>{t['role']}\n{t['content']}<|im_end|>\n"
+                try:
+                    tokens += self._llm.tokenize(chunk.encode("utf-8"), special=True)
+                except TypeError:
+                    tokens += self._llm.tokenize(chunk.encode("utf-8"))
+
+            # Marcador de início da resposta do assistente
+            try:
+                tokens += self._llm.tokenize(
+                    b"<|im_start|>assistant\n", special=True
+                )
+            except TypeError:
+                tokens += self._llm.tokenize(b"<|im_start|>assistant\n")
+
+            return tokens
+
+        except Exception:
+            return None  # OSL-15: fallback silencioso para string

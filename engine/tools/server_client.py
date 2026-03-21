@@ -37,7 +37,36 @@ def ask(prompt: str, max_tokens: int = 128) -> str | None:
         return None
     if resp.get("error"):
         return None
-    return str(resp.get("output", ""))
+    
+    output = str(resp.get("output", ""))
+
+    # ── HOOK DE CÓDIGO (Intercepta respostas do Servidor) ──
+    try:
+        from engine.thinking.code_hook import apply_code_hook
+        
+        # Criamos uma "Ponte Falsa" que redireciona as tentativas de conserto de volta pro Servidor TCP!
+        class ServerBridge:
+            def ask(self, p: str, max_tokens: int = 256, **kwargs) -> str:
+                r = query(p, max_tokens=max_tokens)
+                return r.get("output", "") if r else ""
+
+        class DummyValidator:
+            def validar_output(self, text: str):
+                return True, ""
+
+        output = apply_code_hook(
+            output=output,
+            task=prompt,
+            bridge=ServerBridge(),
+            validator=DummyValidator(),
+            max_retries=1,
+            run_isolated=True
+        )
+    except Exception as e:
+        # Se o hook falhar por qualquer motivo (ex: sandbox quebrado), devolve o texto original com aviso
+        output += f"\n\n[AVISO] Falha ao acionar CodeHook local: {e}"
+
+    return output
 
 
 def is_server_online() -> bool:

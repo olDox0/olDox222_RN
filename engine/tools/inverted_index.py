@@ -179,11 +179,15 @@ class DocumentStore:
     def close(self):
         try:
             if self._m: self._m.close()
-        except:
+        except Exception as e:
+            import logging as _dox_log
+            _dox_log.error(f"[INFRA] close: {e}")
             pass
         try:
             if self._f: self._f.close()
-        except:
+        except Exception as e:
+            import logging as _dox_log
+            _dox_log.error(f"[INFRA] close: {e}")
             pass
             
 
@@ -324,15 +328,21 @@ class InvertedIndexSearcher:
     def close(self):
         try:
             self._postings.close()
-        except:
+        except Exception as e:
+            import logging as _dox_log
+            _dox_log.error(f"[INFRA] close: {e}")
             pass
         try:
             self._pf.close()
-        except:
+        except Exception as e:
+            import logging as _dox_log
+            _dox_log.error(f"[INFRA] close: {e}")
             pass
         try:
             self._doc_store.close()
-        except:
+        except Exception as e:
+            import logging as _dox_log
+            _dox_log.error(f"[INFRA] close: {e}")
             pass
 
     def __enter__(self) -> "InvertedIndexSearcher":

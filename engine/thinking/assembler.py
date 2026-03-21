@@ -1,172 +1,286 @@
 # -*- coding: utf-8 -*-
 """
-ORN — Code Assembler (Dédalo)
-Montador de código por Cosmo Visão I/O com heurísticas de baixo custo.
+ORN — CodeAssembler (Dédalo / Cosmo Visão)
+Gera código, diagnostica no sandbox e itera até passar ou esgotar tentativas.
 
-Objetivo: reduzir inferência de modelos pequenos priorizando contratos de
-entrada/saída (I/O), com prompts curtos e recuperação determinística.
+OSL-3:  CodeDrawer e sandbox importados lazy.
+OSL-4:  Cada método faz uma coisa; loop em _refine_loop().
+OSL-7:  assemble() sempre retorna dict com 'success', 'output', 'error'.
+OSL-15: Erros de execução não derrubam o pipeline — viram feedback.
+OSL-18: stdlib only (subprocess, ast, hashlib, time — tudo stdlib).
+God: Dédalo — constrói o labirinto do código até ele funcionar.
+
+Fluxo:
+    assemble(task)
+        ├─ bridge.ask(PROMPT_GERAR)      # 1ª geração
+        ├─ _extract_code(output)         # extrai bloco python
+        ├─ stage_code(code)              # .orn/sandbox_codegen/candidate_*.py
+        ├─ _diagnose(path)               # lint + execução isolada
+        ├─ se issues → bridge.ask(PROMPT_FIX + erros + esqueleto)
+        └─ repete max_retries vezes
+        └─ sucesso → CodeDrawer.upsert_snippet()
 """
 
 from __future__ import annotations
 
-import ast
 import re
-from typing import Any
+import subprocess
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from engine.tools.code_sandbox import diagnose_python_file, stage_code
+if TYPE_CHECKING:
+    from engine.core.llm_bridge import SiCDoxBridge
+
+
+# ---------------------------------------------------------------------------
+# Prompts de geração e correção
+# ---------------------------------------------------------------------------
+
+_PROMPT_GERAR = """\
+[TASK] Escreva código Python correto e funcional para: {task}
+Regras:
+- Apenas código Python válido, sem texto explicativo antes do bloco.
+- Envolva o código em [code-begin] ... [code-end].
+- Sem imports desnecessários. Sem eval/exec. Sem bare except.
+- Type hints obrigatórios em funções públicas.
+"""
+
+_PROMPT_FIX = """\
+[TASK] Corrija o código Python abaixo.
+
+Tarefa original: {task}
+
+Esqueleto atual (resumo):
+{skeleton}
+
+Erros encontrados:
+{errors}
+
+Regras:
+- Corrija TODOS os erros listados.
+- Envolva o código corrigido em [code-begin] ... [code-end].
+- Sem texto explicativo — apenas o código.
+"""
+
+# ---------------------------------------------------------------------------
+# Limite de execução isolada
+# ---------------------------------------------------------------------------
+_RUN_TIMEOUT: int = 8   # segundos — conservador para N2808
+
+
+# ---------------------------------------------------------------------------
+# CodeAssembler
+# ---------------------------------------------------------------------------
 
 class CodeAssembler:
-    """Orquestra geração estrutural em fases de baixo custo.
+    """Gera e refina código via loop diagnose→feedback.
 
-    Fluxo:
-      1) Extrai pistas de I/O do intent (heurística local, sem inferência).
-      2) Solicita ao LLM somente um esqueleto Python com type hints.
-      3) Valida sintaxe e aplica até 2 reparos curtos.
-      4) Se falhar, retorna fallback determinístico mínimo.
+    Args:
+        bridge:     SiCDoxBridge já instanciada (injeção de dependência).
+        validator:  SiCDoxValidator (usado para validar output bruto do LLM).
+        max_retries: Tentativas máximas de correção (1 = gera + 1 fix).
+        run_isolated: Se True, executa o candidato com `python -I` (sandbox real).
     """
 
-    def __init__(self, bridge: Any, validator: Any):
+    def __init__(
+        self,
+        bridge: "SiCDoxBridge",
+        validator: Any,
+        max_retries: int = 2,
+        run_isolated: bool = True,
+    ) -> None:
         self._bridge = bridge
         self._validator = validator
+        self._max_retries = max(1, int(max_retries))
+        self._run_isolated = run_isolated
 
-    def assemble(self, intent_prompt: str) -> dict[str, Any]:
-        """Executa a Cosmo Visão I/O para gerar código estruturado."""
-        io_hint = self._extract_io_hint(intent_prompt)
-        skeleton_prompt = self._build_skeleton_prompt(intent_prompt, io_hint)
+    # ------------------------------------------------------------------
+    # API pública — chamada pelo Executive._run_gen()
+    # ------------------------------------------------------------------
 
-        raw_skeleton = self._bridge.ask(skeleton_prompt, max_tokens=220)
-        clean_skeleton = self._extract_code_block(raw_skeleton)
+    def assemble(self, task: str) -> dict[str, Any]:
+        """Gera, testa e refina código para a tarefa dada.
 
-        tree, error = self._validate_and_parse(clean_skeleton)
-        retries = 0
-        while tree is None and retries < 2:
-            rescue_prompt = (
-                "Corrija APENAS a sintaxe Python do código abaixo. "
-                "Não adicione explicações.\n"
-                f"```python\n{clean_skeleton}\n```"
-            )
-            raw_skeleton = self._bridge.ask(rescue_prompt, max_tokens=180)
-            clean_skeleton = self._extract_code_block(raw_skeleton)
-            tree, error = self._validate_and_parse(clean_skeleton)
-            retries += 1
-
-        if tree is None:
-            fallback = self._deterministic_fallback(io_hint)
-            return {
-                "success": False,
-                "output": fallback,
-                "error": f"Falha sintática após {retries} tentativas: {error}",
-                "strategy": "fallback",
+        Returns:
+            {
+              "success": bool,
+              "output":  str,   # código final (ou melhor tentativa)
+              "error":   str,   # mensagem de falha (vazio se success)
+              "attempts": int,  # quantas gerações foram feitas
             }
+        """
+        if not task or not task.strip():
+            return {"success": False, "output": "", "error": "task vazio.", "attempts": 0}
 
-        formatted = ast.unparse(tree)
-        ok, reason = self._validator.validar_output(formatted, lang="python")
-        if not ok:
-            fallback = self._deterministic_fallback(io_hint)
-            return {
-                "success": False,
-                "output": fallback,
-                "error": f"Validação rejeitou saída: {reason}",
-                "strategy": "fallback",
-            }
+        return self._refine_loop(task.strip())
 
-        staged_path = stage_code(formatted, stem="assembler")
-        diag_issues = diagnose_python_file(staged_path)
-        if diag_issues:
-            formatted = self._refine_with_diagnostics(formatted, diag_issues)
-            staged_path = stage_code(formatted, stem="assembler_refined")
+    # ------------------------------------------------------------------
+    # Loop principal
+    # ------------------------------------------------------------------
 
+    def _refine_loop(self, task: str) -> dict[str, Any]:
+        """Gera → diagnostica → corrige, até max_retries ou sucesso."""
+        from engine.tools.code_sandbox import (   # lazy (OSL-3)
+            diagnose_python_file,
+            stage_code,
+        )
+        from engine.core.blackboard import CognitiveReducer  # lazy
+
+        code      = ""
+        issues: list[str] = []
+        attempts  = 0
+        last_path: Path | None = None
+
+        for attempt in range(self._max_retries + 1):
+            attempts = attempt + 1
+
+            # ── 1. Gerar / corrigir via LLM ───────────────────────────
+            if attempt == 0:
+                prompt = _PROMPT_GERAR.format(task=task)
+            else:
+                skeleton = CognitiveReducer.reduce_file(
+                    "candidate.py", code, max_chars=400
+                )
+                errors_text = "\n".join(f"  • {i}" for i in issues[:10])
+                prompt = _PROMPT_FIX.format(
+                    task=task,
+                    skeleton=skeleton,
+                    errors=errors_text,
+                )
+
+            raw_output = self._bridge.ask(prompt, max_tokens=256)
+
+            # ── 2. Extrair bloco de código ─────────────────────────────
+            extracted = _extract_code(raw_output)
+            if not extracted:
+                # LLM não usou as tags — tenta pegar bloco ```python
+                extracted = _extract_markdown_code(raw_output)
+            if not extracted:
+                # Sem bloco detectável — usa o output bruto se parece código
+                extracted = raw_output.strip() if raw_output.strip().startswith(("def ", "class ", "import ")) else ""
+
+            if not extracted:
+                issues = ["LLM não gerou um bloco de código reconhecível."]
+                code   = raw_output  # guarda para diagnóstico textual
+                continue
+
+            code = extracted
+
+            # ── 3. Staging ────────────────────────────────────────────
+            try:
+                last_path = stage_code(code, stem="candidate")
+            except OSError as exc:
+                return {
+                    "success": False,
+                    "output":  code,
+                    "error":   f"[SANDBOX] Falha ao escrever arquivo: {exc}",
+                    "attempts": attempts,
+                }
+
+            # ── 4. Diagnóstico (lint + execução) ─────────────────────
+            issues = diagnose_python_file(last_path)
+
+            if self._run_isolated and not issues:
+                # Só executa se o lint passou — economiza tempo no N2808
+                run_issues = _run_isolated_script(last_path, timeout=_RUN_TIMEOUT)
+                issues.extend(run_issues)
+
+            if not issues:
+                # ── 5. Sucesso — salva no CodeDrawer ──────────────────
+                _save_to_drawer(task=task, code=code)
+                return {
+                    "success":  True,
+                    "output":   code,
+                    "error":    "",
+                    "attempts": attempts,
+                }
+
+        # Esgotou tentativas — retorna melhor código com lista de issues
+        error_summary = f"Não resolvido após {attempts} tentativa(s): " + "; ".join(issues[:3])
         return {
-            "success": True,
-            "output": formatted,
-            "error": None,
-            "strategy": "io_heuristic",
-            "io_hint": io_hint,
-            "staged_path": str(staged_path),
-            "diagnostic_issues": diag_issues[:8],
+            "success":  False,
+            "output":   code,
+            "error":    error_summary,
+            "attempts": attempts,
         }
 
-    def assemble_system(self, intent_prompt: str) -> str:
-        """Compat: retorna apenas texto final para chamadas antigas."""
-        result = self.assemble(intent_prompt)
-        return result["output"]
 
-    def _build_skeleton_prompt(self, intent_prompt: str, io_hint: str) -> str:
-        return (
-            "Você é um arquiteto de software focado em I/O.\n"
-            "Gere SOMENTE código Python com contratos claros de entrada e saída.\n"
-            "Regras: type hints obrigatórios, docstring curta, corpo com pass.\n"
-            "Sem explicação, sem markdown fora de bloco de código.\n"
-            f"Pistas de I/O detectadas: {io_hint}\n"
-            f"Problema: {intent_prompt}"
+# ---------------------------------------------------------------------------
+# Extratores de código (OSL-4)
+# ---------------------------------------------------------------------------
+
+_RE_TAGGED = re.compile(
+    r"\[code-begin\](.*?)\[code-end\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_RE_MARKDOWN = re.compile(
+    r"```(?:python)?\s*\n(.*?)```",
+    re.DOTALL,
+)
+
+
+def _extract_code(text: str) -> str:
+    """Extrai primeiro bloco [code-begin]...[code-end]."""
+    m = _RE_TAGGED.search(text or "")
+    return m.group(1).strip() if m else ""
+
+
+def _extract_markdown_code(text: str) -> str:
+    """Fallback: extrai primeiro bloco ```python ... ```."""
+    m = _RE_MARKDOWN.search(text or "")
+    return m.group(1).strip() if m else ""
+
+
+# ---------------------------------------------------------------------------
+# Execução isolada (OSL-15: falha não derruba pipeline)
+# ---------------------------------------------------------------------------
+
+def _run_isolated_script(path: Path, timeout: int = _RUN_TIMEOUT) -> list[str]:
+    """Executa `python -I <path>` e retorna lista de erros (vazia = OK).
+
+    -I (isolated): ignora PYTHONPATH, site-packages e variáveis de ambiente.
+    Equivalente ao `orn diagnose --run` interno.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-I", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired:
+        return [f"[RUN] Timeout ({timeout}s) — possível loop infinito."]
+    except OSError as exc:
+        return [f"[RUN] Falha ao executar: {exc}"]
 
-    def _extract_io_hint(self, intent_prompt: str) -> str:
-        """Extrai pistas de I/O via heurística textual barata.
+    if result.returncode != 0:
+        # Pega as últimas 3 linhas do stderr (normalmente contém o erro)
+        lines = [l.strip() for l in result.stderr.splitlines() if l.strip()]
+        tail  = lines[-3:] if lines else ["[RUN] Erro desconhecido."]
+        return [f"[RUN] retorno={result.returncode}"] + tail
 
-        Não tenta entender tudo; apenas reduz ambiguidade para o LLM.
-        """
-        text = intent_prompt.lower()
-        in_hints: list[str] = []
-        out_hints: list[str] = []
+    return []
 
-        if re.search(r"\b(json|yaml|csv|arquivo|file)\b", text):
-            in_hints.append("input_document")
-        if re.search(r"\b(api|http|request|endpoint)\b", text):
-            in_hints.append("remote_payload")
-        if re.search(r"\b(stream|fila|queue|evento)\b", text):
-            in_hints.append("event_stream")
 
-        if re.search(r"\b(relat[oó]rio|summary|resumo)\b", text):
-            out_hints.append("report_text")
-        if re.search(r"\b(c[oó]digo|code|script)\b", text):
-            out_hints.append("code_artifact")
-        if re.search(r"\b(log|telemetria|m[ée]trica)\b", text):
-            out_hints.append("observability")
+# ---------------------------------------------------------------------------
+# Persistência no CodeDrawer (OSL-3: lazy)
+# ---------------------------------------------------------------------------
 
-        if not in_hints:
-            in_hints.append("generic_input")
-        if not out_hints:
-            out_hints.append("generic_output")
-
-        return f"IN={','.join(in_hints)}; OUT={','.join(out_hints)}"
-
-    def _extract_code_block(self, text: str) -> str:
-        """Extrai bloco de código de resposta LLM."""
-        if "```python" in text:
-            return text.split("```python", 1)[1].split("```", 1)[0].strip()
-        if "```" in text:
-            return text.split("```", 1)[1].split("```", 1)[0].strip()
-        return text.strip()
-
-    def _validate_and_parse(self, code: str) -> tuple[ast.AST | None, str | None]:
-        try:
-            return ast.parse(code), None
-        except SyntaxError as exc:
-            return None, f"Linha {exc.lineno}: {exc.msg}"
-
-    def _deterministic_fallback(self, io_hint: str) -> str:
-        """Fallback estável para não bloquear o fluxo da CLI."""
-        return (
-            "from typing import Any\n\n"
-            "def assemble_io_contract(payload: Any) -> dict[str, Any]:\n"
-            f"    \"\"\"Fallback determinístico. {io_hint}\"\"\"\n"
-            "    pass\n"
+def _save_to_drawer(task: str, code: str) -> None:
+    """Salva snippet aprovado no CodeDrawer. Falha silenciosa (OSL-15)."""
+    try:
+        from engine.tools.code_drawer import CodeDrawer  # lazy
+        drawer = CodeDrawer()
+        # Nome derivado da task (slug simples)
+        name = re.sub(r"[^\w]+", "_", task.strip().lower())[:40].strip("_")
+        drawer.upsert_snippet(
+            name=name or "generated",
+            lang="python",
+            inputs=[],
+            outputs=[],
+            code=code,
+            tags=["assembler", "auto"],
         )
-
-    def _refine_with_diagnostics(self, code: str, issues: list[str]) -> str:
-        """Envia código estagiado + diagnóstico para melhoria rápida pelo LLM."""
-        fix_prompt = (
-            "Corrija APENAS os problemas listados no código Python.\n"
-            "Mantenha assinatura e intenção original. Responda só com código.\n"
-            f"Problemas:\n- " + "\n- ".join(issues[:6]) + "\n"
-            f"```python\n{code}\n```"
-        )
-        raw = self._bridge.ask(fix_prompt, max_tokens=220)
-        candidate = self._extract_code_block(raw)
-        tree, _ = self._validate_and_parse(candidate)
-        if tree is None:
-            return code
-        fixed = ast.unparse(tree)
-        ok, _ = self._validator.validar_output(fixed, lang="python")
-        return fixed if ok else code
+    except Exception:
+        pass   # OSL-15: drawer não é crítico para o pipeline
