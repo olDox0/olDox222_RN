@@ -18,6 +18,7 @@ dist/
 *.spec
 
 # --- ARQUIVOS SENSÍVEIS E DE USUÁRIO (NUNCA COMPARTILHAR) ---
+*.jsonl
 chief_dossier.json
 doxoade_report.json
 Exemplo/

@@ -159,7 +159,14 @@ def pitstop(
     # Ajuste de max_tokens: se o prompt ficou muito curto após limpeza,
     # provavelmente é uma pergunta simples — limita a resposta para economizar tempo.
     # Regra: prompts < 40 chars raramente precisam de 192 tokens de saída.
-    if len(cleaned) < 40 and max_tokens > 64:
-        max_tokens = 64
+    _KW_CODE = re.compile(
+        r"\b(faça|crie|escreva|gere|implemente|make|write|create|"
+        r"quicksort|mergesort|fibonacci|buffer|classe|class|def|função)\b",
+        re.IGNORECASE,
+    )
 
+#    if len(cleaned) < 40 and max_tokens > 64 and not _KW_CODE.search(cleaned):
+#        max_tokens = 64
+    cleaned = compress_prompt(cleaned, max_chars)
+    
     return cleaned, max_tokens

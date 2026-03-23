@@ -62,16 +62,29 @@ HEAD  = lambda t: _c("1;36", t)
 
 LLAMA_CMAKE_ARGS = " ".join([
     "-DGGML_BLAS=OFF",
-    "-DGGML_OPENMP=ON",
+    "-DGGML_OPENMP=OFF",
     "-DGGML_LTO=OFF",
     "-DGGML_NATIVE=OFF",
+
+    # 🔥 CRÍTICO (adicione isso)
+    "-DGGML_AVX=OFF",
+    "-DGGML_AVX2=OFF",
+    "-DGGML_FMA=OFF",
+    "-DGGML_F16C=OFF",
+
+    "-DGGML_SSE42=OFF",
+    "-DGGML_BMI2=OFF",
+
     "-DBUILD_SHARED_LIBS=OFF",
     '-G "MinGW Makefiles"',
     "-DCMAKE_C_COMPILER=gcc",
     "-DCMAKE_CXX_COMPILER=g++",
+    "-DCMAKE_SHARED_LINKER_FLAGS=-fopenmp",
 ])
 
-CFLAGS_OPT = "-O3 -march=silvermont -ffast-math -funroll-loops"
+CFLAGS_OPT = "-O2 -msse4.1 -mfpmath=sse -fno-finite-math-only"
+#CFLAGS_OPT = "-O2 -msse4.1 -mfpmath=sse -ffast-math"
+#CFLAGS_OPT = "-O3 -march=silvermont -ffast-math -funroll-loops"
 
 # ---------------------------------------------------------------------------
 # Resultado de verificacao (OSL-7)
@@ -289,7 +302,9 @@ def install_llama_cpp() -> bool:
     env["PATH"] = W64_BIN + os.pathsep + env.get("PATH", "")
     env["CMAKE_ARGS"] = LLAMA_CMAKE_ARGS
     env["FORCE_CMAKE"] = "1"
-    env["CFLAGS"] = CFLAGS_OPT
+    env["CFLAGS"] = "-O2 -msse4.1 -mfpmath=sse -fno-finite-math-only -fopenmp" 
+    env["CXXFLAGS"] = env["CFLAGS"]
+    env["LDFLAGS"] = "-fopenmp"
 
     print(DIM(f"  CFLAGS: {CFLAGS_OPT}"))
     print(DIM(f"  CMAKE_ARGS: {LLAMA_CMAKE_ARGS}"))

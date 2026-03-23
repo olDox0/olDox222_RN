@@ -27,14 +27,13 @@ Fluxo futuro (audit, fix, gen):
 
 from __future__ import annotations
 
-import re
-import time
+import re, time, functools
+
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any
 
 from engine.telemetry.forensic import emit_forensic_log
-
 from engine.thinking.code_hook import apply_code_hook     # Argos
 from engine.thinking.drawer_router import DrawerRouter
 
@@ -216,8 +215,8 @@ class SiCDoxExecutive:
 
             # Limita system_hint: cada token de prompt custa igual a
             # um token gerado no N2808 — evita prefill caro.
-            if synthesis and len(synthesis) > 240:
-                synthesis = synthesis[:240].rsplit(" ", 1)[0] + " […]"
+            if synthesis and len(synthesis) > 160: # 240:
+                synthesis = synthesis[:160].rsplit(" ", 1)[0] + " […]"
 
             token_hint = 64
             max_tokens = context.get("max_tokens") or _adaptive_max_tokens(prompt)
@@ -284,6 +283,12 @@ class SiCDoxExecutive:
             if session_opened:
                 try:
                     board.close_session()
+                except Exception:
+                    pass
+            # Limpa contexto do bridge entre sessões diretas (evita prompt_tokens crescentes)
+            if self._bridge is not None:
+                try:
+                    self._bridge._ctx.clear()
                 except Exception:
                     pass
 
@@ -426,6 +431,12 @@ _KW_CODE_CONTEXT = (
     r"\b(python|py|c\+\+|cpp|java|javascript|typescript|rust|go|script|código|codigo)\b"
 )
 
+# --- Cache das Expressões Regulares ---
+@functools.lru_cache(maxsize=256)
+def classify_prompt(prompt_lower: str):
+    # Seu código atual de re.search() entra aqui
+    # Retorne a tupla: (lang, task_type, max_tokens)
+    pass
 
 def _decompose_query(board: Any, prompt: str, context: dict) -> None:
     """Popula a lousa com rascunhos de raciocínio baseados em Regex (OSL-5)."""
@@ -604,27 +615,33 @@ _KW_CODE_GEN = re.compile(
     re.IGNORECASE,
 )
 _KW_LANG = re.compile(
-    r"\b(python|py|c\+\+|cpp|javascript|typescript|rust|go|java|batch|script)\b",
+    r"\b(python|py|c\+\+|cpp|javascript|typescript|rust|go|java|batch|script"
+    r"|buffer|array|lista|list|dict|struct|classe|class)\b",   # ← ADD
+    re.IGNORECASE,
+)
+_KW_COMPLEX_ALGO = re.compile(
+    r"\b(quicksort|mergesort|heapsort|avl|bst|lru.?cache|"
+    r"ring.?buffer|linked.?list|trie|grafo|graph|dijkstra|"
+    r"classe|class|buffer)\b",    # ← ADD buffer aqui também
     re.IGNORECASE,
 )
 
-
 def _adaptive_max_tokens(prompt: str) -> int:
-    """Retorna limite de tokens adequado para o tipo de resposta esperada.
+    """Limite de tokens calibrado para Celeron N2808 @ ~1.4 t/s.
 
-    Regra simples baseada em regex — zero custo de inferência:
-      - Geração de código  → 192  (precisa de espaço para função completa)
-      - Contexto de código → 128  (pergunta sobre código, resposta média)
-      - Texto puro        →  64  (explicação curta, resposta mais rápida)
-
-    Calibrado para Celeron N2808 @ ~1.4 t/s:
-      64  tokens ≈  46s
-      128 tokens ≈  91s
-      192 tokens ≈ 137s
+      320 tokens ≈ 229s  — algoritmo complexo / classe com buffer
+      256 tokens ≈ 183s  — geração de código simples (função única)
+      128 tokens ≈  91s  — pergunta sobre código
+       64 tokens ≈  46s  — texto puro
     """
     p = prompt or ""
-    if _KW_CODE_GEN.search(p) and _KW_LANG.search(p):
-        return 192   # geração explícita de código em linguagem específica
-    if _KW_LANG.search(p):
-        return 128   # pergunta sobre código mas sem verbo de geração
-    return 64        # resposta de texto puro
+    is_gen  = bool(_KW_CODE_GEN.search(p))
+    is_lang = bool(_KW_LANG.search(p))
+
+    if is_gen and is_lang and _KW_COMPLEX_ALGO.search(p):
+        return 320   # algoritmo complexo — classe, recursão, buffer
+    if is_gen and is_lang:
+        return 256   # geração simples — função única
+    if is_lang:
+        return 128   # explicação / pergunta sobre código
+    return 64        # texto puro

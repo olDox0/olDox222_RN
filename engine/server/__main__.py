@@ -9,6 +9,27 @@ _doxo_install_meta_finder = None
 _doxo_probe_embedded = None
 _doxo_project_root = None
 _doxo_boot_t0 = _doxo_time.monotonic()
+
+# --- Lazy-loader --- 
+_doxo_lazy_mod = None
+try:
+    if _doxo_project_root:
+        _doxo_lazy_policy_f = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_policy.json"
+        _doxo_lazy_src_f    = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_loader.py"
+        if _doxo_lazy_policy_f.exists() and _doxo_lazy_src_f.exists():
+            _doxo_lazy_spec = _doxo_importlib_util.spec_from_file_location(
+                "_doxoade_vulcan_lazy", str(_doxo_lazy_src_f)
+            )
+            if _doxo_lazy_spec and _doxo_lazy_spec.loader:
+                _doxo_lazy_mod = _doxo_importlib_util.module_from_spec(_doxo_lazy_spec)
+                _doxo_sys.modules["_doxoade_vulcan_lazy"] = _doxo_lazy_mod
+                _doxo_lazy_spec.loader.exec_module(_doxo_lazy_mod)
+                _doxo_lazy_mod.install(
+                    _doxo_lazy_mod.load_policy(_doxo_lazy_policy_f)
+                )
+except Exception:
+    pass
+
 _doxo_install_ms = 0
 _doxo_embedded_ms = 0
 _doxo_fallback_ms = 0
@@ -133,6 +154,11 @@ import sys
 
 from engine.server.server import ServerCLI
 
+#from engine.core.import_hook import install_lazy_imports
+#install_lazy_imports([
+#    "engine",
+#    "doxoade",
+#])
 
 def _load_python_server_cli_fallback():
     server_file = Path(__file__).resolve().parent / "server.py"

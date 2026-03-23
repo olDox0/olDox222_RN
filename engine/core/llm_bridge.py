@@ -57,8 +57,8 @@ class BridgeConfig:
         "models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
         #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
-    n_ctx:                   int  = 512   # era 2048 — reduz KV-cache pela metade
-    active_window:           int  = 256    # era 1024 — proporcional
+    n_ctx:                   int  = 384   # era 2048 — reduz KV-cache pela metade
+    active_window:           int  = 384    # era 1024 — proporcional
     n_batch:                 int  = 128     # NOVO — era 512 (default llama.cpp)
                                  # 64 = menos pressão de memória no N2808
     # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
@@ -407,11 +407,10 @@ class SiCDoxBridge:
         # ③ Inference Pitstop — limpa prompt e ajusta max_tokens ANTES de
         #   qualquer operação cara (load, push no ctx, build prompt).
         #   Inclui: ④ Remove Redundant Terms + ② Compression.
-        prompt, max_tokens = pitstop(
-            prompt,
-            max_tokens,
-            active_window=self._cfg.active_window,
-        )
+
+        # llm_bridge.py — linha ~414, após o pitstop
+        prompt, max_tokens = pitstop(prompt, max_tokens, active_window=self._cfg.active_window)
+        print(f"[DEBUG] após pitstop: max_tokens={max_tokens}", flush=True)  # ← temporário
 
         # ── Profiler: inicia sessão de medição ─────────────────────────
         prof = self._prof

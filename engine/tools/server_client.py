@@ -31,7 +31,7 @@ HOST       = "127.0.0.1"
 PID_FILE   = Path("web_server.pid")
 
 
-def ask(prompt: str, max_tokens: int = 128) -> str | None:
+def ask(prompt: str, max_tokens: int = 256) -> str | None:
     resp = query(prompt, max_tokens=max_tokens)
     if resp is None:
         return None
@@ -84,7 +84,7 @@ def status() -> dict[str, Any] | None:
     return _raw_query(b"STATUS\n")
 
 
-def query(prompt: str, max_tokens: int = 128) -> dict[str, Any] | None:
+def query(prompt: str, max_tokens: int = 256) -> dict[str, Any] | None:
     payload = (json.dumps({"prompt": prompt, "max_tokens": max_tokens}) + "\n").encode("utf-8")
     return _raw_query(payload)
 

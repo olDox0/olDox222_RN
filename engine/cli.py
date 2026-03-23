@@ -33,6 +33,12 @@ from pathlib import Path
 
 from engine.ui.display import Display
 
+#from engine.core.import_hook import install_lazy_imports
+#install_lazy_imports([
+#    "engine",
+#    "doxoade",
+#])
+
 def _fmt_ms(value: float) -> str:
     value = float(value or 0)
     if value >= 1000:
@@ -162,7 +168,11 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         max_tokens = tokens
     else:
         # Busca focada em código tende a precisar menos verbosidade.
-        max_tokens = 96 if search_code_only else 128
+        if search_code_only:
+            max_tokens = 96
+        else:
+            from engine.core.executive import _adaptive_max_tokens  # noqa: PLC0415
+            max_tokens = _adaptive_max_tokens(question)
 
     context_blocks: list[str] = []
     drawer_snippet = None
