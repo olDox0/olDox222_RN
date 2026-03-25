@@ -523,7 +523,11 @@ def _show_config() -> None:
     Display.kv("top_p",         str(cfg.top_p))
     Display.kv("top_k",         str(cfg.top_k))
     Display.kv("repeat_penalty",str(cfg.repeat_penalty))
-    Display.kv("memory_flags_effective", json.dumps(cfg.effective_memory_flags(), ensure_ascii=False))
+
+    Display.separator()
+    Display.info("Flags de memória efetivas:")
+    for key, value in cfg.effective_memory_flags().items():
+        Display.kv(f"mem.{key}", str(value))
 
     Display.separator()
     Display.info("Verificação de ambiente (first_contact):")

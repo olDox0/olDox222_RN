@@ -292,8 +292,8 @@ def test_bridge_config_low_memory_profile_defaults(monkeypatch) -> None:
     assert cfg.memory_profile == "low"
     assert cfg.use_mlock is False
     assert cfg.n_batch == 64
-    assert cfg.active_window == 256
-    assert cfg.ttl_seconds == 180
+    assert cfg.active_window == 192
+    assert cfg.ttl_seconds == 120
 
 
 def test_bridge_config_low_profile_preserves_env_overrides(monkeypatch) -> None:

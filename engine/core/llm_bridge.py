@@ -140,8 +140,8 @@ class BridgeConfig:
             return
         self.use_mlock = False
         self.n_batch = min(self.n_batch, 64)
-        self.active_window = min(self.active_window, 256)
-        self.ttl_seconds = min(self.ttl_seconds, 180)
+        self.active_window = min(self.active_window, 192)
+        self.ttl_seconds = min(self.ttl_seconds, 120)
 
     def effective_memory_flags(self) -> dict[str, Any]:
         return {
