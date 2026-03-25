@@ -283,3 +283,30 @@ def test_server_cli_start_env_sets_doxoade_root_when_discovered(monkeypatch) -> 
     env = cli._start_env(None, None, None, None, None, None, None, False, False, False, False)
 
     assert env["DOXOADE_ROOT"] == "/tmp/doxoade-root"
+
+def test_bridge_config_low_memory_profile_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("ORN_MEMORY_PROFILE", "low")
+
+    cfg = BridgeConfig(n_ctx=384, active_window=384, n_batch=128, ttl_seconds=400, use_mlock=True)
+
+    assert cfg.memory_profile == "low"
+    assert cfg.use_mlock is False
+    assert cfg.n_batch == 64
+    assert cfg.active_window == 256
+    assert cfg.ttl_seconds == 180
+
+
+def test_bridge_config_low_profile_preserves_env_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("ORN_MEMORY_PROFILE", "low")
+    monkeypatch.setenv("ORN_USE_MMAP", "1")
+    monkeypatch.setenv("ORN_USE_MLOCK", "1")
+    monkeypatch.setenv("ORN_NO_ALLOC", "1")
+    monkeypatch.setenv("ORN_ACTIVE_WINDOW", "192")
+
+    cfg = BridgeConfig(n_ctx=384, active_window=384, n_batch=128, ttl_seconds=400)
+
+    assert cfg.memory_profile == "low"
+    assert cfg.use_mmap is True
+    assert cfg.use_mlock is True
+    assert cfg.no_alloc is True
+    assert cfg.active_window == 192

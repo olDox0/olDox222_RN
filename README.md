@@ -65,3 +65,19 @@ orn tutorial
 ```
 
 ---
+
+
+## 🧩 Preset para pouca RAM (perfil low-memory)
+
+Para máquinas com RAM muito limitada, ative o perfil de memória reduzida no bridge:
+
+```cmd
+set ORN_MEMORY_PROFILE=low
+orn config --show
+```
+
+O perfil `low` aplica defaults mais conservadores (ex.: `use_mlock=False`, `n_batch` menor, `active_window` menor e `ttl_seconds` mais curto), reduzindo pressão de memória e descarregando o modelo mais cedo em ociosidade.
+
+Se necessário, você ainda pode sobrescrever qualquer flag por variável de ambiente existente (`ORN_USE_MMAP`, `ORN_NO_ALLOC`, `ORN_ACTIVE_WINDOW`, etc.).
+
+---

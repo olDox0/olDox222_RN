@@ -57,6 +57,7 @@ class BridgeConfig:
         "models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
         #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
+    memory_profile:          str  = "default"  # default|low (env: ORN_MEMORY_PROFILE)
     n_ctx:                   int  = 384   # era 2048 — reduz KV-cache pela metade
     active_window:           int  = 384    # era 1024 — proporcional
     n_batch:                 int  = 128     # NOVO — era 512 (default llama.cpp)
@@ -124,6 +125,38 @@ class BridgeConfig:
             print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
             return None
     @staticmethod
+    def _normalize_memory_profile(value: str | None) -> str:
+        if value is None:
+            return "default"
+        cleaned = value.strip().strip('"').strip("'").lower()
+        if cleaned in {"", "default", "normal", "std"}:
+            return "default"
+        if cleaned in {"low", "low-memory", "low_memory", "ram", "minimal"}:
+            return "low"
+        return "default"
+
+    def _apply_memory_profile_defaults(self) -> None:
+        if self.memory_profile != "low":
+            return
+        self.use_mlock = False
+        self.n_batch = min(self.n_batch, 64)
+        self.active_window = min(self.active_window, 256)
+        self.ttl_seconds = min(self.ttl_seconds, 180)
+
+    def effective_memory_flags(self) -> dict[str, Any]:
+        return {
+            "memory_profile": self.memory_profile,
+            "use_mmap": self.use_mmap,
+            "use_mlock": self.use_mlock,
+            "no_alloc": self.no_alloc,
+            "pin_threads": self.pin_threads,
+            "cont_batching": self.cont_batching,
+            "n_batch": self.n_batch,
+            "active_window": self.active_window,
+            "ttl_seconds": self.ttl_seconds,
+        }
+
+    @staticmethod
     def _normalize_optional_bool(value: str | bool | None) -> bool | None:
         if value is None:
             return None
@@ -146,6 +179,7 @@ class BridgeConfig:
         self.flash_attn = self._normalize_optional_bool(self.flash_attn)
         # Normaliza bools de infra/memória.
         self.use_mmap = bool(self.use_mmap)
+        self.use_mlock = bool(self.use_mlock)
         self.no_alloc = bool(self.no_alloc)
         self.pin_threads = bool(self.pin_threads)
         self.cont_batching = bool(self.cont_batching)
@@ -157,6 +191,13 @@ class BridgeConfig:
             self.context_compact_ratio = 0.5
         if self.context_compact_ratio >= 1:
             self.context_compact_ratio = 0.9
+        # Perfil de memória (default|low) com overrides finos preservados por env.
+        self.memory_profile = self._normalize_memory_profile(self.memory_profile)
+        env_memory_profile = os.environ.get("ORN_MEMORY_PROFILE")
+        if env_memory_profile is not None:
+            self.memory_profile = self._normalize_memory_profile(env_memory_profile)
+        self._apply_memory_profile_defaults()
+
         # Overrides opcionais por ambiente para tuning sem alterar código.
         env_active_window = os.environ.get("ORN_ACTIVE_WINDOW", "").strip()
         if env_active_window:
@@ -185,6 +226,13 @@ class BridgeConfig:
         elif env_use_mmap is not None:
             # inválido => fallback seguro (mantém carregamento estável)
             self.use_mmap = True
+        env_use_mlock = os.environ.get("ORN_USE_MLOCK")
+        parsed_use_mlock = self._normalize_optional_bool(env_use_mlock) if env_use_mlock is not None else None
+        if parsed_use_mlock is not None:
+            self.use_mlock = parsed_use_mlock
+        elif env_use_mlock is not None:
+            self.use_mlock = False
+
         env_no_alloc = os.environ.get("ORN_NO_ALLOC")
         parsed_no_alloc = self._normalize_optional_bool(env_no_alloc) if env_no_alloc is not None else None
         if parsed_no_alloc is not None:
@@ -249,6 +297,10 @@ class BridgeConfig:
                 line_n = exc_tb.tb_lineno if exc_tb else 0
                 print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
 
+        if self.n_batch <= 0:
+            self.n_batch = 1
+        if self.ttl_seconds <= 0:
+            self.ttl_seconds = 30
         if self.active_window <= 0:
             self.active_window = 1
         if self.active_window > self.n_ctx:

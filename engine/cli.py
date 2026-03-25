@@ -504,7 +504,9 @@ def _show_config() -> None:
     Display.kv("rope_freq_base",str(cfg.rope_freq_base))
     Display.kv("rope_freq_scale",str(cfg.rope_freq_scale))
     Display.kv("flash_attn",    str(cfg.flash_attn))
+    Display.kv("memory_profile",str(cfg.memory_profile))
     Display.kv("use_mmap",      str(cfg.use_mmap))
+    Display.kv("use_mlock",     str(cfg.use_mlock))
     Display.kv("no_alloc",      str(cfg.no_alloc))
     Display.kv("pin_threads",   str(cfg.pin_threads))
     Display.kv("cont_batching", str(cfg.cont_batching))
@@ -521,6 +523,7 @@ def _show_config() -> None:
     Display.kv("top_p",         str(cfg.top_p))
     Display.kv("top_k",         str(cfg.top_k))
     Display.kv("repeat_penalty",str(cfg.repeat_penalty))
+    Display.kv("memory_flags_effective", json.dumps(cfg.effective_memory_flags(), ensure_ascii=False))
 
     Display.separator()
     Display.info("Verificação de ambiente (first_contact):")
