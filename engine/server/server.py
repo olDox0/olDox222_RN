@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import signal
 import socket
 import subprocess
@@ -201,7 +200,8 @@ def _system_perf_snapshot() -> dict[str, Any]:
         load_1m = round(float(os.getloadavg()[0]), 3)
     except Exception:
         pass
-
+        
+    import platform
     return {
         "pid": os.getpid(),
         "threads": threading.active_count(),
@@ -749,8 +749,10 @@ class ServerCLI:
             return
 
         try:
+            # Mantém SIGTERM ativo para quando usar o comando 'stop' via background.
             signal.signal(signal.SIGTERM, _sigterm_handler)
-            signal.signal(signal.SIGINT, _sigterm_handler)
+            # Removemos o hook de SIGINT. Agora o Ctrl+C levanta um KeyboardInterrupt
+            # natural no socket.accept(), permitindo o desmonte limpo da pilha pro cProfile!
         except Exception:
             pass
 

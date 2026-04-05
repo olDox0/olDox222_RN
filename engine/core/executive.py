@@ -199,8 +199,22 @@ class SiCDoxExecutive:
             return GoalResult(success=False, intent="think", errors=[f"[BOARD] Erro: {exc}"])
 
         try:
+            # 2. Popula lousa com rascunhos de raciocínio
             _decompose_query(board, prompt, context)
 
+            # 2.5 --- ATIVAÇÃO DO GAVETEIRO (HERMES) ---
+            max_tokens = context.get("max_tokens")
+            if context.get("drawer_first"):
+                router = self._get_drawer_router()
+                if router:
+                    r_res = router.route(prompt, board)
+                    if r_res.hit:
+                        # Se achou no gaveteiro, reduzimos o trabalho do LLM para apenas explicar
+                        max_tokens = r_res.max_tokens_hint or 128
+                        print("\n  [Hermes] 📦 Snippet resgatado do Gaveteiro e injetado na lousa!")
+            # ------------------------------------------
+
+            # 3. Contexto de arquivo opcional (--file)
             if context.get("context_file"):
                 file_content = _read_file_safe(context["context_file"])
                 if file_content:

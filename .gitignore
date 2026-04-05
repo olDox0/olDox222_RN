@@ -12,12 +12,14 @@ env/
 .env
 
 # Arquivos de Build e Distribuição (para PyInstaller)
+llama.cpp/
 build/
 dist/
 *.egg-info/
 *.spec
 
 # --- ARQUIVOS SENSÍVEIS E DE USUÁRIO (NUNCA COMPARTILHAR) ---
+graph.html
 *.jsonl
 chief_dossier.json
 doxoade_report.json

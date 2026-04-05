@@ -137,19 +137,19 @@ import os
 import re
 import sqlite3
 import struct
-import sys
+# [DOX-UNUSED] import sys
 import time
 import unicodedata
 import difflib
 
-from contextlib import closing
+# [DOX-UNUSED] from contextlib import closing
 from pathlib import Path
 from threading import Lock
 from typing import Iterator, List, Optional, Tuple
 
 # dependências do projeto (mantidas)
 from engine.tools.inverted_index import InvertedIndexBuilder, InvertedIndexSearcher
-from engine.telemetry.core import orn_span, GLOBAL_TELEMETRY, record_direct_telemetry
+from engine.telemetry.core import orn_span, GLOBAL_TELEMETRY
 
 # ---------------------------------------------------------------------------
 # Config / constantes
@@ -348,7 +348,7 @@ def _format_snippet_for_terminal(snippet: str) -> str:
 # ---------------------------------------------------------------------------
 
 try:
-    from rapidfuzz import fuzz, process as rprocess 
+    from rapidfuzz import fuzz
     _HAS_RAPIDFUZZ = True
 except Exception:
     _HAS_RAPIDFUZZ = False
@@ -1068,7 +1068,7 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True, start_scanned: int = 
 
 def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int = 1000, verbose: bool = True) -> Path:
     try:
-        import pyzim 
+# [DOX-UNUSED]         import pyzim 
     except ImportError:
         raise ImportError("pyzim não instalado. pip install pyzim")
 

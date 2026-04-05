@@ -58,12 +58,12 @@ class BridgeConfig:
         #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
     memory_profile:          str  = "default"  # default|low (env: ORN_MEMORY_PROFILE)
-    n_ctx:                   int  = 384   # era 2048 — reduz KV-cache pela metade
-    active_window:           int  = 384    # era 1024 — proporcional
-    n_batch:                 int  = 128     # NOVO — era 512 (default llama.cpp)
+    n_ctx:                   int  = 1024   # era 2048 — reduz KV-cache pela metade
+    active_window:           int  = 256    # era 1024 — proporcional
+    n_batch:                 int  = 64     # NOVO — era 512 (default llama.cpp)
                                  # 64 = menos pressão de memória no N2808
     # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
-    n_threads:               int = 2
+    n_threads:               int = 2 #n_threads:               int = 2
     n_threads_batch:         int = 2
     n_gpu_layers:            int = 0     # CPU-only (sem GPU no N2808)
     use_mmap: bool =         True        # mmap para pesos (carregamento preguiçoso)
@@ -76,15 +76,14 @@ class BridgeConfig:
     ttl_seconds:   int  =    400   # 1 hora (era 300s — inadequado para N2808)
     # max_tokens reduzido para testes — 679s foi causado por resposta gigante
     # Regra: 128 para testes rápidos, 512 para uso normal
-    max_tokens:    int   =   64
+    max_tokens:    int   =   512
     # Parâmetros de sampling (doc ORN_up — seção 3)
     # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
-    temperature:    float =  0.45
-    top_p:          float =  0.85
-    top_k:          int   =  35
+    temperature:    float =  0.40
+    top_p:          float =  0.80 #top_p:          float =  0.85
+    top_k:          int   =  20   #top_k:          int   =  35
     repeat_penalty: float =  1.05
-    #min_p:          float =  0.05
-    min_p:          float =  None
+    min_p:          float =  0.01 #min_p:          float =  0.05 ou None
     # Menemonização de repetições (com pruning LRU)
     repetition_memo_enabled: bool = True
     repetition_memo_size:    int  = 128
@@ -95,10 +94,10 @@ class BridgeConfig:
     cache_type_k: q8_0 | None = None
     cache_type_v: q8_0 | None = None
     # Parâmetros RoPE para ajuste de extrapolação/contexto
-    rope_freq_base: float | None = None
+    rope_freq_base:  float | None = 1_000_000.0 #rope_freq_base: float | None = None
     rope_freq_scale: float | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
-    flash_attn: bool | None = None
+    flash_attn: True | None = None
     system_prompt: str = ("succinct. portuguese language") # system_prompt: str = "" 
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
@@ -396,6 +395,18 @@ class SiCDoxBridge:
     """
     def __init__(self, config: BridgeConfig | None = None) -> None:
         self._cfg: BridgeConfig  = config or BridgeConfig()
+        
+        self._native: Any = None
+        if os.environ.get("ORN_NATIVE_BACKEND", "").lower() in {"1", "true", "on"}:
+            from engine.core.native_backend import NativeBackend
+            dll = Path(__file__).parent.parent.parent / "native" / "orn.dll"
+            self._native = NativeBackend(
+                dll_path   = dll,
+                model_path = self._cfg.model_path,
+                n_ctx      = self._cfg.n_ctx,
+                n_threads  = self._cfg.n_threads,
+            )
+        
         self._llm: Any           = None
         self._ctx: ContextWindow = ContextWindow(
             self._cfg.active_window,
@@ -408,6 +419,7 @@ class SiCDoxBridge:
         self._memo_order: deque[str] = deque()
         self._system_hint: str   = ""
         self._last_prompt: str = ""
+        self._system_tokens: Any = None
         self._system_prefix = (
             "<|im_start|>system\n"
             + self._cfg.system_prompt +
@@ -453,6 +465,11 @@ class SiCDoxBridge:
         if not prompt:
             raise ValueError("prompt não pode ser vazio.")
 
+        MAX_PROMPT_CHARS = 1200  # HARD LIMIT REAL
+
+        if len(prompt) > MAX_PROMPT_CHARS:
+            prompt = prompt[-MAX_PROMPT_CHARS:]  # mantém parte mais recente
+
         max_tokens = max_tokens or self._cfg.max_tokens
         self._system_hint = system_hint or ""
 
@@ -461,7 +478,8 @@ class SiCDoxBridge:
         #   Inclui: ④ Remove Redundant Terms + ② Compression.
 
         # llm_bridge.py — linha ~414, após o pitstop
-        prompt, max_tokens = pitstop(prompt, max_tokens, active_window=self._cfg.active_window)
+        #prompt, max_tokens = pitstop(prompt, max_tokens, active_window=self._cfg.active_window)
+        prompt, _ = pitstop(prompt, max_tokens, active_window=self._cfg.active_window)
         print(f"[DEBUG] após pitstop: max_tokens={max_tokens}", flush=True)  # ← temporário
 
         # ── Profiler: inicia sessão de medição ─────────────────────────
@@ -692,8 +710,30 @@ class SiCDoxBridge:
     # Internos — OSL-4: cada método faz uma coisa
     # ------------------------------------------------------------------
     def _ensure_loaded(self) -> None:
-        if self._llm is None:
-            self._load()
+        # Backend nativo
+        if self._native is not None:
+            if not self._native._ready:
+                try:
+                    self._native.load()
+                except Exception as exc:
+                    print(f"[ORN-NATIVE] falha ao carregar: {exc} — fallback Python")
+                    self._native = None
+                    # cai no caminho Python abaixo
+                else:
+                    return  # nativo pronto — não sobe llama-cpp-python
+            else:
+                return  # já estava pronto
+
+        # Caminho Python — TTL + load
+        if self._llm is not None:
+            if (self._cfg.ttl_seconds > 0
+                    and self._load_time is not None
+                    and time.monotonic() - self._load_time > self._cfg.ttl_seconds):
+                self.shutdown()
+            else:
+                return  # já carregado e dentro do TTL
+
+        self._load()  # ← estava faltando
     def _load(self) -> None:
         """Carrega o modelo GGUF. Chamado apenas por _ensure_loaded().
         OSL-5.2: Verifica existência antes de abrir.
@@ -754,7 +794,10 @@ class SiCDoxBridge:
                 kwargs.pop(token, None)
             self._llm = Llama(**kwargs)
         self._load_time = time.monotonic()
-        self._system_tokens = self._llm.tokenize(self._system_prefix.encode("utf-8"))
+        self._system_tokens = self._llm.tokenize(
+            self._system_prefix.encode("utf-8"),
+            special=True
+        )
         
     def _build_prompt(self) -> str:
         turns = self._ctx._view_turns()
@@ -791,6 +834,23 @@ class SiCDoxBridge:
           - Se o prompt não abriu um bloco ```, para em <|im_end|> como antes.
           - Se o prompt abriu um bloco ```, NÃO para em ``` — espera o fechamento.
         """
+        
+        print(f"[DEBUG-CE] native={self._native is not None}, ready={getattr(self._native, '_ready', 'N/A')}")
+        
+        if self._native is not None and self._native._ready:
+            print("[DEBUG-CE] → NATIVO")
+            p = prompt if isinstance(prompt, str) else \
+                self._llm.detokenize(prompt).decode("utf-8", errors="ignore")
+            
+            # Para o nativo: trunca prompt a 800 chars (~200 tokens)
+            # preserva a parte final (query + assistente)
+            if len(p) > 800:
+                p = p[-800:]
+                
+            return self._native.call(p, max_tokens)
+        
+        print("[DEBUG-CE] → PYTHON")
+        
         import time as _time
         if self._llm is None:
             raise RuntimeError("Modelo não carregado.")

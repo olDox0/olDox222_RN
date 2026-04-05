@@ -19,11 +19,12 @@ class Candidate:
 
 def default_candidates() -> list[Candidate]:
     return [
-        Candidate(256, 0.05, 1.05),
-        Candidate(512, 0.10, 1.10),
-        Candidate(1024, 0.10, 1.10),
-        Candidate(1024, 0.20, 1.10),
-        Candidate(2048, 0.20, 1.15),
+        # O modelo padrão que você usa
+        Candidate(n_ctx=512, min_p=0.05, repeat_penalty=1.05),
+        # Testar se um contexto minúsculo diminui a carga do KV Cache (impacto do Malloc)
+        Candidate(n_ctx=128, min_p=0.05, repeat_penalty=1.05),
+        # Testar se desativar a penalidade de repetição acelera o Sampler no Python
+        Candidate(n_ctx=512, min_p=0.05, repeat_penalty=1.00), 
     ]
 
 

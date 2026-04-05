@@ -19,13 +19,13 @@ from __future__ import annotations
 
 import functools
 import json
-import re
+# [DOX-UNUSED] import re
 import time
 import sys
-import os
+# [DOX-UNUSED] import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Configuração

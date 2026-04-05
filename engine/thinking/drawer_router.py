@@ -165,26 +165,61 @@ class DrawerRouter:
     # API pública
     # ------------------------------------------------------------------
 
-    def route(
-        self,
-        prompt: str,
-        board: "DoxoBoard | None" = None,
-        lang_override: str | None = None,
-    ) -> RouteResult:
-        """Tenta montar código a partir do CodeDrawer.
-
-        Args:
-            prompt:        Prompt original do usuário.
-            board:         Lousa corrente (para injetar o código como draft).
-            lang_override: Força linguagem (ex: "python").
-
-        Returns:
-            RouteResult com hit=True e código pronto, ou hit=False.
-        """
+    def route(self, prompt: str, board: "DoxoBoard", lang_override: str | None = None) -> RouteResult:
+        """Fast-track: Tenta buscar e montar o código do gaveteiro."""
         try:
             return self._route_impl(prompt, board, lang_override)
-        except Exception:
-            return RouteResult(hit=False)  # OSL-15
+        except Exception as e:
+            # OSL-15: fail-silent (se der erro no roteador, cai pra inferência normal)
+            import sys
+            print(f"[Hermes] Falha no roteador: {e}", file=sys.stderr)
+            return RouteResult(hit=False)
+
+    def _route_impl(self, prompt: str, board: "DoxoBoard", lang_override: str | None = None) -> RouteResult:
+        name, lang, inputs, outputs = _extract_intent(prompt)
+        
+        # Se foi passado um lang_override, a gente força o uso dele
+        if lang_override:
+            lang = lang_override
+
+        if not name:
+            return RouteResult(hit=False)
+
+        # Importa o Gaveteiro só se a intenção bateu (lazy load OSL-3)
+        from engine.tools.code_drawer import CodeDrawer
+        drawer = CodeDrawer()
+
+        # 1. Busca por nome diretamente!
+        snippet = drawer.get(name=name, lang=lang)
+        
+        # 2. Fallback pro assemble caso não ache pelo nome exato
+        if not snippet:
+            snippet = drawer.assemble(
+                name=name,
+                lang=lang,
+                inputs=inputs if inputs else None,
+                outputs=outputs if outputs else None,
+            )
+
+        if not snippet:
+            return RouteResult(hit=False)
+
+        # ACHOU! Valida a sintaxe rápido (Sandbox)
+        issues = self._diagnose(snippet.code, lang)
+        
+        # Se tem erro, a gente ignora o gaveteiro e deixa o LLM resolver
+        if issues:
+            return RouteResult(hit=False)
+
+        # TUDO OK! Injeta na Lousa.
+        self._post_to_board(board, snippet)
+        
+        # Fast-track Result!
+        return RouteResult(
+            hit=True,
+            code=snippet.code,
+            max_tokens_hint=128
+        )
 
     # ------------------------------------------------------------------
     # Implementação interna

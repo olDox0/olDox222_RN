@@ -18,7 +18,7 @@ God: Hephaestus — forja o prompt bruto em forma limpa antes de enviar.
 from __future__ import annotations
 
 import re
-import unicodedata
+# [DOX-UNUSED] import unicodedata
 
 # ---------------------------------------------------------------------------
 # ④ Remove Redundant Terms

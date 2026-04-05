@@ -1,0 +1,4914 @@
+# DOXOADE NEXUS INTELLIGENCE REPORT
+**Target Project:** ORN
+**Generated At:** 2026-04-05T21:40:22.022456+00:00
+**Focus Applied:** NONE
+
+```xml
+<project_summary>
+  <total_files_scanned>56</total_files_scanned>
+  <total_files_in_report>56</total_files_in_report>
+  <average_complexity>16.43</average_complexity>
+  <total_debt_tags>0</total_debt_tags>
+  <god_distribution>
+    <zeus>6</zeus>
+    <dionísio>46</dionísio>
+    <atena>1</atena>
+    <hades>2</hades>
+    <unknown>1</unknown>
+  </god_distribution>
+</project_summary>
+
+<codebase_map>
+
+  <file path="engine/cli.py" role="Zeus" complexity="117" status="stable">
+    <functions>_fmt_ms, _guess_lang_from_prompt, _guess_function_name, _is_probably_python_snippet, cli, process_result, think, _should_auto_search, config, _show_config, _collect_python_files, _lint_python_text, diagnose, index, tutorial, _csv_list, drawer, drawer_add, drawer_list, drawer_show, drawer_assemble, audit, fix, gen, _display_profile, brain, graph, bench, server, server_start, server_stop, server_status, server_ask, web, web_start, web_stop, probe, probe_status</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/cli.p
+"""
+ORN — CLI (Ártemis)
+Roteamento de comandos. Cada comando instancia o Executive e delega.
+
+OSL-16: Este arquivo só registra grupos e comandos — sem lógica de negócio.
+OSL-17: Responsabilidade única — roteamento de intenção do usuário.
+OSL-7:  GoalResult verificado em cada comando antes de exibir resultado.
+God: Ártemis — faz uma coisa, faz bem.
+
+Comandos MVP:
+  think   → chat livre com o Qwen               [Fase 1 — ATIVO]
+  config  → exibe/verifica configuração          [Fase 1 — ATIVO]
+
+Comandos futuros:
+  audit   → análise AST + LLM                   [Fase 2]
+  graph   → grafo de conceitos                   [Fase 2]
+  brain   → estado do blackboard / memória       [Fase 3]
+  fix     → sugestão de correção                 [Fase 4]
+  gen     → geração de código                    [Fase 4]
+"""
+
+import os
+import sys
+import json
+import time
+import re
+import subprocess
+import click
+
+from pathlib import Path
+
+from engine.ui.display import Display
+
+#from engine.core.import_hook import install_lazy_imports
+#install_lazy_imports([
+#    "engine",
+#    "doxoade",
+#])
+
+def _fmt_ms(value: float) -> str:
+    value = float(value or 0)
+    if value >= 1000:
+        return f"{value / 1000.0:.3f}s"
+    return f"{value:.3f}ms"
+
+
+def _guess_lang_from_prompt(prompt: str) -> str:
+    p = (prompt or "").lower()
+    if "python" in p:
+        return "python"
+    if "javascript" in p or "js" in p:
+        return "javascript"
+    if "typescript" in p or "ts" in p:
+        return "typescript"
+    if "java" in p:
+        return "java"
+    if "c++" in p or "cpp" in p:
+        return "cpp"
+    if "c#" in p or "csharp" in p:
+        return "csharp"
+    return "python"
+
+
+def _guess_function_name(prompt: str) -> str | None:
+    p = (prompt or "").lower()
+    tokens = re.findall(r"[a-z_][a-z0-9_]{2,}", p)
+    stop = {
+        "faca", "faça", "crie", "implemente", "codigo", "código", "em", "para",
+        "python", "javascript", "typescript", "java", "funcao", "função",
+        "algoritmo", "com", "sem", "uma", "um", "de", "do", "da",
+    }
+    for t in tokens:
+        if t not in stop:
+            return t
+    return None
+
+
+def _is_probably_python_snippet(code: str) -> bool:
+    txt = (code or "").strip().lower()
+    if not txt:
+        return False
+    strong_signals = ("def ", "class ", "import ", "from ", "return ", "lambda ")
+    if any(sig in txt for sig in strong_signals):
+        return True
+    # Evita fast-path em pseudoalgoritmo textual.
+    pseudo_signals = ("algoritmo", "início", "inicio", "fim", "lista of", "para cada")
+    if any(sig in txt for sig in pseudo_signals):
+        return False
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Grupo raiz
+# ---------------------------------------------------------------------------
+
+@click.group()
+@click.version_option(package_name="orn")
+@click.pass_context
+def cli(ctx: click.Context) -> None:
+    """ORN — AI CLI para código (Qwen2.5-Coder local)."""
+    ctx.ensure_object(dict)
+    ctx.obj['start_time'] = time.perf_counter()
+    try:
+        from doxoade.chronos import chronos_recorder
+        chronos_recorder.start_command(ctx)
+    except ImportError:
+        pass
+
+@cli.result_callback()
+def process_result(result, **kwargs):
+    ctx = click.get_current_context()
+    if ctx.obj and 'start_time' in ctx.obj:
+        try:
+            from doxoade.chronos import chronos_recorder
+            import sys
+            duration_ms = (time.perf_counter() - ctx.obj['start_time']) * 1000
+            exit_code = 0 if sys.exc_info()[0] is None else 1
+            chronos_recorder.end_command(exit_code, duration_ms)
+        except ImportError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# think — MVP [Fase 1 ATIVO]
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.argument("prompt", nargs=-1, required=True)
+@click.option("--file", "-f", "context_file",
+              type=click.Path(exists=True),
+              default=None,
+              help="Arquivo de contexto adicional (injeta no prompt).")
+@click.option("--raw", is_flag=True, default=False,
+              help="Exibe output bruto sem formatação.")
+@click.option("--tokens", "-t",
+              type=int, default=None,
+              help="Limite de tokens da resposta (padrão: 128).")
+@click.option("--direct", is_flag=True, default=False,
+              help="Força modo direto (ignora servidor mesmo se online).")
+@click.option("--search", "-s", default=None, metavar="QUERY|FONTE:QUERY",
+              help="Busca contexto online. Ex: 'asyncio' ou 'pypi:requests'")
+@click.option("--search-code-only", is_flag=True, default=False,
+              help="Quando usar --search local/auto, restringe contexto local para blocos de código.")
+@click.option("--drawer-first", is_flag=True, default=False,
+              help="Tenta usar primeiro snippet do gaveteiro (repertório
+    ]]></source_code>
+  </file>
+
+  <file path="engine/__init__.py" role="Dionísio" complexity="0" status="stable">
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — Server Package
+Servidor de inferencia persistente (SiCDox Server).
+God: Hefesto — fornalha que nao apaga.
+"""
+    ]]></source_code>
+  </file>
+
+  <file path="engine/__main__.py" role="Zeus" complexity="24" status="stable">
+    <functions>_load_python_cli_fallback, _is_wrapper_signature_type_error, main</functions>
+    <source_code><![CDATA[
+# --- DOXOADE_VULCAN_BOOTSTRAP:START ---
+from pathlib import Path as _doxo_path
+import importlib.util as _doxo_importlib_util
+import sys as _doxo_sys
+import time as _doxo_time
+
+_doxo_activate_vulcan = None
+_doxo_install_meta_finder = None
+_doxo_probe_embedded = None
+_doxo_project_root = None
+_doxo_boot_t0 = _doxo_time.monotonic()
+
+# --- Lazy-loader --- 
+_doxo_lazy_mod = None
+try:
+    if _doxo_project_root:
+        _doxo_lazy_policy_f = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_policy.json"
+        _doxo_lazy_src_f    = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_loader.py"
+        if _doxo_lazy_policy_f.exists() and _doxo_lazy_src_f.exists():
+            _doxo_lazy_spec = _doxo_importlib_util.spec_from_file_location(
+                "_doxoade_vulcan_lazy", str(_doxo_lazy_src_f)
+            )
+            if _doxo_lazy_spec and _doxo_lazy_spec.loader:
+                _doxo_lazy_mod = _doxo_importlib_util.module_from_spec(_doxo_lazy_spec)
+                _doxo_sys.modules["_doxoade_vulcan_lazy"] = _doxo_lazy_mod
+                _doxo_lazy_spec.loader.exec_module(_doxo_lazy_mod)
+                _doxo_lazy_mod.install(
+                    _doxo_lazy_mod.load_policy(_doxo_lazy_policy_f)
+                )
+except Exception:
+    pass
+
+_doxo_install_ms = 0
+_doxo_embedded_ms = 0
+_doxo_fallback_ms = 0
+
+for _doxo_base in[_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
+    _doxo_runtime_file = _doxo_base / ".doxoade" / "vulcan" / "runtime.py"
+    if not _doxo_runtime_file.exists():
+        continue
+    _doxo_spec = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_runtime", str(_doxo_runtime_file))
+    if not (_doxo_spec and _doxo_spec.loader):
+        continue
+    _doxo_mod = _doxo_importlib_util.module_from_spec(_doxo_spec)
+    _doxo_sys.modules["_doxoade_vulcan_runtime"] = _doxo_mod
+    _doxo_spec.loader.exec_module(_doxo_mod)
+    _doxo_activate_vulcan = getattr(_doxo_mod, "activate_vulcan", None)
+    _doxo_install_meta_finder = getattr(_doxo_mod, "install_meta_finder", None)
+    _doxo_probe_embedded = getattr(_doxo_mod, "probe_embedded", None)
+    _doxo_project_root = str(_doxo_base)
+    break
+
+# 1. Instala MetaFinder primeiro
+if callable(_doxo_install_meta_finder) and _doxo_project_root:
+    _doxo_t = _doxo_time.monotonic()
+    try:
+        _doxo_install_meta_finder(_doxo_project_root)
+    except Exception:
+        pass
+    finally:
+        _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
+
+# 2. Tenta usar o loader "embedded"
+try:
+    _doxo_t = _doxo_time.monotonic()
+    if _doxo_project_root:
+        _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
+        if _embedded_path.exists():
+            _doxo_spec2 = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_embedded", str(_embedded_path))
+            if _doxo_spec2 and _doxo_spec2.loader:
+                _doxo_mod2 = _doxo_importlib_util.module_from_spec(_doxo_spec2)
+                _doxo_sys.modules["_doxoade_vulcan_embedded"] = _doxo_mod2
+                _doxo_spec2.loader.exec_module(_doxo_mod2)
+                _doxo_activate_embedded = getattr(_doxo_mod2, "activate_embedded", None)
+                _doxo_safe_call = getattr(_doxo_mod2, "safe_call", None)
+                if callable(_doxo_activate_embedded):
+                    try:
+                        _doxo_activate_embedded(globals(), __file__, _doxo_project_root)
+                    except Exception:
+                        pass
+                if callable(_doxo_safe_call):
+                    try:
+                        import sys as _d_sys
+                        _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
+                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
+                        _suffix_len    = len(_vulcan_suffix)
+                        for mname, mod in list(_d_sys.modules.items()):
+                            try:
+                                mfile = getattr(mod, "__file__", None)
+                                if not mfile:
+                                    continue
+                                mpath = _doxo_path(mfile)
+                                if _bin_dir not in mpath.parents:
+                                    continue
+                                for attr in dir(mod):
+                                    if not attr.endswith(_vulcan_suffix):
+                                        continue
+                                    native_obj = getattr(mod, attr, None)
+                                    if not callable(native_obj):
+                                        continue
+                                    base = attr[: -_suffix_len]
+                                    try:
+                                        setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
+                                    except Exception:
+                              
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/atlas.py" role="Dionísio" complexity="0" status="stable">
+    <source_code><![CDATA[
+# Atlas Funcional (Thoth)
+# OSL-18: Usa apenas stdlib (json, pathlib) para carregar o atlas.
+# God: Thoth — linguagem e lógica, dá forma ao conhecimento do sistema.
+# Carrega e expõe doxoade_atlas.json como dict navegável.
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/blackboard.py" role="Dionísio" complexity="25" status="stable">
+    <classes>Draft, DoxoBoard, CognitiveReducer</classes>
+    <functions>__init__, open_session, close_session, post_draft, build_synthesis_block, _build_compact, session_info, reduce_file, _reduce_python, _reduce_generic</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — Lousa de Raciocínio (DoxoBoard / Hades)
+
+Blackboard clássico: espaço de trabalho ATIVO por query.
+Fontes de conhecimento depositam rascunhos → board sintetiza
+um bloco estruturado → bloco guia a geração → sessão encerrada.
+
+NÃO é histórico. NÃO persiste respostas entre sessões.
+NÃO injeta Q&A do passado no contexto.
+
+OSL-3:  Estado de sessão descartado em close_session() — sem acúmulo.
+OSL-4:  open / post / build / close — cada método faz uma coisa.
+OSL-5.1: Papéis de rascunho validados contra ROLES conhecidos.
+OSL-7:  build_synthesis_block() retorna "" se a sessão estiver vazia.
+OSL-18: stdlib only.
+God: Hades — guarda o que é útil agora; descarta o que já passou.
+
+Fluxo por query:
+  Executive._run_think()
+    ├─ board.open_session(query)          # abre workspace limpo
+    ├─ board.post_draft(...)              # deposita rascunhos
+    ├─ prompt = board.build_synthesis_block() + query
+    ├─ bridge.ask(prompt)
+    └─ board.close_session()             # descarta tudo
+"""
+
+from __future__ import annotations
+
+import ast
+# [DOX-UNUSED] import re
+
+from dataclasses import dataclass
+from typing import Literal
+
+
+# ---------------------------------------------------------------------------
+# Papéis de rascunho — o que cada draft representa no raciocínio
+# ---------------------------------------------------------------------------
+
+DraftRole = Literal[
+    "decomp",       # decomposição da query em sub-aspectos
+    "constraint",   # restrição de formato ou escopo da resposta
+    "evidence",     # fato ou dado de suporte já conhecido
+    "angle",        # ângulo de abordagem sugerido
+    "counter",      # contra-argumento ou ressalva a considerar
+    "format",       # instrução de formato para o output
+]
+
+_VALID_ROLES: frozenset[str] = frozenset(
+    {"decomp", "constraint", "evidence", "angle", "counter", "format"}
+)
+
+
+# ---------------------------------------------------------------------------
+# Unidade de rascunho
+# ---------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class Draft:
+    """Um rascunho depositado por uma fonte de conhecimento.
+
+    Attributes:
+        source:  Quem depositou (ex: "decomposer", "context_file", "user_hint").
+        role:    Papel no raciocínio — ver DraftRole.
+        content: Conteúdo do rascunho (texto curto).
+        weight:  Importância relativa; influencia ordem no bloco (0.0–1.0).
+    """
+    source:  str
+    role:    str
+    content: str
+    weight:  float = 1.0
+
+
+# ---------------------------------------------------------------------------
+# DoxoBoard — lousa de raciocínio
+# ---------------------------------------------------------------------------
+
+class DoxoBoard:
+    """Workspace de raciocínio por query.
+
+    Cada chamada a open_session() apaga a sessão anterior.
+    Os drafts acumulados em post_draft() são sintetizados por
+    build_synthesis_block() num bloco de texto injetado no prompt.
+    close_session() descarta tudo — não há persistência de conteúdo.
+
+    Args:
+        max_drafts: Limite de drafts por sessão (evita crescimento sem controle).
+    """
+
+    _MAX_CONTENT: int = 160   # chars máximos por draft no bloco final
+    _SECTION_SEP: str = "\n"
+
+    def __init__(self, max_drafts: int = 16) -> None:
+        self._max_drafts: int = max(4, int(max_drafts))
+        self._query:      str = ""
+        self._drafts:     list[Draft] = []
+        self._open:       bool = False
+
+    # ------------------------------------------------------------------
+    # Ciclo de vida da sessão
+    # ------------------------------------------------------------------
+
+    def open_session(self, query: str) -> None:
+        """Inicia um workspace limpo para a query.
+
+        OSL-5.1: query vazia é aceita (pode ser completada depois).
+        Chama close_session() implicitamente para garantir limpeza.
+
+        Args:
+            query: Texto da query que será processada.
+        """
+        self.close_session()
+        self._query = query.strip() if query else ""
+        self._open  = True
+
+    def close_session(self) -> None:
+        """Descarta todos os drafts da sessão corrente.
+
+        OSL-3: determinístico — não depende de GC nem de TTL.
+        Idempotente: seguro chamar sem sessão aberta.
+        """
+        self._query  = ""
+        self._drafts = []
+        self._open   = False
+
+    # ------------------------------------------------------------------
+    # Depósito de rascunhos (fontes de conhecimento)
+    # ------------------------------------------------------------------
+
+    def post_draft(
+        self,
+        source:  str,
+        content: str,
+        role:    str = "angle",
+        weight:  float = 1.0,
+    ) -> None:
+        """Deposita um rascunho de raciocínio na lousa.
+
+        OSL-5.1: valida role, source e content antes de aceitar.
+        Limita ao max_drafts mais pesados quando cheio.
+
+        Args:
+            source:  Identificador da fonte (ex: "decomposer", "file_ctx").
+         
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/executive.py" role="Dionísio" complexity="52" status="stable">
+    <classes>GoalResult, SiCDoxExecutive</classes>
+    <functions>classify_prompt, _decompose_query, _read_file_safe, _looks_degenerate_think_output, _deterministic_code_answer, _adaptive_max_tokens, __init__, process_goal, shutdown, bridge_stats, board_summary, clear_board, _dispatch, _run_think, _run_audit, _run_fix, _run_gen, _run_brain, _run_graph, _get_bridge, _get_board, _get_validator, _get_planner, _get_assembler, _get_drawer_router, _get_memory</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — Executive (Zeus)
+Orquestrador central. Recebe goals da CLI e despacha para os módulos certos.
+
+OSL-17: Este módulo só orquestra — nunca executa lógica de negócio diretamente.
+OSL-5.1: Pré-condições verificadas antes de qualquer dispatch.
+OSL-7: Retorno de cada módulo filho é verificado antes de prosseguir.
+OSL-15: Modo degradado — erros não fatais retornam GoalResult(success=False).
+God: Zeus — controla permissões e decisões globais do sistema.
+
+Fluxo MVP (think):
+  CLI → process_goal("think", prompt)
+       → _run_think()
+       → Bridge.ask()
+       → Validator.validar_output()
+       → GoalResult → CLI
+
+Fluxo futuro (audit, fix, gen):
+  CLI → process_goal(intent, payload)
+       → Planner.formulate_strategy()
+       → ConceptMapper / ferramentas
+       → Bridge.ask()
+       → Validator.validar_output()
+       → GoalResult → CLI
+"""
+
+from __future__ import annotations
+
+import re, time, functools
+
+from concurrent.futures import Future
+from dataclasses import dataclass, field
+from typing import Any
+
+from engine.telemetry.forensic import emit_forensic_log
+from engine.thinking.code_hook import apply_code_hook     # Argos
+from engine.thinking.drawer_router import DrawerRouter
+
+# ---------------------------------------------------------------------------
+# Tipos de contrato (OSL-7)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GoalResult:
+    """Resultado de um process_goal.
+
+    Attributes:
+        success:  True se o pipeline completou sem erros críticos.
+        intent:   Intent original recebido.
+        output:   Texto gerado (resposta, código, análise, etc).
+        errors:   Erros não-fatais encontrados no pipeline.
+        metadata: Dados extras — tempo de execução, tokens estimados, etc.
+    """
+    success: bool
+    intent: str
+    output: str = ""
+    errors: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Executive
+# ---------------------------------------------------------------------------
+
+class SiCDoxExecutive:
+    """Orquestrador central do ORN.
+
+    OSL-3: Módulos filhos carregados sob demanda (lazy) — não no __init__.
+    OSL-16: Máx 500 linhas; lógica de cada intent vai para _run_*().
+    """
+
+    def __init__(self, persistent: bool = True) -> None:
+        self._board: Any = None              # DoxoBoard (Hades)
+        self._bridge: Any = None              # SiCDoxBridge (Hefesto)
+        self._infer_queue: Any = None
+        self._memory: Any = None             # VectorDB (Osíris)
+        self._persistent = persistent
+        self._planner: Any = None            # ExecutivePlanner (Atena)
+        self._validator: Any = None          # SiCDoxValidator (Anúbis)
+
+    # ------------------------------------------------------------------
+    # API pública
+    # ------------------------------------------------------------------
+
+    def process_goal(
+        self,
+        intent: str,
+        payload: str,
+        context: dict[str, Any] | None = None,
+    ) -> GoalResult:
+        """Processa um goal recebido da CLI."""
+        if not intent:
+            raise ValueError("intent não pode ser vazio.")
+        if not payload:
+            raise ValueError("payload não pode ser vazio.")
+
+        context = context or {}
+        t_start = time.monotonic()
+
+        try:
+            result = self._dispatch(intent, payload, context)
+        except NotImplementedError as exc:
+            emit_forensic_log(exc, "_dispatch")
+            result = GoalResult(success=False, intent=intent, errors=[f"[TODO] {exc}"])
+        except FileNotFoundError as exc:
+            emit_forensic_log(exc, "_dispatch")
+            result = GoalResult(success=False, intent=intent, errors=[f"[ARQUIVO] {exc}"])
+        except Exception as exc:
+            emit_forensic_log(exc, "_dispatch")
+            result = GoalResult(
+                success=False,
+                intent=intent,
+                errors=[f"[ERRO INTERNO] {type(exc).__name__}: {exc}"],
+            )
+
+        result.metadata["elapsed_s"] = round(time.monotonic() - t_start, 3)
+        return result
+
+    def shutdown(self, force: bool = False) -> None:
+        """Libera recursos. Só fecha o bridge se não estiver em modo persistente,
+        ou se force=True for explicitamente pedido."""
+        if self._persistent and not force:
+            return
+
+        if self._infer_queue is not None:
+            try:
+                self._infer_queue.shutdown()
+            except Exception:
+                pass
+            self._infer_queue = None
+
+        if self._bridge is not None:
+            try:
+                self._bridge.shutdown()
+            except Exception:
+                pass
+            self._bridge = None
+
+    def bridge_stats(self) -> dict[str, Any]:
+        """Estado do bridge para `orn brain`. OSL-12."""
+        if self._bridge is None:
+      
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/import_hook.py" role="Dionísio" complexity="4" status="stable">
+    <classes>LazyModule, LazyImportFinder, LazyImportLoader</classes>
+    <functions>_cached_import, install_lazy_imports, __init__, _load, __getattr__, __init__, find_spec, _should_intercept, __init__, create_module, exec_module</functions>
+    <source_code><![CDATA[
+from __future__ import annotations
+
+import sys
+import importlib
+import importlib.abc
+import importlib.util
+
+from types import ModuleType
+from functools import lru_cache
+from importlib.machinery import PathFinder
+
+# -------------------------
+# CACHE GLOBAL
+# -------------------------
+
+@lru_cache(maxsize=1024)
+def _cached_import(name: str) -> ModuleType:
+    return importlib.import_module(name)
+
+
+# -------------------------
+# LOADER LAZY
+# -------------------------
+
+class LazyModule(ModuleType):
+    def __init__(self, name: str):
+        super().__init__(name)
+        self._real_module = None
+
+    def _load(self):
+        if self._real_module is None:
+            real = _cached_import(self.__name__)
+            sys.modules[self.__name__] = real
+            self._real_module = real
+        return self._real_module
+
+    def __getattr__(self, item):
+        return getattr(self._load(), item)
+
+
+# -------------------------
+# FINDER CUSTOM
+# -------------------------
+
+class LazyImportFinder(importlib.abc.MetaPathFinder):
+
+    def __init__(self, target_prefixes: list[str] | None = None):
+        self.target_prefixes = target_prefixes or []
+
+    def find_spec(self, fullname, path, target=None):
+        if not self._should_intercept(fullname):
+            return None
+
+        spec = PathFinder.find_spec(fullname, path)
+        if spec is None:
+            return None
+
+        return importlib.util.spec_from_loader(
+            fullname,
+            LazyImportLoader(fullname),
+            origin=spec.origin
+        )
+
+    def _should_intercept(self, fullname: str) -> bool:
+        if fullname in sys.builtin_module_names:
+            return False
+        return any(fullname.startswith(p) for p in self.target_prefixes)
+
+
+# -------------------------
+# LOADER
+# -------------------------
+
+class LazyImportLoader(importlib.abc.Loader):
+
+    def __init__(self, fullname: str):
+        self.fullname = fullname
+
+    def create_module(self, spec):
+        return LazyModule(spec.name)
+
+    def exec_module(self, module):
+        # NÃO carrega aqui → lazy real
+        pass
+
+
+# -------------------------
+# ATIVADOR
+# -------------------------
+
+def install_lazy_imports(prefixes: list[str]):
+    finder = LazyImportFinder(prefixes)
+    sys.meta_path.insert(0, finder)
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/llm_bridge.py" role="Dionísio" complexity="97" status="stable">
+    <classes>BridgeConfig, ContextWindow, SiCDoxBridge, _NullSpan</classes>
+    <functions>_normalize_optional_text, _normalize_optional_float, _normalize_memory_profile, _apply_memory_profile_defaults, effective_memory_flags, _normalize_optional_bool, __post_init__, __init__, push, _compact_old_turns, get_turns, _view_turns, clear, stats, __init__, ask, _log_runtime, _memo_key, _memo_order_discard, _memo_get, _memo_put, shutdown, clear_context, stats, _ensure_loaded, _load, _build_prompt, _call_engine, _build_prompt_tokens, __enter__, __exit__</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine\core\llm_bridge.py
+"""
+ORN — LLM Bridge (Hefesto) — Fase 1: ATIVO
+Interface com Qwen2.5-Coder via llama-cpp-python.
+POLÍTICA DE MEMÓRIA (Relatório de Protótipo):
+  - Modelo é SERVIÇO — sobe sob demanda, desce por shutdown() (TTL via Executive).
+  - KV-cache controlado por ContextWindow (sliding window, §2.2).
+  - Quantização INT4 resolvida no modelo escolhido (Q4_K_M).
+  - n_gpu_layers: 0 = CPU-only (edge/desktop safe). Ajustar se VRAM disponível.
+  - n_ctx = 2048: conservador; active_window = 1024: janela ativa do KV-cache.
+  [ Executive ]
+       |
+  [ SiCDoxBridge ]
+       |
+  [ Llama (llama-cpp) ]
+  |        |        |
+  KV     Weights  Layers
+ (ContextWindow)  (n_gpu_layers)
+OSL-3:  _llm é None até _load(); liberado deterministicamente por shutdown().
+OSL-4:  _build_prompt(), _call_engine(), ask() separados e curtos.
+OSL-7:  Retorno de inferência verificado em ask() antes de repassar.
+OSL-12: stats() expõe uso de memória para `orn brain`.
+God: Hefesto — forja sob demanda; transforma prompt em artefato.
+ARCHAEOLOGY NOTE (2026-02-01 layer 1) — recuperar na Fase 4:
+    def generate_plan(self, user_intent: str, context_graph_snippet: str) -> str:
+        prompt = (f'CONTEXTO ATUAL (TGF):\n{context_graph_snippet}\n\n'
+                  f'INTENÇÃO DO ARQUITETO: {user_intent}')
+        return self._call_engine(self._build_prompt(), self._cfg.max_tokens)
+"""
+from __future__ import annotations
+from collections import deque
+
+import time
+import os
+import json
+
+from typing                   import Any
+from pathlib                  import Path
+from dataclasses              import dataclass
+from engine.telemetry.runtime import record_direct  # noqa: PLC0415
+from engine.core.prompt_utils import pitstop        # noqa: PLC0415
+# ---------------------------------------------------------------------------
+# Configuração de memória
+# ---------------------------------------------------------------------------
+@dataclass
+class BridgeConfig:
+    """Parâmetros de controle de memória e inferência.
+    Calibrado para Celeron N2808 (REP.INFRA.20260209.GOLD §4):
+      - Sem AVX/AVX2: compilado com SSE4.2, -DGGML_OPENMP=OFF
+      - n_threads=2: Dual-Core real — mais threads não ajudam sem OpenMP
+      - Load time: ~80 segundos — NORMAL para este hardware
+      - Performance: ~1.40 t/s após otimização SSE4.2
+      - ttl_seconds=3600: recarregar custa 80s, manter em RAM o máximo possível
+    """
+    model_path:    Path = Path(
+        "models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+        #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+    )
+    memory_profile:          str  = "default"  # default|low (env: ORN_MEMORY_PROFILE)
+    n_ctx:                   int  = 1024   # era 2048 — reduz KV-cache pela metade
+    active_window:           int  = 256    # era 1024 — proporcional
+    n_batch:                 int  = 64     # NOVO — era 512 (default llama.cpp)
+                                 # 64 = menos pressão de memória no N2808
+    # N2808: Dual-Core sem hyperthreading útil — 2 threads é o teto real
+    n_threads:               int = 2 #n_threads:               int = 2
+    n_threads_batch:         int = 2
+    n_gpu_layers:            int = 0     # CPU-only (sem GPU no N2808)
+    use_mmap: bool =         True        # mmap para pesos (carregamento preguiçoso)
+    use_mlock: bool =        True       # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
+    no_alloc: bool =         True        # Evita alocação interna inicial quando suportado pelo backend
+    pin_threads: bool =      False     # Fixa threads em núcleos quando suportado
+    cont_batching: bool =    True   # Continuous batching quando suportado
+    # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
+    # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
+    ttl_seconds:   int  =    400   # 1 hora (era 300s — inadequado para N2808)
+    # max_tokens reduzido para testes — 679s foi causado por resposta gigante
+    # Regra: 128 para testes rápidos, 512 para uso normal
+    max_tokens:    int   =   512
+    # Parâmetros de sampling (doc ORN_up — seção 3)
+    # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
+    temperature:    float =  0.40
+    top_p:          float =  0.80 #top_p:          float =  0.85
+    top_k:          int   =  20   #top_k:          int   =  35
+    repeat_penalty: float =  1.05
+    min_p:          float =  0.01 #min_p:          float =  0.05 ou None
+    # Menemonização de repetições (com pruning LRU)
+    repetition_memo_enabled: bool = True
+    repetition_memo_size:    int  = 128
+    # Context rotation + compactação para conversas longas
+    context_rotation: bool = True
+    context_compact_ratio:   float = 0.7
+    # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
+    cache_type_k: q8_0 | None = None
+    cache_type_v: q8_0 | None = None
+    # Parâmetros RoPE para ajuste de extrapolação/contexto
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/logic_filter.py" role="Atena" complexity="3" status="stable">
+    <classes>SiCDoxValidator</classes>
+    <functions>validar_output, _validar_python</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — Logic Filter / Validator (Anúbis)
+Valida todo output do LLM antes de chegar ao usuário.
+
+OSL-5.2: Valida integridade de qualquer saída recebida de módulos externos.
+OSL-7:   Contrato explícito — retorna (bool, motivo: str).
+God: Anúbis — decide o que passa ou morre.
+
+TODO Fase 1: implementar regras de validação básicas.
+TODO Fase 2: adicionar validação sintática de código (ast.parse).
+"""
+
+from __future__ import annotations
+
+
+class SiCDoxValidator:
+    """Validador de output do LLM.
+
+    Regras atuais (a expandir):
+      - Output não pode ser vazio.
+      - Output não pode ser apenas whitespace.
+      - [Fase 2] Se lang == 'python', deve passar ast.parse().
+    """
+
+    def validar_output(self, output: str,
+                       lang: str | None = None) -> tuple[bool, str]:
+        """Valida o *output* gerado pelo modelo.
+
+        OSL-5.1: Pré-condição — output deve ser str.
+        OSL-7: Retorna tupla (válido, motivo) — chamador deve verificar.
+
+        Args:
+            output: Texto gerado pelo LLM.
+            lang:   Linguagem do código, se aplicável ('python', 'c', etc).
+
+        Returns:
+            (True, "") se válido.
+            (False, motivo) se inválido.
+        """
+        if not isinstance(output, str):
+            return False, "Output não é uma string."
+
+        if not output.strip():
+            return False, "Output vazio ou apenas whitespace."
+
+        if lang == "python":
+            return self._validar_python(output)
+
+        return True, ""
+
+    # ------------------------------------------------------------------
+    # Validações por linguagem
+    # ------------------------------------------------------------------
+
+    def _validar_python(self, codigo: str) -> tuple[bool, str]:
+        """Tenta fazer parse do código Python gerado.
+
+        OSL-18: usa ast da stdlib — sem deps externas.
+        """
+        import ast  # noqa: PLC0415 (stdlib, import local aceitável aqui)
+        try:
+            ast.parse(codigo)
+            return True, ""
+        except SyntaxError as exc:
+            return False, f"SyntaxError no código gerado: {exc}"
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/native_backend.py" role="Dionísio" complexity="5" status="stable">
+    <classes>NativeBackend</classes>
+    <functions>__init__, load, shutdown, call</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — Native Backend (Vulcano Nativo)
+Chama orn.dll diretamente via ctypes — sem overhead do llama-cpp-python.
+"""
+import os
+import time
+from ctypes import cdll, c_char_p, c_int, create_string_buffer
+from pathlib import Path
+
+
+class NativeBackend:
+    """Interface ctypes para orn.dll.
+    
+    Implementa a mesma assinatura de retorno que _call_engine() do bridge:
+        {'text': str, 'usage': dict, 'llm_call_ms': float}
+    """
+
+    _OUTPUT_SIZE = 8192
+
+    def __init__(self, dll_path: str | Path, model_path: str | Path,
+                 n_ctx: int = 512, n_threads: int = 2) -> None:
+        self._dll_path   = Path(dll_path)
+        self._model_path = str(model_path)
+        self._n_ctx      = n_ctx
+        self._n_threads  = n_threads
+        self._lib        = None
+        self._ready      = False
+
+    # ------------------------------------------------------------------
+    # Ciclo de vida
+    # ------------------------------------------------------------------
+
+    def load(self) -> None:
+        """Carrega DLL e inicializa modelo."""
+        if self._ready:
+            return
+
+        os.add_dll_directory(str(self._dll_path.parent))
+        lib = cdll.LoadLibrary(str(self._dll_path))
+
+        lib.orn_init.argtypes  = [c_char_p, c_int, c_int]
+        lib.orn_init.restype   = c_int
+        lib.orn_infer.argtypes = [c_char_p, c_int, c_char_p, c_int]
+        lib.orn_infer.restype  = c_int
+        lib.orn_free.argtypes  = []
+        lib.orn_free.restype   = None
+
+        rc = lib.orn_init(
+            self._model_path.encode("utf-8"),
+            self._n_ctx,
+            self._n_threads,
+        )
+        if rc != 0:
+            raise RuntimeError(f"orn_init falhou: {rc}")
+
+        self._lib   = lib
+        self._ready = True
+
+    def shutdown(self) -> None:
+        if self._lib and self._ready:
+            self._lib.orn_free()
+        self._lib  = None
+        self._ready = False
+
+    # ------------------------------------------------------------------
+    # Inferência — mesma assinatura de retorno que _call_engine()
+    # ------------------------------------------------------------------
+
+    def call(self, prompt: str, max_tokens: int) -> dict:
+        """Executa inferência nativa e retorna dict compatível com bridge."""
+        if not self._ready:
+            raise RuntimeError("NativeBackend não inicializado.")
+
+        buf = create_string_buffer(self._OUTPUT_SIZE)
+        t0  = time.perf_counter()
+
+        n = self._lib.orn_infer(
+            prompt.encode("utf-8"),
+            max_tokens,
+            buf,
+            self._OUTPUT_SIZE,
+        )
+
+        llm_ms = (time.perf_counter() - t0) * 1000.0
+
+        if n < 0:
+            raise RuntimeError(f"orn_infer falhou: {n}")
+
+        text = buf.value.decode("utf-8", errors="ignore")
+        real_token_count = len(text.split())  # estimativa rápida
+
+        return {
+            "text":       text,
+            "usage":      {
+                "prompt_tokens":     0,
+                "completion_tokens": real_token_count,  # era: n (bytes)
+                "total_tokens":      real_token_count,
+            },
+            "llm_call_ms": round(llm_ms, 3),
+        }
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/prompt_utils.py" role="Dionísio" complexity="6" status="stable">
+    <functions>remove_redundant_terms, compress_prompt, pitstop</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — PromptUtils
+Pré-processamento de prompts antes da inferência.
+
+Dois objetivos:
+  1. Remove Redundant Terms  — elimina termos de cortesia e frases
+     redundantes que inflatam o token count sem ajudar o modelo.
+  2. Compression             — trunca o prompt para caber dentro da
+     active_window configurada, preservando a parte mais informativa.
+
+OSL-4:  Cada função faz uma coisa.
+OSL-15: Nunca levanta exceção — retorna texto original em caso de erro.
+OSL-18: stdlib only (re, unicodedata).
+God: Hephaestus — forja o prompt bruto em forma limpa antes de enviar.
+"""
+
+from __future__ import annotations
+
+import re
+# [DOX-UNUSED] import unicodedata
+
+# ---------------------------------------------------------------------------
+# ④ Remove Redundant Terms
+# ---------------------------------------------------------------------------
+
+# Frases de cortesia e preâmbulos que não ajudam o modelo a gerar código.
+# Calibrado para português (ORN usa pt-BR por padrão).
+_FILLER_PT = re.compile(
+    r"\b("
+    r"por favor|por gentileza|se puder|se possível|obrigado|obrigada|"
+    r"gostaria que você|gostaria que voce|quero que você|quero que voce|"
+    r"poderia (me |)?(fazer|criar|escrever|gerar)|você poderia|voce poderia|"
+    r"você pode|voce pode|pode me (ajudar a|dar|fazer)|"
+    r"me ajude a|me dê|me de |me da |"
+    r"seria (muito |)?(possível|possivel)|seria (tão |)(gentil|amável|amavel)|"
+    r"preciso que você|preciso que voce|preciso de (uma |)(ajuda|help)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Palavras repetidas consecutivas: "faça faça" → "faça"
+_CONSECUTIVE_WORDS = re.compile(
+    r"\b(\w+)\b(\s+\1\b)+",
+    re.IGNORECASE,
+)
+
+# Pontuação redundante: "...!!!" → "!"
+_EXCESS_PUNCT = re.compile(r"([!?.]){2,}")
+
+# Espaços múltiplos após remoções
+_MULTI_SPACE = re.compile(r" {2,}")
+
+
+def remove_redundant_terms(text: str) -> str:
+    """Remove filler words e termos redundantes do prompt.
+
+    Não remove palavras técnicas, nomes de variáveis, ou termos de código.
+    Opera apenas em padrões de linguagem natural reconhecidamente supérfluos.
+
+    Args:
+        text: Prompt original do usuário.
+
+    Returns:
+        Prompt limpo. Nunca mais curto que 4 caracteres (proteção de conteúdo).
+    """
+    if not text or len(text) < 8:
+        return text
+
+    try:
+        cleaned = _FILLER_PT.sub("", text)
+        cleaned = _CONSECUTIVE_WORDS.sub(r"\1", cleaned)
+        cleaned = _EXCESS_PUNCT.sub(r"\1", cleaned)
+        cleaned = _MULTI_SPACE.sub(" ", cleaned).strip()
+
+        # Segurança: nunca retorna string mais curta que 4 chars
+        # (evita destruir prompts muito curtos como "fix")
+        return cleaned if len(cleaned) >= 4 else text
+    except Exception:
+        return text  # OSL-15: falha silenciosa
+
+
+# ---------------------------------------------------------------------------
+# ② Compression — truncagem por orçamento de tokens
+# ---------------------------------------------------------------------------
+
+def compress_prompt(text: str, max_chars: int) -> str:
+    """Trunca o prompt para caber em max_chars.
+
+    Estratégia (em ordem de preferência):
+      1. Se cabe, retorna sem modificação.
+      2. Tenta cortar em limite de frase (". " ou "\\n").
+      3. Corta em limite de palavra.
+      4. Corta hard no limite.
+
+    Args:
+        text:      Texto a comprimir.
+        max_chars: Limite máximo de caracteres (≥ 16).
+
+    Returns:
+        Texto truncado com "[…]" no final se houve corte.
+    """
+    if not text or len(text) <= max_chars:
+        return text
+
+    max_chars = max(16, max_chars)
+    budget = max_chars - 5  # reserva espaço para " […]"
+
+    # Tenta cortar em limite de frase (para trás)
+    cut = text[:budget]
+    for sep in (". ", ".\n", "\n\n", "\n", " "):
+        idx = cut.rfind(sep)
+        if idx >= max(20, budget // 2):
+            return cut[: idx + len(sep)].rstrip() + " […]"
+
+    # Corta em limite de palavra
+    idx = cut.rfind(" ")
+    if idx > 0:
+        return cut[:idx] + " […]"
+
+    return cut + " […]"  # hard cut
+
+
+# ---------------------------------------------------------------------------
+# Pitstop — combina ④ + ② + ajuste de max_tokens
+# ---------------------------------------------------------------------------
+
+def pitstop(
+    prompt: str,
+    max_tokens: int,
+    active_window: int = 256,
+) -> tuple[str, int]:
+    """Pit stop pré-inferência: limpa e comprime o prompt, ajusta max_tokens.
+
+    Combina Remove Redundant Terms e Compression numa única passada.
+    Chamado dentro de ask() antes de push no ContextWindow.
+
+    Args:
+        prompt:        Texto original do usuário.
+        max_tokens:    Limite de tokens de saída solicitado.
+        active_window: Tamanho da janela ativa em tokens (BridgeConfig).
+
+    Returns:
+        (prompt_limpo, max_tokens_ajustado)
+    """
+    if not prompt:
+        return prompt, max_tokens
+
+    # ④ Remove redundâncias antes de comprimir (reduz tamanho antes do corte)
+    cleaned = remove_redundant_terms(prompt)
+
+    # ②
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/_run_think_patch.py" role="Dionísio" complexity="17" status="stable">
+    <functions>_run_think, _decompose_query</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — _run_think_patch.py
+Trecho reformado de executive.py — SiCDoxExecutive.
+Substitui _run_think() e adiciona _decompose_query().
+
+Diferenças em relação à versão anterior:
+  - Blackboard NÃO recebe histórico de Q&A.
+  - Blackboard abre sessão ANTES da inferência e fecha DEPOIS.
+  - _decompose_query() popula a lousa com rascunhos de raciocínio
+    baseados em regras simples (sem chamada extra ao LLM).
+  - board.build_synthesis_block() substitui board.build_context_block().
+
+Alterações nesta revisão:
+  - _decompose_query() completa: todos os branches de tipo de tarefa.
+  - Detecção de linguagem movida para constante de módulo (_LANG_KEYWORDS).
+  - Adicionados: geração de código, debug/correção, lista, comparação.
+  - draft de formato (role="format") emitido quando linguagem é detectada.
+  - draft de escopo do arquivo (role="evidence") quando --file é fornecido.
+  - Hint de max_tokens injetado no context por tipo de tarefa.
+"""
+
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from engine.core.blackboard import DoxoBoard
+    from engine.core.executive  import GoalResult
+
+
+# ---------------------------------------------------------------------------
+# Constantes de detecção — definidas no módulo, não dentro da função
+# ---------------------------------------------------------------------------
+
+# Linguagens: keyword (lowercase) → nome canônico para o draft
+_LANG_KEYWORDS: dict[str, str] = {
+    "python":   "Python",
+    "py ":      "Python",
+    ".py":      "Python",
+    "c++":      "C++",
+    "cpp":      "C++",
+    " c ":      "C",
+    "em c,":    "C",
+    "em c.":    "C",
+    "em c:":    "C",
+    "batch":    "Batch Script",
+    "bat ":     "Batch Script",
+    ".bat":     "Batch Script",
+    ".cmd":     "Batch Script",
+}
+
+# Tipo de tarefa: conjunto de keywords por intenção
+_KW_EXPLAIN  = frozenset({
+    "explique", "explica", "o que é", "o que sao", "como funciona",
+    "como funcionam", "define", "definir", "definição", "me diga",
+    "me conte", "descreva", "descrever",
+})
+_KW_CODEGEN  = frozenset({
+    "escreva", "escrever", "crie", "criar", "gere", "gerar",
+    "implemente", "implementar", "codifique", "codificar",
+    "faça", "fazer", "construa", "construir", "monte", "montar",
+    "desenvolva", "desenvolver",
+})
+_KW_DEBUG    = frozenset({
+    "debug", "debugar", "debugue", "erro", "erros", "bug", "bugs",
+    "falha", "crash", "corrige", "corrigir", "corrija", "conserta",
+    "consertar", "conserte", "fix", "problema", "não funciona",
+    "nao funciona", "não está", "nao esta",
+})
+_KW_LIST     = frozenset({
+    "liste", "listar", "liste", "enumere", "enumerar",
+    "quais são", "quais sao", "quais os", "quais as",
+    "mostre os", "mostre as", "dê exemplos", "de exemplos",
+    "exemplos de",
+})
+_KW_COMPARE  = frozenset({
+    "compare", "comparar", "diferença", "diferenca", "diferenças",
+    "diferencas", "vantagem", "desvantagem", "melhor", "pior",
+    "versus", " vs ", " vs.", "qual a diferença", "quando usar",
+})
+
+
+# ---------------------------------------------------------------------------
+# MVP — think (Fase 1) — versão reformada
+# ---------------------------------------------------------------------------
+
+def _run_think(self, prompt: str, context: dict) -> "GoalResult":
+    """Pipeline completo do comando `orn think`."""
+    bridge    = self._get_bridge()
+    validator = self._get_validator()
+    board     = self._get_board()
+
+    board.open_session(prompt)
+
+    try:
+        # 1. HERMES: Interceptação Autônoma (Gaveteiro Fast-Track)
+        # O sistema verifica se já conhece esse algoritmo ANTES de acordar a IA.
+        router = self._get_drawer_router()
+        if router:
+            print("\n  [Hermes] 🔍 Consultando memória de longo prazo...")
+            r_res = router.route(prompt, board)
+            if r_res.hit:
+                # SUCESSO! Código perfeito encontrado. Corta o LLM e devolve em 0 segundos.
+                return GoalResult(
+                    success=True,
+                    intent="think",
+                    output=f"📦[HERMES FAST-TRACK] Conhecimento resgatado da memória!\n\n```python\n{r_res.code}\n```"
+                )
+
+        # 2. Popula lousa com rascunhos de raciocínio (IA Padrão)
+        _decompose_query(board, prompt, context)
+
+        # 3. Contexto de arquivo opcional (--file)
+        if context.get("context_file"):
+            file_content = _read_file_safe(context["context_file"])
+            if file_content:
+                board.post_draft(
+                    source  = "context_file",
+                    content = f"Arquivo '{context['context_file']}': {file_content[:120]}",
+                    role    = "evidence",
+                    weight  = 0.95,
+                )
+
+        # 4. Monta prompt final
+        synthesis = board.build_synthesis_block()
+        if synthesis:
+            full_prompt = f"{synthesis}[TASK]\n{prompt}"
+        else:
+            full_prompt = prompt
+
+        # 5. In
+    ]]></source_code>
+  </file>
+
+  <file path="engine/core/__init__.py" role="Dionísio" complexity="0" status="stable">
+  </file>
+
+  <file path="engine/memory/associator.py" role="Dionísio" complexity="0" status="stable">
+    <classes>Associator</classes>
+    <source_code><![CDATA[
+# Aprendizado de Associações (Ísis)
+# OSL-2: Loop de aprendizado com limite de iterações documentado.
+# God: Ísis — integração e recomposição de conceitos relacionados.
+class Associator:
+    pass
+    ]]></source_code>
+  </file>
+
+  <file path="engine/memory/reasoning.py" role="Dionísio" complexity="0" status="stable">
+    <classes>Sherlock</classes>
+    <source_code><![CDATA[
+# Motor de Raciocínio (Sherlock) (Ma'at + Anúbis)
+# OSL-5: Assertivas de coerência antes de cada inferência.
+# OSL-15: Modo degradado — se memória vazia, retorna análise direta sem crash.
+# God: Ma'at (invariantes) + Anúbis (validação de crenças).
+class Sherlock:
+    pass
+    ]]></source_code>
+  </file>
+
+  <file path="engine/memory/vector_db.py" role="Hades" complexity="0" status="stable">
+    <classes>VectorDB</classes>
+    <source_code><![CDATA[
+# Memória Semântica de Sessão (Osíris)
+# OSL-3: VectorDB com limite de entradas (sem crescimento infinito).
+# OSL-6: Imutável após inserção — search não altera estado.
+# God: Osíris — persistência e renascimento do contexto entre perguntas.
+class VectorDB:
+    pass
+    ]]></source_code>
+  </file>
+
+  <file path="engine/memory/__init__.py" role="Dionísio" complexity="0" status="stable">
+  </file>
+
+  <file path="engine/runtime/infer_queue.py" role="Dionísio" complexity="2" status="stable">
+    <classes>InferQueue</classes>
+    <functions>__init__, submit, shutdown, _task</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/runtime/infer_queue.py
+
+from __future__ import annotations
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+
+class InferQueue:
+    """
+    Fila de Inferência (Harmonia de Fluxo).
+    Protege o LLM (Hefesto) de atropelamentos e gerencia a concorrência.
+    """
+    def __init__(self, bridge, max_workers: int = 1, async_mode: bool = False):
+        self._bridge = bridge
+        self._async = async_mode
+        
+        # OSL-Hardware: Limitamos estritamente a 1 worker para proteger a CPU/RAM (N2808)
+        safe_workers = 1 if max_workers <= 1 else max_workers
+        self._executor = ThreadPoolExecutor(max_workers=safe_workers) if async_mode else None
+        
+        # O Leão de Chácara: Garante que o Llama.cpp nunca processe duas coisas ao mesmo tempo.
+        self._lock = threading.Lock()
+
+    def submit(self, prompt, max_tokens=None, token_hint=None, system_hint=None):
+        """Submete uma requisição de forma segura (síncrona ou assíncrona)."""
+        
+        def _task():
+            # A mágica da harmonia: O Lock impede que o modelo sofra concorrência.
+            # As threads aguardam aqui pacificamente a vez delas.
+            with self._lock:
+                return self._bridge.ask(
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    token_hint=token_hint,
+                    system_hint=system_hint,
+                )
+
+        if not self._async:
+            return _task()
+
+        # No modo assíncrono, a thread principal é liberada instantaneamente.
+        # Isso permite que o `orn-server` continue respondendo a /status no HTTP.
+        return self._executor.submit(_task)
+
+    def shutdown(self, wait: bool = True) -> None:
+        """Desliga a fila de forma limpa (Bug de Copy-Paste corrigido)."""
+        if self._executor is not None:
+            # Pede para as threads terminarem suavemente
+            self._executor.shutdown(wait=wait)
+            self._executor = None
+            
+        # Nota: Nós NÃO desligamos a _bridge aqui. 
+        # A responsabilidade de gerenciar a vida útil da bridge é do Executive (Zeus).
+        # Apenas soltamos a referência para o Garbage Collector limpar.
+        self._bridge = None
+    ]]></source_code>
+  </file>
+
+  <file path="engine/server/server.py" role="Dionísio" complexity="93" status="stable">
+    <classes>ServerCLI</classes>
+    <functions>_looks_like_doxoade_root, _discover_doxoade_root, _vulcan_boot, _observe_telemetry, _flush_telemetry_snapshot, _system_perf_snapshot, _json_line, _read_line_from_socket, _load_model, _infer, _telemetry_hotspots, _handle_status, _handle, _shutdown, _sigterm_handler, _serve, main, run, _start, _stop, _status, _ask, _arg_value, _start_env, _apply_start_env, _help, _is_online, _query_status, _query, _raw_query</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/server/server.py
+"""
+ORN — SiCDox Server
+Servidor local de inferência. Carrega o modelo UMA VEZ, serve continuamente.
+
+Protocolo (TCP local):
+  Request:  JSON linha {"prompt": "...", "max_tokens": 128}
+  Response: JSON linha {"output": "...", "elapsed_s": 1.23, "error": null}
+
+Comando especial:
+  b"STATUS\n" -> JSON com uptime, requests, errors e métricas
+
+OSL-3:  Modelo carregado uma vez no startup.
+OSL-7:  Toda requisição retorna JSON com "error" explícito.
+OSL-15: Erros de inferência não derrubam o servidor.
+OSL-18: stdlib + dependências do projeto.
+God: Hefesto — fornalha contínua; a forja não apaga entre peças.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import traceback
+from pathlib import Path
+from typing import Any
+
+from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
+
+try:
+    import resource as _resource  # Unix only
+    _HAS_RESOURCE = True
+except ImportError:
+    _HAS_RESOURCE = False
+
+
+HOST = "127.0.0.1"
+PORT = 8371
+BACKLOG = 4
+RECV_SZ = 65536
+
+PID_FILE = Path("server.pid")
+LOG_FILE = Path("server.log")
+
+_llm = None
+_cfg = None
+_lock = threading.Lock()
+_system_tokens = None
+
+_stats: dict[str, Any] = {
+    "requests": 0,
+    "errors": 0,
+    "total_tokens": 0,
+    "total_elapsed_s": 0.0,
+    "start": None,
+    "infer_calls": 0,
+    "last_infer_s": 0.0,
+    "last_prompt_chars": 0,
+    "last_output_chars": 0,
+    "last_max_tokens": 0,
+    "sum_prompt_chars": 0,
+    "sum_output_chars": 0,
+    "last_llm_call_ms": 0.0,
+    "last_lock_wait_ms": 0.0,
+    "sum_llm_call_ms": 0.0,
+    "sum_lock_wait_ms": 0.0,
+}
+
+_boot_perf = {
+    "vulcan_boot_ms": 0.0,
+    "model_load_ms": 0.0,
+}
+
+_VULCAN_ACTIVE = False
+_VULCAN_MSG = ""
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap do doxoade / Vulcan
+# ---------------------------------------------------------------------------
+
+def _looks_like_doxoade_root(path_str: str | None) -> bool:
+    if not path_str:
+        return False
+    try:
+        p = Path(path_str).resolve()
+    except Exception:
+        return False
+    return (p / "doxoade" / "__init__.py").exists()
+
+
+def _discover_doxoade_root() -> str | None:
+    env_root = os.environ.get("DOXOADE_ROOT")
+    if _looks_like_doxoade_root(env_root):
+        return str(Path(env_root).resolve())
+
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / "doxoade" / "__init__.py").exists():
+            return str(parent)
+
+    return None
+
+
+def _vulcan_boot() -> tuple[bool, str]:
+    root = _discover_doxoade_root()
+    if root and root not in sys.path:
+        sys.path.insert(0, root)
+        os.environ["DOXOADE_ROOT"] = root
+
+    try:
+        import doxoade  # noqa: F401
+    except ImportError as exc:
+        return False, (
+            f"'doxoade' nao encontrado em sys.path nem instalado no venv.\n"
+            f"ImportError: {exc}\n"
+            f"Solucoes:\n"
+            f"  a) Execute na raiz do projeto\n"
+            f"  b) pip install -e <raiz>\n"
+            f"  c) defina DOXOADE_ROOT=<raiz>\n"
+        )
+
+    try:
+        from doxoade.tools.vulcan.runtime import find_vulcan_project_root, install_meta_finder
+
+        root_path = find_vulcan_project_root(Path.cwd()) or find_vulcan_project_root(__file__)
+        if root_path is None:
+            return False, (
+                "doxoade importado OK, mas '.doxoade/vulcan/bin' nao encontrado.\n"
+                "Execute 'doxoade vulcan lib' antes de iniciar o servidor."
+            )
+
+        install_meta_finder(root_path)
+
+        lib_bin = root_path / ".doxoade" / "vulcan" / "lib_bin"
+        n_bins = len(list(lib_bin.glob("*.pyd"))) if lib_bin.exists() else 0
+        return True, f"raiz='{root_path}' | {n_bins} binario(s) em lib_bin/"
+    except Exception:
+        return False, f"MetaFinder falhou:\n{traceback.format_exc()}"
+
+
+_t_boot0 = time.monotonic()
+_VULCAN_ACTIVE, _VULCAN_MSG = _vulcan_boot()
+_boot_perf["vulcan_boot_ms"] = round((time.monotonic() - _t_boot0) * 1000.0, 3)
+
+if _VULCAN_ACTIVE:
+    print(f"[VULCAN] OK — {_VULCAN_MSG}", flush=True)
+else:
+    for _line in _VULCAN_MSG.splitlines():
+        print(f"[VULCAN] {_line}", flush=True)
+    print("[VULCAN] Continuando com Python puro (OSL-15).", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Telemetria / utilidades
+# ---------------------------------------------------------------------------
+
+def _observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") -> None:
+    try:
+        GLOBAL_TELEMETRY.observe(
+            name,
+            float(elapsed_ms),
+            category=category,
+            critical=(category == "exec"),
+            is_cold=False,
+            failed=False,
+        )
+    except Exception:
+        pass
+
+
+def _flush_telemetry_snapshot() -> None:
+    try:
+        GLOBAL_TELEMETRY.flush_json(Path("tele
+    ]]></source_code>
+  </file>
+
+  <file path="engine/server/server_bench.py" role="Dionísio" complexity="43" status="stable">
+    <functions>_raw_query, _query, _status, _bootstrap_doxoade, inspect_llama_cpp, print_inspection, run_server_bench, run_local_bench, main</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/server/server_bench.py
+"""
+ORN — Vulcan Library Benchmark
+================================
+Confirma se llama_cpp compilado esta sendo usado e mede ganho real.
+
+Uso:
+  python engine/server/server_bench.py               # benchmark via servidor
+  python engine/server/server_bench.py --runs 20     # mais amostras
+  python engine/server/server_bench.py --inspect     # so inspecao de modulos
+  python engine/server/server_bench.py --deep        # inspect + bench local + servidor
+  python engine/server/server_bench.py --local       # bench local (import + load)
+
+Requerimentos:
+  - Para bench via servidor: orn-server start deve estar rodando
+  - Para --deep/--local: executar a partir da raiz do projeto ORN
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import socket
+import sys
+import time
+import traceback
+from pathlib import Path
+
+# ── Constantes — definidas antes de qualquer uso ─────────────────────────────
+_DEFAULT_HOST = "127.0.0.1"
+_DEFAULT_PORT = 8371
+
+RESET  = "\033[0m"
+BOLD   = "\033[1m"
+CYAN   = "\033[36m"
+GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+RED    = "\033[31m"
+DIM    = "\033[2m"
+
+# Prompts fixos para garantir comparabilidade entre runs
+_BENCH_PROMPTS = [
+    ("curto",  "Ola, tudo bem?",                                          32),
+    ("medio",  "Explique o que e recursao em programacao.",               64),
+    ("longo",  "Escreva uma funcao Python que calcula o fatorial de n.", 128),
+]
+
+
+# ── Helpers de socket ─────────────────────────────────────────────────────────
+
+def _raw_query(payload: bytes, host: str, port: int, timeout: float = 120.0) -> dict | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((host, port))
+            s.settimeout(None)
+            s.sendall(payload)
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+                if data.endswith(b"\n"):
+                    break
+        return json.loads(data.decode("utf-8").strip())
+    except Exception as exc:
+        print(f"{RED}[SOCKET] {exc}{RESET}")
+        return None
+
+
+def _query(prompt: str, max_tokens: int, host: str, port: int) -> dict | None:
+    payload = (json.dumps({"prompt": prompt, "max_tokens": max_tokens}) + "\n").encode()
+    return _raw_query(payload, host, port)
+
+
+def _status(host: str, port: int) -> dict | None:
+    return _raw_query(b"STATUS\n", host, port, timeout=5.0)
+
+
+# ── Bootstrap doxoade (mesmo algoritmo do server.py) ─────────────────────────
+
+def _bootstrap_doxoade() -> bool:
+    """Tenta tornar doxoade importavel. Retorna True se conseguiu."""
+    # Variavel de ambiente explicita
+    env_root = os.environ.get("DOXOADE_ROOT")
+    if env_root:
+        p = str(Path(env_root).resolve())
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    # Sobe a arvore a partir deste arquivo
+    if not env_root:
+        here = Path(__file__).resolve()
+        for parent in [here, *here.parents]:
+            if (parent / "doxoade" / "__init__.py").exists():
+                p = str(parent)
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+                break
+
+    try:
+        import doxoade  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# ── Inspecao de modulos ───────────────────────────────────────────────────────
+
+def inspect_llama_cpp() -> dict:
+    """
+    Carrega llama_cpp com Vulcan ativo e inspeciona qual arquivo foi usado.
+    Retorna dict com resultado completo da inspecao.
+    """
+    result = {
+        "vulcan_active":   False,
+        "vulcan_msg":      "",
+        "llama_file_py":   None,
+        "llama_file_used": None,
+        "is_native":       False,
+        "lib_bin_files":   [],
+        "error":           None,
+    }
+
+    if not _bootstrap_doxoade():
+        result["error"] = (
+            "'doxoade' nao importavel. "
+            "Execute a partir da raiz do projeto ou defina DOXOADE_ROOT."
+        )
+        return result
+
+    # Inventario de binarios disponiveis
+    try:
+        from doxoade.tools.vulcan.runtime import find_vulcan_project_root, install_meta_finder
+
+        root = (
+            find_vulcan_project_root(Path.cwd())
+            or find_vulcan_project_root(__file__)
+        )
+        if root:
+            lib_bin = root / ".doxoade" / "vulcan" / "lib_bin"
+            if lib_bin.exists():
+                result["lib_bin_files"] = [p.name for p in sorted(lib_bin.glob("*.pyd"))]
+            install_meta_finder(root)
+            result["vulcan_active"] = True
+            result["vulcan_msg"]    = f"MetaFinder instalado para '{root}'"
+        else:
+            result["vulcan_msg"] = ".doxoade/vulcan/bin nao encontrado"
+
+    except Exception as exc:
+        result["vulcan_msg"] = f"MetaFinder falhou: {exc}\n{traceback.form
+    ]]></source_code>
+  </file>
+
+  <file path="engine/server/__init__.py" role="Dionísio" complexity="0" status="stable">
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""ORN — Server Package. God: Hefesto."""
+    ]]></source_code>
+  </file>
+
+  <file path="engine/server/__main__.py" role="Zeus" complexity="24" status="stable">
+    <functions>_load_python_server_cli_fallback, _is_wrapper_signature_type_error, main</functions>
+    <source_code><![CDATA[
+# --- DOXOADE_VULCAN_BOOTSTRAP:START ---
+from pathlib import Path as _doxo_path
+import importlib.util as _doxo_importlib_util
+import sys as _doxo_sys
+import time as _doxo_time
+
+_doxo_activate_vulcan = None
+_doxo_install_meta_finder = None
+_doxo_probe_embedded = None
+_doxo_project_root = None
+_doxo_boot_t0 = _doxo_time.monotonic()
+
+# --- Lazy-loader --- 
+_doxo_lazy_mod = None
+try:
+    if _doxo_project_root:
+        _doxo_lazy_policy_f = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_policy.json"
+        _doxo_lazy_src_f    = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_loader.py"
+        if _doxo_lazy_policy_f.exists() and _doxo_lazy_src_f.exists():
+            _doxo_lazy_spec = _doxo_importlib_util.spec_from_file_location(
+                "_doxoade_vulcan_lazy", str(_doxo_lazy_src_f)
+            )
+            if _doxo_lazy_spec and _doxo_lazy_spec.loader:
+                _doxo_lazy_mod = _doxo_importlib_util.module_from_spec(_doxo_lazy_spec)
+                _doxo_sys.modules["_doxoade_vulcan_lazy"] = _doxo_lazy_mod
+                _doxo_lazy_spec.loader.exec_module(_doxo_lazy_mod)
+                _doxo_lazy_mod.install(
+                    _doxo_lazy_mod.load_policy(_doxo_lazy_policy_f)
+                )
+except Exception:
+    pass
+
+_doxo_install_ms = 0
+_doxo_embedded_ms = 0
+_doxo_fallback_ms = 0
+
+for _doxo_base in[_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
+    _doxo_runtime_file = _doxo_base / ".doxoade" / "vulcan" / "runtime.py"
+    if not _doxo_runtime_file.exists():
+        continue
+    _doxo_spec = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_runtime", str(_doxo_runtime_file))
+    if not (_doxo_spec and _doxo_spec.loader):
+        continue
+    _doxo_mod = _doxo_importlib_util.module_from_spec(_doxo_spec)
+    _doxo_sys.modules["_doxoade_vulcan_runtime"] = _doxo_mod
+    _doxo_spec.loader.exec_module(_doxo_mod)
+    _doxo_activate_vulcan = getattr(_doxo_mod, "activate_vulcan", None)
+    _doxo_install_meta_finder = getattr(_doxo_mod, "install_meta_finder", None)
+    _doxo_probe_embedded = getattr(_doxo_mod, "probe_embedded", None)
+    _doxo_project_root = str(_doxo_base)
+    break
+
+# 1. Instala MetaFinder primeiro
+if callable(_doxo_install_meta_finder) and _doxo_project_root:
+    _doxo_t = _doxo_time.monotonic()
+    try:
+        _doxo_install_meta_finder(_doxo_project_root)
+    except Exception:
+        pass
+    finally:
+        _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
+
+# 2. Tenta usar o loader "embedded"
+try:
+    _doxo_t = _doxo_time.monotonic()
+    if _doxo_project_root:
+        _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
+        if _embedded_path.exists():
+            _doxo_spec2 = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_embedded", str(_embedded_path))
+            if _doxo_spec2 and _doxo_spec2.loader:
+                _doxo_mod2 = _doxo_importlib_util.module_from_spec(_doxo_spec2)
+                _doxo_sys.modules["_doxoade_vulcan_embedded"] = _doxo_mod2
+                _doxo_spec2.loader.exec_module(_doxo_mod2)
+                _doxo_activate_embedded = getattr(_doxo_mod2, "activate_embedded", None)
+                _doxo_safe_call = getattr(_doxo_mod2, "safe_call", None)
+                if callable(_doxo_activate_embedded):
+                    try:
+                        _doxo_activate_embedded(globals(), __file__, _doxo_project_root)
+                    except Exception:
+                        pass
+                if callable(_doxo_safe_call):
+                    try:
+                        import sys as _d_sys
+                        _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
+                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
+                        _suffix_len    = len(_vulcan_suffix)
+                        for mname, mod in list(_d_sys.modules.items()):
+                            try:
+                                mfile = getattr(mod, "__file__", None)
+                                if not mfile:
+                                    continue
+                                mpath = _doxo_path(mfile)
+                                if _bin_dir not in mpath.parents:
+                                    continue
+                                for attr in dir(mod):
+                                    if not attr.endswith(_vulcan_suffix):
+                                        continue
+                                    native_obj = getattr(mod, attr, None)
+                                    if not callable(native_obj):
+                                        continue
+                                    base = attr[: -_suffix_len]
+                                    try:
+                                        setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
+                                    except Exception:
+                              
+    ]]></source_code>
+  </file>
+
+  <file path="engine/telemetry/cli.py" role="Zeus" complexity="33" status="stable">
+    <functions>_fmt_ms, query_server_status, _hotspot_by_name, normalize_status_payload, _print_human_status, _emit_output, _try_local_runtime, main, _append_vulcan_hotspots</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/telemetry/cli.py
+"""CLI utilitário para telemetria do ORN."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import socket
+from pathlib import Path
+from typing import Optional
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8371
+
+
+def _fmt_ms(value: float) -> str:
+    value = float(value or 0)
+    if value >= 1000:
+        return f"{value / 1000.0:.3f}s"
+    return f"{value:.3f}ms"
+
+
+def query_server_status(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout: float = 5.0) -> dict | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((host, port))
+            s.sendall(b"STATUS\n")
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+                if data.endswith(b"\n"):
+                    break
+        return json.loads(data.decode("utf-8").strip())
+    except Exception:
+        return None
+
+
+def _hotspot_by_name(payload: dict, name: str) -> dict | None:
+    for row in payload.get("telemetry_hotspots", []) or []:
+        if row.get("name") == name:
+            return row
+    return None
+
+
+def normalize_status_payload(payload: dict) -> tuple[dict, bool]:
+    """Normaliza STATUS para exibição humana, com fallback para schemas antigos."""
+    norm = dict(payload)
+    ai = dict(norm.get("ai_perf") or {})
+    inferred = False
+
+    if "total_tokens_per_s" not in ai:
+        total_tokens = float(norm.get("total_tokens", 0) or 0)
+        avg_elapsed_s = float(norm.get("avg_elapsed_s", 0) or 0)
+        requests = float(norm.get("requests", 0) or 0)
+        total_elapsed_s = avg_elapsed_s * requests
+        ai["total_tokens_per_s"] = round((total_tokens / total_elapsed_s) if total_elapsed_s else 0, 3)
+        inferred = True
+
+    infer_row = _hotspot_by_name(norm, "server.infer")
+    llm_row = _hotspot_by_name(norm, "server.infer.llm_call")
+    lock_row = _hotspot_by_name(norm, "server.infer.lock_wait")
+
+    if "last_llm_call_ms" not in ai and llm_row:
+        ai["last_llm_call_ms"] = float(llm_row.get("avg_ms", 0) or 0)
+        inferred = True
+    if "last_lock_wait_ms" not in ai and lock_row:
+        ai["last_lock_wait_ms"] = float(lock_row.get("avg_ms", 0) or 0)
+        inferred = True
+
+    if "last_non_llm_ms" not in ai:
+        infer_ms = float(ai.get("last_infer_s", 0) or 0) * 1000.0
+        llm_ms = float(ai.get("last_llm_call_ms", 0) or 0)
+        ai["last_non_llm_ms"] = round(max(infer_ms - llm_ms, 0.0), 4)
+        inferred = True
+
+    if "last_llm_share_pct" not in ai:
+        infer_ms = float(ai.get("last_infer_s", 0) or 0) * 1000.0
+        llm_ms = float(ai.get("last_llm_call_ms", 0) or 0)
+        ai["last_llm_share_pct"] = round((llm_ms / infer_ms * 100.0) if infer_ms else 0, 2)
+        inferred = True
+
+    norm["ai_perf"] = ai
+    return norm, inferred
+
+
+def _print_human_status(payload: dict, *, limit: int = 5) -> None:
+    payload, inferred = normalize_status_payload(payload)
+    print(f"status: {payload.get('status', 'unknown')}")
+    print(f"requests: {payload.get('requests', 0)}")
+    print(f"errors: {payload.get('errors', 0)}")
+    print(f"avg_elapsed_s: {payload.get('avg_elapsed_s', 0)}")
+    boot = payload.get("boot_perf", {})
+    if boot:
+        print("boot_perf:")
+        print(f"  - vulcan_boot: {_fmt_ms(boot.get('vulcan_boot_ms', 0))}")
+        print(f"  - model_load : {_fmt_ms(boot.get('model_load_ms', 0))}")
+
+    system = payload.get("system_perf", {})
+    if system:
+        print("system_perf:")
+        print(f"  - pid/threads : {system.get('pid', 0)} / {system.get('threads', 0)}")
+        print(f"  - cpu/load1m  : {system.get('cpu_count', 0)} / {system.get('load_1m', 0)}")
+        print(f"  - rss_mb      : {system.get('rss_mb', 0)}")
+
+    ai = payload.get("ai_perf", {})
+    if ai:
+        title = "ai_perf (compat)" if inferred else "ai_perf"
+        print(f"{title}:")
+        print(f"  - infer_calls   : {ai.get('infer_calls', 0)}")
+        print(f"  - last_infer    : {ai.get('last_infer_s', 0)}s")
+        print(f"  - last_tps      : {ai.get('last_tokens_per_s', 0)} tok/s")
+        print(f"  - total_tps     : {ai.get('total_tokens_per_s', 0)} tok/s")
+        print(f"  - avg_prompt    : {ai.get('avg_prompt_chars', 0)} chars")
+        print(f"  - avg_output    : {ai.get('avg_output_chars', 0)} chars")
+        print(f"  - lock_wait     : {_fmt_ms(ai.get('last_lock_wait_ms', 0))}")
+        print(f"  - llm_call      : {_fmt_ms(ai.get('last_llm_call_ms', 0))}")
+        print(f"  - non_llm       : {_fmt_ms(ai.get('last_non_llm_ms', 0))}")
+        print(f"  - llm_share     : {ai.get('last_llm_share_pct', 0)}%")
+
+    hotspots = payload.get("telemetry_hotspots", [])
+    if hotspots:
+        total = sum(float(r.get("total_ms", 0) or 0) for r in hotspots) or 1.0
+        print("hotspots:")
+        for row in hotspots[:max(1, limit)]
+    ]]></source_code>
+  </file>
+
+  <file path="engine/telemetry/core.py" role="Dionísio" complexity="11" status="stable">
+    <classes>ProbeStats, TelemetryAggregator</classes>
+    <functions>orn_span, orn_probe, get_runtime_status, record_direct_telemetry, register, avg_ms, p95_ms, __init__, observe, snapshot, flush_json, decorator, wrapper</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/telemetry/core.py
+"""Telemetria leve para decisões de performance do ORN.
+
+OSL-75: telemetria nunca pode alterar comportamento funcional.
+Design: coleta local-first, overhead baixo e falha silenciosa.
+"""
+
+from __future__ import annotations
+
+import time
+import threading
+import os
+import json
+
+from typing import Any, Callable
+from pathlib import Path
+from functools import wraps
+from dataclasses import dataclass, field
+from collections import deque
+from contextlib import contextmanager
+
+
+@contextmanager
+def orn_span(name: str, category: str = "exec", critical: bool = False):
+    """Context manager para perfilar blocos internos (ex: loops de compressão)."""
+    t0 = time.perf_counter()
+    failed = False
+    try:
+        yield
+    except Exception:
+        failed = True
+        raise
+    finally:
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        try:
+            GLOBAL_TELEMETRY.observe(
+                name,
+                elapsed_ms,
+                category=category,
+                critical=critical,
+                is_cold=False,
+                failed=failed,
+            )
+        except Exception:
+            pass
+            
+
+@dataclass(slots=True)
+class ProbeStats:
+    """Estatísticas compactas para uma função instrumentada."""
+
+    category: str
+    critical: bool
+    calls: int = 0
+    total_ms: float = 0.0
+    max_ms: float = 0.0
+    failures: int = 0
+    cold_calls: int = 0
+    warm_calls: int = 0
+    _tail_ms: deque[float] = field(default_factory=lambda: deque(maxlen=2048), repr=False)
+
+    def register(self, elapsed_ms: float, *, is_cold: bool, failed: bool) -> None:
+        self.calls += 1
+        self.total_ms += elapsed_ms
+        self.max_ms = max(self.max_ms, elapsed_ms)
+        self._tail_ms.append(elapsed_ms)
+        if is_cold:
+            self.cold_calls += 1
+        else:
+            self.warm_calls += 1
+        if failed:
+            self.failures += 1
+
+    @property
+    def avg_ms(self) -> float:
+        return self.total_ms / self.calls if self.calls else 0.0
+
+    @property
+    def p95_ms(self) -> float:
+        if not self._tail_ms:
+            return 0.0
+        ordered = sorted(self._tail_ms)
+        idx = int(0.95 * (len(ordered) - 1))
+        return ordered[idx]
+
+
+class TelemetryAggregator:
+    """Agregador em memória com API simples para snapshot e reset."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._stats: dict[str, ProbeStats] = {}
+
+    def observe(
+        self,
+        name: str,
+        elapsed_ms: float,
+        *,
+        category: str,
+        critical: bool,
+        is_cold: bool,
+        failed: bool,
+    ) -> None:
+        with self._lock:
+            stats = self._stats.get(name)
+            if stats is None:
+                stats = ProbeStats(category=category, critical=critical)
+                self._stats[name] = stats
+            stats.register(elapsed_ms, is_cold=is_cold, failed=failed)
+
+    def snapshot(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {
+                name: {
+                    "category": s.category,
+                    "critical": s.critical,
+                    "calls": s.calls,
+                    "avg_ms": round(s.avg_ms, 4),
+                    "p95_ms": round(s.p95_ms, 4),
+                    "max_ms": round(s.max_ms, 4),
+                    "cold_calls": s.cold_calls,
+                    "warm_calls": s.warm_calls,
+                    "failures": s.failures,
+                }
+                for name, s in self._stats.items()
+            }
+
+    def flush_json(self, path: str | Path) -> Path:
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "captured_at_unix": int(time.time()),
+            "probes": self.snapshot(),
+        }
+        out.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        return out
+
+
+GLOBAL_TELEMETRY = TelemetryAggregator()
+
+
+def orn_probe(
+    *,
+    category: str = "exec",
+    critical: bool = False,
+    probe_name: str | None = None,
+    aggregator: TelemetryAggregator | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorador de instrumentação leve.
+
+    - Silencioso por design: erros de telemetria não podem quebrar execução.
+    - Mede latência wall-clock em ms.
+    - Distingue cold/warm call no escopo da função decorada.
+    """
+
+    sink = aggregator or GLOBAL_TELEMETRY
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        name = probe_name or f"{func.__module__}.{func.__qualname__}"
+        warmed_up = False
+
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            nonlocal warmed_up
+            t0 = time.perf_counter()
+            failed = False
+            try:
+                return func(*args, **kwargs)
+            except Exception:
+                failed = True
+    
+    ]]></source_code>
+  </file>
+
+  <file path="engine/telemetry/forensic.py" role="Dionísio" complexity="0" status="stable">
+    <functions>emit_forensic_log</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — Forensic Telemetry
+Utilitário para log padronizado de exceções (OSL-18: stdlib only)
+"""
+import sys
+import os
+
+def emit_forensic_log(exc: Exception, func_name: str = "Unknown") -> None:
+    """Emite log forense detalhado sem quebrar o fluxo."""
+    _, _, exc_tb = sys.exc_info()
+    f_name = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
+    line_n = exc_tb.tb_lineno if exc_tb else 0
+    
+    print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: {func_name}\033[0m\n"
+          f"\033[31m  ■ Type: {type(exc).__name__} | Value: {exc}\033[0m")
+    ]]></source_code>
+  </file>
+
+  <file path="engine/telemetry/profiler.py" role="Dionísio" complexity="3" status="stable">
+    <classes>Span, InferenceProfiler, _SpanCtx</classes>
+    <functions>end, ms, __init__, begin, span, _record_span, finish, _write, __init__, __enter__, __exit__</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/telemetry/profiler.py
+"""
+ORN — Inference Profiler (Cronos)
+Telemetria fina de inferência: spans por etapa + derivados.
+
+OSL-4:  Um método, uma responsabilidade.
+OSL-6:  Spans imutáveis após end() — sem modificação retroativa.
+OSL-15: Fail-silent: erros de gravação nunca interrompem o fluxo principal.
+OSL-18: stdlib only (json, pathlib, time).
+God: Cronos — mede tudo, não atrasa nada.
+
+Arquivo de saída: telemetry/profiler.jsonl
+Schema de uma entrada:
+
+{
+  "v": 1,
+  "ts": 1773410362,          -- unix timestamp de início
+  "query_chars": 12,         -- chars da query pura (user turn)
+  "system_hint_chars": 22,   -- chars do bloco de síntese (system turn)
+  "prompt_built_chars": 181, -- chars do ChatML completo montado
+  "token_hint": 43,          -- estimativa de tokens enviada ao bridge
+
+  "spans_ms": {
+    "load_check":    0.3,    -- _ensure_loaded() (≈0 se modelo já estava na RAM)
+    "ctx_push":      0.1,    -- ContextWindow.push() incluindo sliding window
+    "prompt_build":  0.4,    -- _build_prompt() (monta ChatML completo)
+    "llm_call":   57921.0,   -- _call_engine() — decode puro no llama.cpp
+    "text_parse":    0.1,    -- extração do texto e usage do dict de retorno
+    "memo_lookup":   0.0,    -- _memo_get() (cache de repetição)
+    "memo_store":    0.1,    -- _memo_put() após resposta
+    "total":      57923.1    -- monotonic total (pode incluir gaps menores)
+  },
+
+  "derived": {
+    "overhead_ms":       2.1,   -- total - llm_call
+    "overhead_pct":      0.0,   -- overhead / total * 100
+    "ms_per_token":   1316.4,   -- llm_call / completion_tokens
+    "ttft_est_ms":     880.0,   -- estimativa TTFT = prompt_tokens * ms_per_prompt_token
+    "prompt_eval_share_pct": 1.5  -- % do llm_call gasto em prompt eval (estimado)
+  },
+
+  "counters": {
+    "prompt_tokens":     44,
+    "completion_tokens": 44,
+    "total_tokens":      88,
+    "tokens_per_second": 0.76,
+    "context_turns":      2,
+    "active_window_used": 204,   -- janela efetiva após token_hint
+    "active_window_cfg":  512,   -- janela configurada em BridgeConfig
+    "memo_hit": false            -- true se respondeu do cache
+  },
+
+  "hw": {
+    "n_ctx":     1024,
+    "n_threads":    2,
+    "n_gpu_layers": 0
+  }
+}
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# Span — unidade de medição
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Span:
+    """Intervalo de tempo de uma etapa do pipeline.
+
+    Attributes:
+        name:    Identificador da etapa.
+        start_s: Timestamp de início (perf_counter).
+        end_s:   Timestamp de fim (perf_counter). None até end().
+    """
+    name:    str
+    start_s: float
+    end_s:   float | None = None
+
+    def end(self) -> "Span":
+        """Finaliza o span. Idempotente."""
+        if self.end_s is None:
+            self.end_s = time.perf_counter()
+        return self
+
+    @property
+    def ms(self) -> float:
+        """Duração em milissegundos. 0.0 se não finalizado."""
+        if self.end_s is None:
+            return 0.0
+        return round((self.end_s - self.start_s) * 1000.0, 3)
+
+
+# ---------------------------------------------------------------------------
+# InferenceProfiler
+# ---------------------------------------------------------------------------
+
+class InferenceProfiler:
+    """Coleta spans de uma inferência e grava telemetria fina.
+
+    Uso no bridge:
+        prof = InferenceProfiler(output_path)
+        prof.begin(query_chars, system_hint_chars, token_hint)
+
+        with prof.span("load_check"): self._ensure_loaded()
+        with prof.span("ctx_push"):   self._ctx.push("user", prompt)
+        with prof.span("prompt_build"): built = self._build_prompt()
+        with prof.span("llm_call"):   resp = self._call_engine(built, max_t)
+        # ... etc
+
+        prof.finish(usage, prompt_built_chars, active_window_used,
+                    active_window_cfg, context_turns, hw)
+
+    OSL-15: finish() é fail-silent — nunca lança exceção.
+    OSL-3:  _spans é limpo em begin() — sem acúmulo entre chamadas.
+    """
+
+    _KNOWN_SPANS = frozenset({
+        "load_check", "ctx_push", "prompt_build",
+        "llm_call", "text_parse", "memo_lookup", "memo_store",
+    })
+
+    def __init__(self, output_path: Path | None = None) -> None:
+        self._path     = output_path or Path("telemetry/profiler.jsonl")
+        self._spans:   dict[str, Span] = {}
+        self._t_begin: float = 0.0
+        self._meta:    dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Ciclo de vida
+    # ------------------------------------------------------------------
+
+    def begin(
+        self,
+        query_chars:       int = 0,
+        system_hint_chars: int = 0,
+        token_hint:        int | None = None,
+    )
+    ]]></source_code>
+  </file>
+
+  <file path="engine/telemetry/runtime.py" role="Dionísio" complexity="2" status="stable">
+    <functions>_now_unix, system_stats, _atomic_append, record_direct, record_server, record</functions>
+    <source_code><![CDATA[
+# engine/telemetry/runtime.py
+
+import json
+import time
+import platform
+from pathlib import Path
+import threading
+
+try:
+    import psutil
+except Exception:
+    psutil = None
+
+TELEMETRY_DIR = Path("telemetry")
+TELEMETRY_DIR.mkdir(exist_ok=True)
+
+FILE_DIRECT = TELEMETRY_DIR / "direct_runtime.jsonl"
+FILE_SERVER = TELEMETRY_DIR / "server_runtime.jsonl"
+
+_write_lock = threading.Lock()
+
+_PROC = psutil.Process() if psutil else None
+
+def _now_unix():
+    return int(time.time())
+
+def system_stats(sample_interval: float | None = None) -> dict:
+    info = {
+        "platform": platform.system(),
+        "python": platform.python_version(),
+    }
+
+    if psutil is None:
+        return info
+
+    try:
+
+        if sample_interval is not None:
+            cpu = psutil.cpu_percent(interval=sample_interval)
+        else:
+            cpu = psutil.cpu_percent(interval=None)
+
+        proc = _PROC
+
+        mem_rss = int(proc.memory_info().rss / 1024 / 1024)
+
+        info.update({
+            "cpu_percent": round(cpu, 3),
+            "ram_used_mb": mem_rss,
+            "threads": proc.num_threads(),
+            "cpu_count": psutil.cpu_count(logical=False) or psutil.cpu_count(),
+        })
+
+    except Exception:
+        pass
+
+    return info
+
+
+def _atomic_append(path: Path, obj: dict) -> None:
+    with _write_lock:
+        with path.open("a", encoding="utf-8", buffering=1) as f:
+            f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+def record_direct(data: dict) -> None:
+    payload = dict(data)
+
+    payload.setdefault("captured_at_unix", _now_unix())
+    payload.setdefault("mode", "direct")
+
+    payload.update(system_stats(sample_interval=0.01))
+
+    _atomic_append(FILE_DIRECT, payload)
+
+
+def record_server(data: dict) -> None:
+    payload = dict(data)
+
+    payload.setdefault("captured_at_unix", _now_unix())
+    payload.setdefault("mode", "server")
+
+    payload.update(system_stats(sample_interval=0.01))
+
+    _atomic_append(FILE_SERVER, payload)
+
+
+def record(data: dict) -> None:
+    try:
+        record_direct(data)
+    except Exception:
+        pass
+    ]]></source_code>
+  </file>
+
+  <file path="engine/telemetry/__init__.py" role="Dionísio" complexity="0" status="stable">
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""API pública da telemetria ORN."""
+
+from .core import GLOBAL_TELEMETRY, TelemetryAggregator, orn_probe
+
+__all__ = ["GLOBAL_TELEMETRY", "TelemetryAggregator", "orn_probe"]
+
+    ]]></source_code>
+  </file>
+
+  <file path="engine/thinking/assembler.py" role="Dionísio" complexity="10" status="stable">
+    <classes>CodeAssembler</classes>
+    <functions>_extract_code, _extract_markdown_code, _run_isolated_script, _save_to_drawer, __init__, assemble, _refine_loop</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — CodeAssembler (Dédalo / Cosmo Visão)
+Gera código, diagnostica no sandbox e itera até passar ou esgotar tentativas.
+
+OSL-3:  CodeDrawer e sandbox importados lazy.
+OSL-4:  Cada método faz uma coisa; loop em _refine_loop().
+OSL-7:  assemble() sempre retorna dict com 'success', 'output', 'error'.
+OSL-15: Erros de execução não derrubam o pipeline — viram feedback.
+OSL-18: stdlib only (subprocess, ast, hashlib, time — tudo stdlib).
+God: Dédalo — constrói o labirinto do código até ele funcionar.
+
+Fluxo:
+    assemble(task)
+        ├─ bridge.ask(PROMPT_GERAR)      # 1ª geração
+        ├─ _extract_code(output)         # extrai bloco python
+        ├─ stage_code(code)              # .orn/sandbox_codegen/candidate_*.py
+        ├─ _diagnose(path)               # lint + execução isolada
+        ├─ se issues → bridge.ask(PROMPT_FIX + erros + esqueleto)
+        └─ repete max_retries vezes
+        └─ sucesso → CodeDrawer.upsert_snippet()
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from engine.core.llm_bridge import SiCDoxBridge
+
+
+# ---------------------------------------------------------------------------
+# Prompts de geração e correção
+# ---------------------------------------------------------------------------
+
+_PROMPT_GERAR = """\
+[TASK] Escreva código Python correto e funcional para: {task}
+Regras:
+- Apenas código Python válido, sem texto explicativo antes do bloco.
+- Envolva o código em [code-begin] ... [code-end].
+- Sem imports desnecessários. Sem eval/exec. Sem bare except.
+- Type hints obrigatórios em funções públicas.
+"""
+
+_PROMPT_FIX = """\
+[TASK] Corrija o código Python abaixo.
+
+Tarefa original: {task}
+
+Esqueleto atual (resumo):
+{skeleton}
+
+Erros encontrados:
+{errors}
+
+Regras:
+- Corrija TODOS os erros listados.
+- Envolva o código corrigido em [code-begin] ... [code-end].
+- Sem texto explicativo — apenas o código.
+"""
+
+# ---------------------------------------------------------------------------
+# Limite de execução isolada
+# ---------------------------------------------------------------------------
+_RUN_TIMEOUT: int = 8   # segundos — conservador para N2808
+
+
+# ---------------------------------------------------------------------------
+# CodeAssembler
+# ---------------------------------------------------------------------------
+
+class CodeAssembler:
+    """Gera e refina código via loop diagnose→feedback.
+
+    Args:
+        bridge:     SiCDoxBridge já instanciada (injeção de dependência).
+        validator:  SiCDoxValidator (usado para validar output bruto do LLM).
+        max_retries: Tentativas máximas de correção (1 = gera + 1 fix).
+        run_isolated: Se True, executa o candidato com `python -I` (sandbox real).
+    """
+
+    def __init__(
+        self,
+        bridge: "SiCDoxBridge",
+        validator: Any,
+        max_retries: int = 2,
+        run_isolated: bool = True,
+    ) -> None:
+        self._bridge = bridge
+        self._validator = validator
+        self._max_retries = max(1, int(max_retries))
+        self._run_isolated = run_isolated
+
+    # ------------------------------------------------------------------
+    # API pública — chamada pelo Executive._run_gen()
+    # ------------------------------------------------------------------
+
+    def assemble(self, task: str) -> dict[str, Any]:
+        """Gera, testa e refina código para a tarefa dada.
+
+        Returns:
+            {
+              "success": bool,
+              "output":  str,   # código final (ou melhor tentativa)
+              "error":   str,   # mensagem de falha (vazio se success)
+              "attempts": int,  # quantas gerações foram feitas
+            }
+        """
+        if not task or not task.strip():
+            return {"success": False, "output": "", "error": "task vazio.", "attempts": 0}
+
+        return self._refine_loop(task.strip())
+
+    # ------------------------------------------------------------------
+    # Loop principal
+    # ------------------------------------------------------------------
+
+    def _refine_loop(self, task: str) -> dict[str, Any]:
+        """Gera → diagnostica → corrige, até max_retries ou sucesso."""
+        from engine.tools.code_sandbox import (   # lazy (OSL-3)
+            diagnose_python_file,
+            stage_code,
+        )
+        from engine.core.blackboard import CognitiveReducer  # lazy
+
+        code      = ""
+        issues: list[str] = []
+        attempts  = 0
+        last_path: Path | None = None
+
+        for attempt in range(self._max_retries + 1):
+            attempts = attempt + 1
+
+            # ── 1. Gerar / corrigir via LLM ───────────────────────────
+            if attempt == 0:
+                prompt = _PROMPT_GERAR.format(task=task)
+            else:
+                skeleton = CognitiveReducer.reduce_file(
+                    "candidate.py", code, max_chars=400
+                )
+                errors_text = "\n".join(f"  • 
+    ]]></source_code>
+  </file>
+
+  <file path="engine/thinking/classifier.py" role="Dionísio" complexity="0" status="stable">
+    <classes>IntentionBrain</classes>
+    <source_code><![CDATA[
+# Classificador de Intenção (Ísis)
+# OSL-4: classify() retorna (intent_label, confidence) — função coesa e curta.
+# God: Ísis — orquestração lógica da intenção do usuário.
+class IntentionBrain:
+    pass
+    ]]></source_code>
+  </file>
+
+  <file path="engine/thinking/code_hook.py" role="Dionísio" complexity="18" status="stable">
+    <functions>_extract_code, _extract_markdown_code, _has_python_code, apply_code_hook, _diagnose_inline, _run_sandbox_in_hook, _run_assembler_fix</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — CodeHook (Argos)
+Hook pós-inferência: detecta código no output do think, diagnostica
+e aciona o CodeAssembler para corrigir se necessário.
+
+OSL-4:  Três funções, cada uma com uma responsabilidade.
+OSL-7:  apply() sempre retorna str — nunca None nem exceção não tratada.
+OSL-15: Falha no sandbox não derruba o think — output original é preservado.
+OSL-18: stdlib only neste módulo; sandbox/assembler importados lazy (OSL-3).
+God: Argos — observa tudo; só age quando vê um problema real.
+
+Integração em executive._run_think():
+    # após _looks_degenerate_think_output / antes de build board_snapshot
+    output = apply_code_hook(output, prompt, bridge=_bridge, validator=validator)
+"""
+
+from __future__ import annotations
+
+import re
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from engine.core.llm_bridge import SiCDoxBridge
+
+# ---------------------------------------------------------------------------
+# Regex — detecta bloco de código Python no output do LLM
+# ---------------------------------------------------------------------------
+
+_RE_TAGGED = re.compile(
+    r"\[code-begin\](.*?)\[code-end\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_RE_FENCED_CLOSED = re.compile(
+    r"```(?:python)?\s*\n(.*?)```",
+    re.DOTALL,
+)
+_RE_FENCED_OPEN = re.compile(
+    r"```(?:python)?\s*\n(.*)",   # sem ``` de fechamento — output cortado
+    re.DOTALL,
+)
+
+_RE_FENCED = _RE_FENCED_CLOSED
+
+def _extract_code(text: str) -> str:
+    """Extrai primeiro bloco [code-begin]...[code-end]."""
+    m = _RE_TAGGED.search(text or "")
+    return m.group(1).strip() if m else ""
+
+
+def _extract_markdown_code(text: str) -> str:
+    """Extrai bloco ```python ... ```.
+    Fallback: aceita bloco aberto (output truncado pelo limite de tokens).
+    """
+    # Tenta bloco fechado primeiro
+    m = _RE_FENCED_CLOSED.search(text or "")
+    if m:
+        return m.group(1).strip()
+
+    # Bloco aberto — output foi cortado antes do fechamento
+    m = _RE_FENCED_OPEN.search(text or "")
+    if m:
+        partial = m.group(1).strip()
+        # Só aceita se parecer código real (tem pelo menos def/class/import)
+        if any(kw in partial for kw in ("def ", "class ", "import ", "return ")):
+            return partial
+
+    return ""
+
+
+def _has_python_code(text: str) -> bool:
+    """True se o output parece conter código Python relevante."""
+    if _RE_TAGGED.search(text) or _RE_FENCED.search(text):
+        return True
+    # Fallback: linhas com def/class na raiz (sem markdown)
+    for line in (text or "").splitlines():
+        if line.startswith(("def ", "class ", "import ", "from ")):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Hook principal — chamado pelo Executive._run_think()
+# ---------------------------------------------------------------------------
+
+def apply_code_hook(
+    output: str,
+    task: str,
+    bridge: "SiCDoxBridge",
+    validator: Any,
+    max_retries: int = 1,
+    run_isolated: bool = True,
+) -> str:
+    """Diagnostica e corrige código presente no output do think.
+
+    Se o output não contiver código Python, retorna output inalterado.
+    Se o diagnóstico passar limpo, retorna output inalterado.
+    Se houver issues, aciona o CodeAssembler e substitui o bloco de código.
+
+    Args:
+        output:       Texto gerado pelo bridge.ask() no _run_think().
+        task:         Prompt original do usuário (usado como task no assembler).
+        bridge:       Bridge já ativa (não recarrega o modelo).
+        validator:    SiCDoxValidator para validar o output corrigido.
+        max_retries:  Tentativas de correção repassadas ao CodeAssembler.
+        run_isolated: Executa o candidato com `python -I` antes de aprovar.
+
+    Returns:
+        Output original ou output com bloco de código substituído pelo fix.
+    """
+    _is_bare_code = (
+        not _has_python_code(output)
+        and any(output.lstrip().startswith(kw)
+                for kw in ("def ", "class ", "from ", "import "))
+    )
+    if not _has_python_code(output) and not _is_bare_code:
+        return output
+
+    _truncated = (output.count("```") % 2) == 1
+    code = _extract_code(output) or _extract_markdown_code(output)
+
+    # Se não extraiu código mas o bloco está aberto, usa a task diretamente
+    if not code:
+        if _truncated:
+            issues = ["[HOOK] Output truncado — sem bloco extraível."]
+            return _run_assembler_fix(
+                task=task,
+                broken_code="",
+                issues=issues,
+                bridge=bridge,
+                validator=validator,
+                max_retries=max_retries,
+                run_isolated=run_isolated,
+                original_output=output,
+            )
+        return output  # sem código, sem truncamento — preserva output
+
+    issues = _diagnose_inline(code)
+
+    # NOVO: Se o linter aprovou a sintaxe, obriga a rodar o código para ver se funciona!
+    if not issues and run_isolated:
+        issues
+    ]]></source_code>
+  </file>
+
+  <file path="engine/thinking/drawer_router.py" role="Dionísio" complexity="28" status="stable">
+    <classes>RouteResult, DrawerRouter</classes>
+    <functions>_extract_intent, _fix_io, __init__, route, _route_impl, _route_impl, _diagnose, _post_to_board</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — DrawerRouter (Hermes)
+Fase pré-LLM: tenta montar o código a partir de snippets existentes no
+CodeDrawer antes de acionar a inferência completa.
+
+Filosofia:
+  Se o código já existe → monta, testa, encaixa na lousa.
+  Se não existe         → cai no fluxo LLM normal (sem custo extra).
+
+Fluxo:
+    route(prompt, board)
+        ├─ _extract_intent()     → nome canônico + io hints
+        ├─ CodeDrawer.assemble() → snippet candidato (ou None)
+        ├─ sandbox diagnose      → issues
+        ├─ se issues → _fix_io()  → ajuste mínimo de I/O (sem regerar tudo)
+        └─ board.post_draft()    → injeta código como evidência pesada
+        └─ retorna RouteResult(hit, code, max_tokens_hint)
+
+OSL-3:  CodeDrawer e sandbox importados lazy.
+OSL-4:  Cada método faz uma coisa.
+OSL-7:  route() sempre retorna RouteResult — nunca levanta exceção.
+OSL-15: Falha silenciosa — pipeline continua normalmente se router falhar.
+OSL-18: stdlib only neste módulo.
+God: Hermes — mensageiro rápido; entrega o código antes do LLM acordar.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from engine.core.blackboard import DoxoBoard
+
+
+# ---------------------------------------------------------------------------
+# Resultado do roteamento
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RouteResult:
+    """Resultado de DrawerRouter.route().
+
+    Attributes:
+        hit:            True se snippet foi encontrado e passou no sandbox.
+        code:           Código pronto (vazio se hit=False).
+        max_tokens_hint: Sugestão de max_tokens para o bridge.ask() subsequente.
+                         Se hit=True, só precisamos de explicação → 64 tokens.
+                         Se hit=False, geração completa → valor original.
+        attempts:       Quantas tentativas de fix foram necessárias.
+        issues:         Issues remanescentes após fix (vazio = ok).
+    """
+    hit: bool
+    code: str = ""
+    max_tokens_hint: int | None = None
+    attempts: int = 0
+    issues: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Extração de intent (regex puro — zero custo)
+# ---------------------------------------------------------------------------
+
+# Padrões de geração em PT/EN
+_KW_GEN = re.compile(
+    r"\b(fa[çc]a|cri[ae]|escreva|gere|implemente|make|write|implement|create|build)\b",
+    re.IGNORECASE,
+)
+
+# Nomes canônicos de algoritmos / patterns conhecidos pelo CodeDrawer
+_ALGO_MAP: tuple[tuple[str, str], ...] = (
+    (r"\bquicksort\b",               "quicksort"),
+    (r"\bmergesort\b",               "mergesort"),
+    (r"\bbubble.?sort\b",            "bubblesort"),
+    (r"\bfibonacci\b",               "fibonacci"),
+    (r"\bbinary.?search\b",          "binary_search"),
+    (r"\bring.?buffer\b|ringbuffer", "ring_buffer"),
+    (r"\bstack\b",                   "stack"),
+    (r"\bqueue\b",                   "queue"),
+    (r"\blinked.?list\b",            "linked_list"),
+    (r"\bbst\b|binary.?search.?tree","bst"),
+    (r"\bhash.?map\b|hashmap",       "hash_map"),
+    (r"\bfactory\b",                 "factory"),
+    (r"\bsingleton\b",               "singleton"),
+    (r"\bdecorator\b",               "decorator"),
+    (r"\blru.?cache\b",              "lru_cache"),
+)
+
+# Dicas de I/O a partir de palavras no prompt
+_IO_HINTS: tuple[tuple[str, str, str], ...] = (
+    # (padrão, tipo_io, nome_hint)
+    (r"\barr(?:ay)?\b|lista",   "input",  "arr"),
+    (r"\bn\b|\bnum(?:ero)?\b",  "input",  "n"),
+    (r"\bstring\b|str\b",       "input",  "s"),
+    (r"\bsorted\b|ordenad",     "output", "sorted_arr"),
+    (r"\bresult(?:ado)?\b",     "output", "result"),
+    (r"\bsequen[çc]",           "output", "sequence"),
+)
+
+_LANG_MAP: tuple[tuple[str, str], ...] = (
+    (r"\bpython\b|\bpy\b",      "python"),
+    (r"\bc\+\+\b|\bcpp\b",      "c++"),
+    (r"\bc\b",                  "C"),
+    (r"\bbatch\b|\bbat\b",      "batch"),
+)
+
+
+def _extract_intent(prompt: str) -> tuple[str | None, str, list[str], list[str]]:
+    """Extrai (nome_canônico, lang, inputs, outputs) do prompt.
+
+    Returns:
+        (name, lang, inputs, outputs)
+        name=None se nenhum algoritmo reconhecido.
+    """
+    p = prompt.lower()
+
+    # Verifica se é uma pergunta de geração (senão não há o que montar)
+    if not _KW_GEN.search(p):
+        return None, "python", [], []
+
+    # Nome canônico
+    name: str | None = None
+    for pattern, canonical in _ALGO_MAP:
+        if re.search(pattern, p, re.IGNORECASE):
+            name = canonical
+            break
+
+    # Linguagem
+    lang = "python"
+    for pattern, detected_lang in _LANG_MAP:
+        if re.search(pattern, p, re.IGNORECASE):
+            lang = detected_lang
+            break
+
+    # I/O hints
+    inputs: list[str] = []
+    outputs: list[str] = []
+    for pattern, io_type, hint in _IO_HINTS:
+        if re.s
+    ]]></source_code>
+  </file>
+
+  <file path="engine/thinking/planner.py" role="Dionísio" complexity="0" status="stable">
+    <classes>ExecutivePlanner</classes>
+    <source_code><![CDATA[
+# Planejador de Estratégia (Atena)
+# OSL-5.1: Pré-condição: goal não pode ser vazio.
+# OSL-17: Planner só planeja — não executa, não valida, não persiste.
+# God: Atena — estratégia antes do código.
+# NOTA: Recuperar ponder() da archaeology layer (2025-12-27).
+class ExecutivePlanner:
+    pass
+    ]]></source_code>
+  </file>
+
+  <file path="engine/thinking/__init__.py" role="Dionísio" complexity="0" status="stable">
+  </file>
+
+  <file path="engine/tools/auto_search.py" role="Dionísio" complexity="16" status="stable">
+    <classes>AutoSearchDecider</classes>
+    <functions>_build_decision_prompt, _parse_response, _should_auto_search, decide</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/tools/auto_search.py
+"""
+ORN — AutoSearch Decider (Hermes)
+Decide autonomamente se uma pergunta precisa de contexto externo.
+
+Fluxo two-pass (só modo servidor):
+  1ª pass: decision_prompt → modelo → "SEARCH:<termo>" ou "NO"
+  2ª pass: contexto do crawler + [TASK] + question → modelo → resposta final
+
+OSL-4:  Três métodos curtos, cada um com uma responsabilidade.
+OSL-5.1: parse defensivo — qualquer resposta inesperada vira None.
+OSL-7:  decide() retorna str | None — chamador sempre verifica.
+OSL-15: Falha no crawler não derruba o pipeline — avisa e continua.
+OSL-17: Não chama o modelo diretamente — recebe server_ask_fn como injeção.
+God: Hermes — mensageiro que decide o que buscar antes de entregar.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+# ---------------------------------------------------------------------------
+# Prompt de decisão — calibrado para Qwen 0.5B (max_tokens=20)
+# ---------------------------------------------------------------------------
+
+_DECISION_PROMPT = """\
+You are a search decision engine.
+Read the question and decide:
+- If it requires CURRENT data, news, prices, or OBSCURE facts: respond ONLY with SEARCH:<term>
+- For algorithms, syntax, standard library, well-known concepts: respond ONLY with NO
+
+Examples of NO (never search these):
+- bubble sort, quicksort, binary search
+- Python syntax, C pointers, loops
+- KV-cache explanation, recursion, Big O
+- standard library functions
+
+Examples of SEARCH:
+- current version of library X
+- recent news about Y
+- price of Z
+
+Rules:
+- SEARCH:<term> must be 1-3 words max
+- No explanation, no extra text
+
+Question: {question}
+"""
+
+
+# ---------------------------------------------------------------------------
+# AutoSearchDecider
+# ---------------------------------------------------------------------------
+
+class AutoSearchDecider:
+    def decide(self, question: str, server_ask: Callable[[str, int], Any]) -> str | None:
+        """
+        Retorna um termo de busca ou None.
+        Espera que server_ask(prompt, max_tokens=...) devolva dict JSON ou str.
+        """
+        if not _should_auto_search(question):
+            return None
+
+        decision_prompt = _build_decision_prompt(question)
+
+        try:
+            response = server_ask(decision_prompt, 20)
+        except TypeError:
+            # fallback caso a função injetada aceite só 1 argumento
+            response = server_ask(decision_prompt)
+
+        if response is None:
+            return None
+
+        if isinstance(response, str):
+            text = response
+        elif isinstance(response, dict):
+            if response.get("error"):
+                return None
+            text = str(response.get("output", "")).strip()
+        else:
+            text = str(response).strip()
+
+        return _parse_response(text)
+
+
+# ---------------------------------------------------------------------------
+# Internos — OSL-4: cada função faz uma coisa
+# ---------------------------------------------------------------------------
+
+def _build_decision_prompt(question: str) -> str:
+    """Monta o prompt da 1ª pass."""
+    return _DECISION_PROMPT.format(question=(question or "").strip())
+
+
+def _parse_response(text: str) -> str | None:
+    """Extrai termo de busca da resposta do modelo.
+
+    Parse defensivo — aceita variações razoáveis do Qwen 0.5B:
+      "SEARCH:asyncio"      → "asyncio"
+      "SEARCH: KV cache"     → "KV cache"
+      "search:python list"   → "python list"
+      "NO"                  → None
+      "No, ..."             → None
+      qualquer outra coisa   → None  (fail-safe)
+    """
+    if not text:
+        return None
+
+    raw = text.strip()
+    low = raw.lower()
+
+    if low == "no":
+        return None
+
+    if not low.startswith("search:"):
+        return None
+
+    term = raw[len("search:"):].strip()
+
+    if not term:
+        return None
+
+    if len(term.split()) > 3:
+        return None
+
+    bad_prefixes = (
+        "i'm sorry",
+        "sorry",
+        "hello",
+        "hi",
+        "sure",
+        "of course",
+        "i can't",
+        "i cannot",
+    )
+    low_term = term.lower()
+    if any(low_term.startswith(p) for p in bad_prefixes):
+        return None
+
+    return term
+
+# em auto_search.py — adicionar no _should_auto_search()
+
+_NEVER_SEARCH: frozenset[str] = frozenset({
+    # Algoritmos de ordenação
+    "quicksort", "bubblesort", "mergesort", "heapsort", "insertionsort",
+    "selectionsort", "timsort", "radixsort", "countingsort", "shellsort",
+    # Busca
+    "binary search", "busca binária", "busca linear", "linear search",
+    "bfs", "dfs", "breadth first", "depth first",
+    # Estruturas de dados clássicas
+    "linked list", "lista ligada", "stack", "pilha", "queue", "fila",
+    "hash table", "hash map", "tabela hash", "árvore binária", "binary tree",
+    "heap", "trie", "grafo", "graph",
+    # ML / IA — conceitos fundamentais
+    "softmax", "relu", "sigmoid", "backprop", "backpropagation",
+    "gradient descent", "kv-
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/benchmark_tuner.py" role="Dionísio" complexity="2" status="stable">
+    <classes>Candidate</classes>
+    <functions>default_candidates, _default_runner, autotune</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""Auto-benchmark para descobrir configuração de menor latência."""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Callable
+
+from engine.core.llm_bridge import BridgeConfig, SiCDoxBridge
+
+
+@dataclass(frozen=True)
+class Candidate:
+    n_ctx: int
+    min_p: float
+    repeat_penalty: float
+
+
+def default_candidates() -> list[Candidate]:
+    return [
+        # O modelo padrão que você usa
+        Candidate(n_ctx=512, min_p=0.05, repeat_penalty=1.05),
+        # Testar se um contexto minúsculo diminui a carga do KV Cache (impacto do Malloc)
+        Candidate(n_ctx=128, min_p=0.05, repeat_penalty=1.05),
+        # Testar se desativar a penalidade de repetição acelera o Sampler no Python
+        Candidate(n_ctx=512, min_p=0.05, repeat_penalty=1.00), 
+    ]
+
+
+def _default_runner(cfg: BridgeConfig, prompt: str, max_tokens: int, runs: int) -> float:
+    bridge = SiCDoxBridge(cfg)
+    try:
+        bridge.ask(prompt, max_tokens=max_tokens)  # warm-up
+        times: list[float] = []
+        for _ in range(runs):
+            t0 = time.perf_counter()
+            bridge.ask(prompt, max_tokens=max_tokens)
+            times.append(time.perf_counter() - t0)
+        return sum(times) / max(1, len(times))
+    finally:
+        bridge.shutdown()
+
+
+def autotune(
+    prompt: str,
+    max_tokens: int = 96,
+    runs: int = 2,
+    candidates: list[Candidate] | None = None,
+    runner: Callable[[BridgeConfig, str, int, int], float] | None = None,
+) -> dict:
+    pool = candidates or default_candidates()
+    use_runner = runner or _default_runner
+    rows: list[dict] = []
+    for c in pool:
+        cfg = BridgeConfig(n_ctx=c.n_ctx, active_window=min(c.n_ctx, 512), min_p=c.min_p, repeat_penalty=c.repeat_penalty)
+        avg_s = use_runner(cfg, prompt, max_tokens, runs)
+        rows.append({
+            "n_ctx": c.n_ctx,
+            "min_p": c.min_p,
+            "repeat_penalty": c.repeat_penalty,
+            "avg_s": round(avg_s, 4),
+        })
+    rows.sort(key=lambda r: r["avg_s"])
+    return {"best": rows[0] if rows else None, "candidates": rows, "prompt": prompt, "runs": runs, "max_tokens": max_tokens}
+
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/code_drawer.py" role="Dionísio" complexity="22" status="stable">
+    <classes>DrawerSnippet, CodeDrawer</classes>
+    <functions>_utc_now_iso, _default_store, __init__, _load, _save, list_snippets, upsert_snippet, get, assemble, extract_code_blocks, save_from_context</functions>
+    <source_code><![CDATA[
+from __future__ import annotations
+
+import json
+import os
+import re
+
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _default_store() -> Path:
+    env = os.environ.get("ORN_CODE_DRAWER_PATH", "").strip()
+    if env:
+        return Path(env)
+    return Path("data") / "code_drawer.json"
+
+
+@dataclass
+class DrawerSnippet:
+    name: str
+    lang: str
+    inputs: list[str]
+    outputs: list[str]
+    code: str
+    tags: list[str]
+    created_at: str
+    updated_at: str
+
+
+class CodeDrawer:
+    """Armazena snippets reaproveitáveis e monta código por função + I/O."""
+
+    def __init__(self, store_path: str | Path | None = None) -> None:
+        self.store_path = Path(store_path) if store_path else _default_store()
+
+    def _load(self) -> dict[str, Any]:
+        if not self.store_path.exists():
+            return {"version": 1, "snippets": []}
+        try:
+            data = json.loads(self.store_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return {"version": 1, "snippets": []}
+            if "snippets" not in data or not isinstance(data["snippets"], list):
+                data["snippets"] = []
+            data.setdefault("version", 1)
+            return data
+        except (json.JSONDecodeError, OSError):
+            return {"version": 1, "snippets": []}
+
+    def _save(self, data: dict[str, Any]) -> None:
+        self.store_path.parent.mkdir(parents=True, exist_ok=True)
+        self.store_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def list_snippets(self, lang: str | None = None) -> list[DrawerSnippet]:
+        data = self._load()
+        out: list[DrawerSnippet] = []
+        for raw in data.get("snippets", []):
+            if lang and str(raw.get("lang", "")).lower() != lang.lower():
+                continue
+            out.append(
+                DrawerSnippet(
+                    name=str(raw.get("name", "")),
+                    lang=str(raw.get("lang", "")),
+                    inputs=list(raw.get("inputs", [])),
+                    outputs=list(raw.get("outputs", [])),
+                    code=str(raw.get("code", "")),
+                    tags=list(raw.get("tags", [])),
+                    created_at=str(raw.get("created_at", "")),
+                    updated_at=str(raw.get("updated_at", "")),
+                )
+            )
+        return out
+
+    def upsert_snippet(
+        self,
+        *,
+        name: str,
+        lang: str,
+        inputs: list[str],
+        outputs: list[str],
+        code: str,
+        tags: list[str] | None = None,
+    ) -> DrawerSnippet:
+        clean_name = name.strip()
+        clean_lang = lang.strip().lower()
+        if not clean_name:
+            raise ValueError("name vazio")
+        if not clean_lang:
+            raise ValueError("lang vazio")
+        if not code.strip():
+            raise ValueError("code vazio")
+
+        now = _utc_now_iso()
+        data = self._load()
+        snippets = data["snippets"]
+
+        for row in snippets:
+            if row.get("name", "").strip() == clean_name and row.get("lang", "").strip().lower() == clean_lang:
+                row["inputs"] = [x.strip() for x in inputs if x.strip()]
+                row["outputs"] = [x.strip() for x in outputs if x.strip()]
+                row["code"] = code.rstrip() + "\n"
+                row["tags"] = [x.strip() for x in (tags or []) if x.strip()]
+                row["updated_at"] = now
+                self._save(data)
+                return DrawerSnippet(
+                    name=row["name"],
+                    lang=row["lang"],
+                    inputs=row["inputs"],
+                    outputs=row["outputs"],
+                    code=row["code"],
+                    tags=row["tags"],
+                    created_at=row.get("created_at", now),
+                    updated_at=row["updated_at"],
+                )
+
+        created = DrawerSnippet(
+            name=clean_name,
+            lang=clean_lang,
+            inputs=[x.strip() for x in inputs if x.strip()],
+            outputs=[x.strip() for x in outputs if x.strip()],
+            code=code.rstrip() + "\n",
+            tags=[x.strip() for x in (tags or []) if x.strip()],
+            created_at=now,
+            updated_at=now,
+        )
+        snippets.append(asdict(created))
+        self._save(data)
+        return created
+
+    def get(self, *, name: str, lang: str | None = None) -> DrawerSnippet | None:
+        for sn in self.list_snippets(lang=lang):
+            if sn.name == name:
+                return sn
+        return None
+
+    def assemble(
+        self,
+        *,
+        name: str,
+        lang: str,
+        inputs: list[str] | None = None,
+        outputs: list[str] | None = None,
+    ) -> DrawerSnippet | None:
+        candidates = s
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/code_sandbox.py" role="Hades" complexity="8" status="stable">
+    <functions>safe_codegen_dir, stage_code, lint_python_text, diagnose_python_file</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""Sandbox local para staging e diagnóstico de código (stdlib only)."""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import time
+from pathlib import Path
+
+
+def safe_codegen_dir() -> Path:
+    root = Path(".orn") / "sandbox_codegen"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def stage_code(code: str, stem: str = "candidate") -> Path:
+    digest = hashlib.sha1(code.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    ts = int(time.time() * 1000)
+    path = safe_codegen_dir() / f"{stem}_{ts}_{digest}.py"
+    path.write_text(code, encoding="utf-8")
+    return path
+
+
+def lint_python_text(text: str) -> list[str]:
+    issues: list[str] = []
+    for ln, raw in enumerate(text.splitlines(), start=1):
+        if "\t" in raw:
+            issues.append(f"L{ln}: evitar TAB; use espaços.")
+        if raw.rstrip() != raw:
+            issues.append(f"L{ln}: trailing whitespace.")
+        if len(raw) > 120:
+            issues.append(f"L{ln}: linha acima de 120 chars ({len(raw)}).")
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        issues.append(f"L{exc.lineno}: SyntaxError: {exc.msg}")
+        return issues
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.type is None:
+            issues.append(f"L{node.lineno}: bare except detectado.")
+        if isinstance(node, ast.ImportFrom) and any(n.name == "*" for n in node.names):
+            issues.append(f"L{node.lineno}: import * não permitido.")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"eval", "exec"}:
+            issues.append(f"L{node.lineno}: uso de {node.func.id} não permitido.")
+
+    return issues
+
+
+def diagnose_python_file(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return lint_python_text(text)
+
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/concept_mapper.py" role="Dionísio" complexity="0" status="stable">
+    <classes>ConceptMapper</classes>
+    <source_code><![CDATA[
+# Mapeador de AST (Thoth + Atena)
+# OSL-4: Funções curtas — walk recursivo separado do parser.
+# OSL-9: Sem ponteiros brutos; usa ast.NodeVisitor nativo.
+# God: Thoth (AST/parser) + Atena (arquitetura do mapa).
+# NOTA: Recuperar map_file() e visit_node() da archaeology layer (2026-01-26).
+class ConceptMapper:
+    pass
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/crawler.py" role="Dionísio" complexity="99" status="stable">
+    <classes>CrawlerResult, _EthicalScraper, OrnCrawler</classes>
+    <functions>_get_requests, _get_bs4, _get_local_index, _make_session, _clean_wiki_html, search_wikipedia, search_stackoverflow, search_arxiv, search_pypi, search_github, search_generic, ok, to_prompt_block, __init__, can_fetch, __init__, _is_code_query, _rank_local_source_ids, _rate_wait, _cache_key, _cached, search, _auto_search, clear_cache, check_deps, _score</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — OrnCrawler (Hermes-Web)
+Motor de busca autônoma para injeção de contexto no modelo.
+
+Reciclado de: OLINE v3.6 (BaseCollector, EthicalScraper, wikipedia_io,
+              wikipedia_utils, stackexchange, arxiv)
+Descartado:   Flask, SQLite, TF-IDF, NLTK, translator (desnecessários)
+
+Fontes suportadas:
+  wikipedia   — API REST /summary (sem scraping)
+  stackexchange — API pública, CC BY-SA, 10k req/dia
+  arxiv       — API XML pública, sem auth
+  pypi        — API JSON pública, documentação de libs
+  github      — API REST, token opcional, rate limit respeitado
+  generic     — requests + robots.txt + BeautifulSoup (fallback)
+
+Integração com orn think:
+  orn think "pergunta" --search "termo"
+  → CrawlerResult.context injetado como prefixo no prompt
+
+Protocolo ético (OSL-19 / OLINE PASC 1.3):
+  - robots.txt verificado antes de qualquer request genérico
+  - User-Agent identificado: ORN-Crawler/1.0
+  - Rate limit por domínio (configurável)
+  - Timeout estrito: 10s por request
+  - Cache em memória: evita re-busca na mesma sessão
+
+God: Hermes — mensageiro, veloz e ético.
+"""
+
+from __future__ import annotations
+
+# [DOX-UNUSED] import json
+import time
+import urllib.parse
+import urllib.robotparser
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from typing import Optional
+import re
+
+# ---------------------------------------------------------------------------
+# Importação lazy de dependências opcionais — carregadas UMA VEZ e cacheadas.
+# Antes: _get_requests() executava `import requests` a cada chamada (~7x/run),
+# re-carregando certifi + urllib3 no N2808 a cada vez (76 hits no profiler).
+# Agora: import acontece só no primeiro acesso; demais chamadas lêem a variável.
+# ---------------------------------------------------------------------------
+
+_requests_cached:    object | None = None   # módulo requests ou None
+_http_adapter_cached: object | None = None   # HTTPAdapter ou None
+_retry_cached:        object | None = None   # Retry ou None
+_bs4_cached:          object | None = None   # BeautifulSoup ou None
+_requests_loaded      = False
+_bs4_loaded           = False
+
+
+def _get_requests():
+    global _requests_cached, _http_adapter_cached, _retry_cached, _requests_loaded
+    if not _requests_loaded:
+        _requests_loaded = True
+        try:
+            import requests as _req
+            from requests.adapters import HTTPAdapter as _HA
+            from urllib3.util.retry import Retry as _Rt
+            _requests_cached, _http_adapter_cached, _retry_cached = _req, _HA, _Rt
+        except ImportError:
+            pass
+    return _requests_cached, _http_adapter_cached, _retry_cached
+
+
+def _get_bs4():
+    global _bs4_cached, _bs4_loaded
+    if not _bs4_loaded:
+        _bs4_loaded = True
+        try:
+            from bs4 import BeautifulSoup as _BS4
+            _bs4_cached = _BS4
+        except ImportError:
+            pass
+    return _bs4_cached
+
+
+def _get_local_index():
+    try:
+        from engine.tools.local_index import search_local, index_info
+        return search_local, index_info
+    except ImportError:
+        return None, None
+
+
+# ---------------------------------------------------------------------------
+# Resultado de busca
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CrawlerResult:
+    """Resultado unificado de qualquer fonte."""
+    source:  str               # "wikipedia", "stackoverflow", etc.
+    query:   str               # termo buscado
+    title:   str = ""
+    url:     str = ""
+    context: str = ""          # texto limpo, pronto para injeção no prompt
+    error:   Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None and bool(self.context.strip())
+
+    def to_prompt_block(self, max_chars: int = 2000) -> str:
+        """Formata para injeção no prompt do modelo.
+
+        Usa contrato [CTX-BEGIN]/[CTX-END] alinhado com executive.py e cli.py.
+        """
+        if not self.ok:
+            return ""
+        return (
+            f"[CTX-BEGIN]\n"
+            f"scope: {self.source} | {self.title}\n"
+            f"url: {self.url}\n"
+            f"{self.context[:max_chars]}\n"
+            f"[CTX-END]\n"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sessão HTTP resiliente (reciclado de OLINE BaseCollector v1.1)
+# ---------------------------------------------------------------------------
+
+def _make_session(user_agent: str = "ORN-Crawler/1.0 (local, ethical, non-commercial)",
+                  verify_ssl: bool = True):
+    requests, HTTPAdapter, Retry = _get_requests()
+    if requests is None:
+        return None
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    s = requests.Session()
+    s.mount("https://", HTTPAdapter(max_retries=retries))
+    s.mount("http://",  HTTPAdapter(max_retries=retries))
+    s.headers.update({
+        "User-Agent": user_agent,
+        "Accept-Language": "
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/first_contact.py" role="Dionísio" complexity="5" status="stable">
+    <functions>check_environment, _check_python, _check_llama_cpp, _check_model, _check_click, _check_numpy, hardware_profile</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — First Contact (Hefesto)
+Verificação de ambiente antes da primeira inferência.
+
+Calibrado para hardware low-end (Celeron N2808, REP.INFRA.20260209.GOLD).
+Detecta problemas antes do load de 80 segundos para não desperdiçar tempo.
+
+OSL-5.2: Valida todo o ambiente antes de tentar carregar o modelo.
+OSL-18:  Stdlib apenas (os, sys, pathlib, importlib).
+God: Hefesto — verifica se a forja está em condições antes de acender.
+"""
+
+from __future__ import annotations
+
+import sys
+# [DOX-UNUSED] from pathlib import Path
+
+
+def check_environment() -> list[str]:
+    """Verifica o ambiente e retorna lista de problemas encontrados.
+
+    Executado por `orn config --show` antes de qualquer inferência.
+    Não levanta exceções — retorna problemas como strings descritivas.
+
+    Returns:
+        Lista de strings com problemas encontrados.
+        Lista vazia = ambiente OK, pronto para `orn think`.
+    """
+    issues: list[str] = []
+
+    # 1. Python >= 3.10 (union type hints, match/case)
+    _check_python(issues)
+
+    # 2. llama-cpp-python instalado e importável
+    _check_llama_cpp(issues)
+
+    # 3. Modelo .gguf presente no path esperado
+    _check_model(issues)
+
+    # 4. Click instalado
+    _check_click(issues)
+
+    # 5. NumPy instalado (VectorDB Fase 3)
+    _check_numpy(issues)
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Verificações individuais (OSL-4: cada função faz uma coisa)
+# ---------------------------------------------------------------------------
+
+def _check_python(issues: list[str]) -> None:
+    """Python >= 3.10 obrigatório."""
+    if sys.version_info < (3, 10):
+        issues.append(
+            f"Python >= 3.10 necessário. Atual: {sys.version.split()[0]}"
+        )
+
+
+def _check_llama_cpp(issues: list[str]) -> None:
+    """llama-cpp-python deve ser importável.
+
+    Celeron N2808: instalado via w64devkit (GCC 15.2 + MinGW).
+    Se ausente, indica o comando correto para instalar.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("llama_cpp")
+        if spec is None:
+            raise ImportError("não encontrado")
+        # Verifica versão se disponível
+        import llama_cpp
+        ver = getattr(llama_cpp, "__version__", "?")
+        # Tudo OK — não adiciona issue
+        _ = ver
+    except ImportError:
+        issues.append(
+            "llama-cpp-python NÃO instalado.\n"
+            "     Instalar com wheel pré-compilada (sem precisar de MSVC):\n"
+            "       pip install llama-cpp-python "
+            "--extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu\n"
+            "     Ou verificar instalação pelo w64devkit (doxoade):\n"
+            "       python -c \"import llama_cpp; print(llama_cpp.__version__)\""
+        )
+
+
+def _check_model(issues: list[str]) -> None:
+    """Modelo .gguf deve existir no path padrão."""
+    from engine.core.llm_bridge import BridgeConfig   # noqa: PLC0415
+    cfg = BridgeConfig()
+    if not cfg.model_path.exists():
+        issues.append(
+            f"Modelo não encontrado: {cfg.model_path}\n"
+            "     Baixar em: https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF\n"
+            "     Arquivo: qwen2.5-coder-0.5b-instruct-q4_k_m.gguf\n"
+            "     Colocar em: models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF/"
+        )
+    else:
+        size_mb = cfg.model_path.stat().st_size / (1024 * 1024)
+        if size_mb < 100:
+            issues.append(
+                f"Modelo suspeito: {cfg.model_path.name} tem apenas {size_mb:.0f}MB.\n"
+                "     Arquivo pode estar corrompido ou incompleto."
+            )
+
+
+def _check_click(issues: list[str]) -> None:
+    """Click deve estar instalado."""
+    try:
+        import click
+        _ = click.__version__
+    except ImportError:
+        issues.append("click não instalado. Executar: pip install click>=8.1")
+
+
+def _check_numpy(issues: list[str]) -> None:
+    """NumPy necessário para VectorDB (Fase 3).
+
+    REP.INFRA §5.1: atualizações do numpy devem ser precedidas por teste
+    de compatibilidade — vínculo binário rígido com ABI do llama-cpp-python.
+    """
+    try:
+        import numpy as np
+        ver = np.__version__
+        # Avisa se versão for muito nova (potencial incompatibilidade ABI)
+        major, minor = (int(x) for x in ver.split(".")[:2])
+        if major >= 3:
+            issues.append(
+                f"NumPy {ver} detectado. Versão >= 3.x pode ter incompatibilidade\n"
+                "     de ABI com llama-cpp-python. Testar com:\n"
+                "       python -c \"from llama_cpp import Llama; print('OK')\""
+            )
+    except ImportError:
+        issues.append("numpy não instalado. Executar: pip install numpy>=1.26")
+
+
+# ---------------------------------------------------------------------------
+# Sumário de performance esperada (informativo para orn config --show)
+# --------------------------------------------------------------------
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/graph_inspector.py" role="Dionísio" complexity="0" status="stable">
+    <classes>GraphInspector</classes>
+    <source_code><![CDATA[
+# Inspetor de Grafo (Hórus)
+# OSL-12: Visualização é observabilidade — exibe o estado interno do grafo.
+# God: Hórus — supervisão e visão do fluxo.
+class GraphInspector:
+    pass
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/inverted_index.py" role="Dionísio" complexity="29" status="stable">
+    <classes>InvertedIndexBuilder, DocumentStore, InvertedIndexSearcher</classes>
+    <functions>encode_varint, decode_varint, __init__, add_document, finalize, write, __init__, get_doc_text, close, __init__, _load_vocab_binary_v3, _get_offset_and_df, _read_postings_with_tf_positions, _idf, search_bm25, _get_doc_length, _build_snippet, close, __enter__, __exit__</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/tools/inverted_index.py
+"""
+Índice Invertido com varint + delta encoding.
+
+Formato em disco (fmt=2):
+  postings.bin  — posting lists length-prefixed + delta varint
+  vocab.bin     — array binário de (token_id: u32, offset: u64) ordenado por token_id
+  meta.json     — doc_count e versão do formato
+
+Mudanças em relação à versão anterior (fmt=1):
+
+  1. vocab.json → vocab.bin
+     JSON de 5M entradas ocupa ~150MB e leva segundos para carregar.
+     vocab.bin usa struct.pack de pares (u32, u64) = 12 bytes cada.
+     Resultado: ~60MB, carregamento ~10x mais rápido, busca por bisect O(log n).
+
+  2. Sentinel-0 → length-prefix
+     O sentinel delta=0 parava a leitura prematuramente em casos frágeis.
+     Length-prefix é explícito: [n_docs varint][delta1 varint][delta2 varint]...
+
+  3. mmap em postings.bin
+     Carregamento anterior: f.read() inteiro em RAM (~300MB para Wikipedia).
+     mmap: o SO pagina apenas os blocos lidos pela query atual.
+     Resultado: RAM cai de ~300MB para ~alguns MB por query.
+
+  4. Filtro IDF em search()
+     Tokens em >IDF_MAX_FRACTION do corpus são stop words implícitas.
+     Ignorá-los acelera a query e melhora relevância.
+
+Compatibilidade: fmt=1 (vocab.json + sentinel-0) ainda é lido pelo Searcher.
+"""
+
+from __future__ import annotations
+
+import bisect
+import json
+import mmap
+import math
+import struct
+from collections import defaultdict
+from pathlib import Path
+
+# Tokens presentes em mais de IDF_MAX_FRACTION dos documentos são stop words.
+IDF_MAX_FRACTION: float = 0.40
+
+# Formato do vocab binário: (token_id u32, byte_offset u64) = 12 bytes por entrada.
+_VOCAB_ENTRY_FMT_V3 = "<IQI"   # token_id(u32), offset(u64), df(u32)
+_VOCAB_ENTRY_SIZE_V3 = struct.calcsize(_VOCAB_ENTRY_FMT_V3)  # 4+8+4 = 16 bytes
+
+
+
+# ---------------------------------------------------------------------------
+# Varint encoding
+# ---------------------------------------------------------------------------
+
+def encode_varint(n: int) -> bytes:
+    """Codifica inteiro não-negativo em varint (1-9 bytes)."""
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            break
+    return bytes(out)
+
+
+def decode_varint(data: bytes | mmap.mmap, pos: int) -> tuple[int, int]:
+    """Decodifica varint em data[pos:]. Retorna (valor, próxima_posição)."""
+    shift = 0
+    result = 0
+    while True:
+        b = data[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not b & 0x80:
+            break
+        shift += 7
+    return result, pos
+
+
+# ---------------------------------------------------------------------------
+# Builder
+# ---------------------------------------------------------------------------
+
+class InvertedIndexBuilder:
+    def __init__(self) -> None:
+        # postings: token_id -> list of (doc_id, [positions...])
+        self.postings: dict[int, dict[int, list[int]]] = defaultdict(lambda: defaultdict(list))
+        self.doc_count: int = 0
+        # store document lengths for avgdl
+        self._doc_lengths: dict[int, int] = {}
+
+    def add_document(self, doc_id: int, tokens) -> None:
+        """tokens: iterable of term ids (int). We record positions starting at 1."""
+        pos = 1
+        length = 0
+        for t in tokens:
+            t = int(t)
+            self.postings[t][doc_id].append(pos)
+            pos += 1
+            length += 1
+        self._doc_lengths[doc_id] = length
+        if doc_id > self.doc_count:
+            self.doc_count = doc_id
+
+    def finalize(self) -> None:
+        # sort positions and ensure posting doc-ids are sorted lists
+        for token, docs in list(self.postings.items()):
+            for d in list(docs.keys()):
+                docs[d].sort()
+
+    def write(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        vocab_entries: list[tuple[int, int, int]] = []  # token_id, offset, df
+        postings_buf = bytearray()
+
+        # write postings: tokens sorted by token_id
+        for token_id in sorted(self.postings.keys()):
+            docs_map = self.postings[token_id]
+            docs_items = sorted(docs_map.items())  # list of (doc_id, positions)
+            offset = len(postings_buf)
+            df = len(docs_items)
+            vocab_entries.append((int(token_id), offset, df))
+
+            # length-prefix (n_docs)
+            postings_buf += encode_varint(df)
+            prev_doc = 0
+            for doc_id, positions in docs_items:
+                postings_buf += encode_varint(doc_id - prev_doc)
+                prev_doc = doc_id
+                # tf
+                tf = len(positions)
+                postings_buf += encode_varint(tf)
+                # positions: delta-encode within document
+                prev_pos = 0
+                for p in positions:
+                    postings_buf += encode_varint(p - prev_pos)
+                    prev_pos = p
+
+        with open(path / "postings.bin", "wb
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/kiwix_search.py" role="Dionísio" complexity="1" status="stable">
+    <classes>KiwixSearcher</classes>
+    <functions>__init__, search</functions>
+    <source_code><![CDATA[
+# engine/tools/kiwix_search.py
+import libzim
+# [DOX-UNUSED] from pathlib import Path
+
+class KiwixSearcher:
+    def __init__(self, zim_path: str):
+        self._archive = libzim.Archive(zim_path)
+        self._searcher = libzim.Searcher(self._archive)
+
+    def search(self, query: str, max_results: int = 3) -> list[dict]:
+        sq = libzim.Query().set_query(query)
+        results = self._searcher.search(sq)
+        out = []
+        for r in results.getResults(0, max_results):
+            entry = self._archive.get_entry_by_path(r)
+            out.append({
+                "title": entry.title,
+                "path": r,
+                "snippet": _extract_text(entry, max_chars=1500),
+            })
+        return out
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/local_index.py" role="Unknown" complexity="0" status="unknown">
+  </file>
+
+  <file path="engine/tools/server_client.py" role="Zeus" complexity="25" status="stable">
+    <classes>ORNHandler, WebCLI, ServerBridge, DummyValidator</classes>
+    <functions>ask, is_server_online, status, query, decide, _raw_query, log_message, _send, do_GET, do_POST, _query_infer, run, _start, _stop, ask, validar_output</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/tools/server_client.py
+"""
+ORN — Server Client (Hermes)
+Cliente do SiCDox Server para uso pelo CLI/Executive.
+
+Fix do bug de disconnect: is_server_online() e ask() agora usam
+uma UNICA conexao — sem race condition entre verificar e usar.
+
+OSL-7:  Nunca levanta excecao — retorna None se servidor offline.
+OSL-18: stdlib apenas.
+God: Hermes — mensageiro entre a CLI e a fornalha.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+# [DOX-UNUSED] import sys
+import threading
+import webbrowser
+from typing import Any
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+WEB_PORT   = 8372
+INFER_PORT = 8371
+PORT = 8371
+HOST       = "127.0.0.1"
+PID_FILE   = Path("web_server.pid")
+
+
+def ask(prompt: str, max_tokens: int = 256) -> str | None:
+    resp = query(prompt, max_tokens=max_tokens)
+    if resp is None:
+        return None
+    if resp.get("error"):
+        return None
+    
+    output = str(resp.get("output", ""))
+
+    # ── HOOK DE CÓDIGO (Intercepta respostas do Servidor) ──
+    try:
+        from engine.thinking.code_hook import apply_code_hook
+        
+        # Criamos uma "Ponte Falsa" que redireciona as tentativas de conserto de volta pro Servidor TCP!
+        class ServerBridge:
+            def ask(self, p: str, max_tokens: int = 256, **kwargs) -> str:
+                r = query(p, max_tokens=max_tokens)
+                return r.get("output", "") if r else ""
+
+        class DummyValidator:
+            def validar_output(self, text: str):
+                return True, ""
+
+        output = apply_code_hook(
+            output=output,
+            task=prompt,
+            bridge=ServerBridge(),
+            validator=DummyValidator(),
+            max_retries=1,
+            run_isolated=True
+        )
+    except Exception as e:
+        # Se o hook falhar por qualquer motivo (ex: sandbox quebrado), devolve o texto original com aviso
+        output += f"\n\n[AVISO] Falha ao acionar CodeHook local: {e}"
+
+    return output
+
+
+def is_server_online() -> bool:
+    """Checagem barata de disponibilidade."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect((HOST, PORT))
+        return True
+    except (ConnectionRefusedError, OSError):
+        return False
+
+def status() -> dict[str, Any] | None:
+    """Retorna o JSON de status completo."""
+    return _raw_query(b"STATUS\n")
+
+
+def query(prompt: str, max_tokens: int = 256) -> dict[str, Any] | None:
+    payload = (json.dumps({"prompt": prompt, "max_tokens": max_tokens}) + "\n").encode("utf-8")
+    return _raw_query(payload)
+
+
+def decide(question, server_ask):
+    response = server_ask(question)
+
+    if response is None:
+        return None
+
+    if isinstance(response, str):
+        response = {
+            "output": response,
+            "elapsed_s": 0,
+            "error": None,
+        }
+
+    if not isinstance(response, dict):
+        response = {
+            "output": str(response),
+            "elapsed_s": 0,
+            "error": None,
+        }
+
+    if response.get("error"):
+        return None
+
+    return response.get("output", "").strip() or None
+
+
+def _raw_query(payload: bytes) -> dict[str, Any] | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(60.0)
+            s.connect((HOST, PORT))
+            s.settimeout(None)
+            s.sendall(payload)
+
+            data = bytearray()
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if data.endswith(b"\n"):
+                    break
+
+        resp = json.loads(data.decode("utf-8").strip())
+        return resp if isinstance(resp, dict) else None
+    except Exception:
+        return None
+
+# ---------------------------------------------------------------------------
+# HTML da interface — single file, zero dependencias externas
+# ---------------------------------------------------------------------------
+
+HTML = r"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORN — AI CLI Interface</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;700;800&display=swap');
+
+  :root {
+    --bg:        #0f1117;
+    --surface:   #171b26;
+    --surface2:  #1e2330;
+    --border:    #2a3040;
+    --accent:    #4f9cf9;
+    --accent2:   #7c6af7;
+    --success:   #3dd68c;
+    --warn:      #f5a623;
+    --text:      #e2e8f0;
+    --text-dim:  #64748b;
+    --code-bg:   #131720;
+    --radius:    12px;
+    --mono:      'JetBrains Mono', monospace;
+    --sans:      'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    height: 100vh;
+    disp
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/__init__.py" role="Dionísio" complexity="0" status="stable">
+  </file>
+
+  <file path="engine/ui/colors.py" role="Dionísio" complexity="17" status="stable">
+    <classes>ColorManager</classes>
+    <functions>colorir, ok, warn, erro, info, header, dimmed, __new__, get, __getattr__, paint, _activate_ansi, load_conf, catalogar, decorator, wrapper</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — UI / Colors (Afrodite)
+Integração com doxcolors (ColorManager) — zero dependências externas.
+
+OSL-18: Stdlib apenas (os, sys, ctypes). Sem colorama.
+OSL-4:  Funções curtas — cada uma retorna string colorida sem efeito colateral.
+OSL-3:  ColorManager é singleton; load_conf() chamado uma vez no import.
+God: Afrodite — se ninguém gosta de usar, o sistema morreu.
+
+Uso:
+    from engine.ui.colors import c, ok, warn, erro, info, header, dimmed
+    print(ok("Tudo certo!"))
+    print(f"{c.BRIGHT_CYAN}texto{c.RESET}")
+"""
+
+import os
+import sys
+from functools import wraps
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# ColorManager — doxcolors (incubado internamente, zero deps)
+# Adaptado de colors.py para integração com ORN engine.
+# ---------------------------------------------------------------------------
+
+class ColorManager:
+    """Gerenciador de cores ANSI com lazy activation e conf externo.
+
+    Singleton — uma única instância em toda a execução.
+    Ativa ANSI no Windows via ctypes (sem colorama).
+    Lê definições de colors.conf no mesmo diretório.
+    """
+
+    _instance    = None
+    _initialized = False
+    _cache: dict = {}
+    _is_tty      = sys.stdout.isatty()
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def get(self, name: str) -> str:
+        """Retorna código ANSI para *name*, ou '' se não-TTY / não encontrado."""
+        if not sys.stdout.isatty():
+            return ""
+        self._activate_ansi()
+        return self._cache.get(name.upper(), "")
+
+    def __getattr__(self, name: str) -> str:
+        """Acesso por atributo: c.BRIGHT_GREEN, c.RESET, etc.
+
+        VULCAN FIX: Não interceptar métodos/atributos reais da classe.
+        Cython compila __getattr__ como slot C que dispara antes do
+        mecanismo normal de resolução de atributos (tp_getattro).
+        Sem este guard, métodos como load_conf(), paint(), catalogar()
+        tornam-se inacessíveis no binário compilado.
+
+        Regra: só delegar para self.get() se o nome NÃO é um atributo
+        real definido na classe. Qualquer outro caso levanta AttributeError
+        para que o Python resolva normalmente via MRO.
+        """
+        # Nomes com underscore são internos — nunca são cores ANSI
+        if name.startswith("_"):
+            raise AttributeError(name)
+        # Se é um método/atributo real da classe, não interceptar
+        if callable(getattr(type(self), name, None)):
+            raise AttributeError(name)
+        # Caso contrário: trata como nome de cor ANSI
+        return self.get(name)
+
+    def paint(self, color_name: str):
+        """Decorador: pinta toda a saída stdout de uma função."""
+        def decorator(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                code  = self.get(color_name)
+                reset = self.get("RESET")
+                if code:
+                    sys.stdout.write(code)
+                    sys.stdout.flush()
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    if code:
+                        sys.stdout.write(reset)
+                        sys.stdout.flush()
+            return wrapper
+        return decorator
+
+    def _activate_ansi(self) -> None:
+        """Ativa ANSI no Windows via ctypes (uma vez). OSL-3."""
+        if not self._initialized:
+            if self._is_tty and os.name == "nt":
+                try:
+                    import ctypes
+                    handle = ctypes.windll.kernel32.GetStdHandle(-11)
+                    ctypes.windll.kernel32.SetConsoleMode(handle, 7)
+                except Exception:
+                    pass
+            self._initialized = True
+
+    def load_conf(self, filename: str | None = None) -> None:
+        """Carrega definições de colors.conf.
+
+        OSL-5.2: Verifica existência antes de abrir.
+        OSL-18:  Stdlib apenas.
+        """
+        if filename is None:
+            filename = str(Path(__file__).parent / "colors.conf")
+        if not os.path.exists(filename):
+            return
+        with open(filename, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    if "=" not in line:
+                        continue
+                    name, _, code = line.partition("=")
+                    self._cache[name.strip().upper()] = f"\033[{code.strip()}m"
+
+    def catalogar(self) -> None:
+        """Imprime tabela visual das cores carregadas. Dev only."""
+        self._activate_ansi()
+        print("\n=== CATÁLOGO ORN COLORS ===")
+        for i, (k, v) in enumerate(self._cache.items()):
+            print(f"{v}{k:<20}\033[0m", end="  ")
+            if (i + 1) % 5 == 0:
+                print()
+        print("\n===========================\n")
+
+
+# -----------------
+    ]]></source_code>
+  </file>
+
+  <file path="engine/ui/display.py" role="Dionísio" complexity="4" status="stable">
+    <classes>Display</classes>
+    <functions>banner, section, separator, success, warn, error, info, thinking, not_implemented, kv, lista, code_block</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — UI / Display (Apolo)
+Todas as funções de output no terminal passam por aqui.
+
+OSL-4:  Cada método faz exatamente uma coisa.
+OSL-17: Nenhum módulo de lógica imprime diretamente — tudo passa pelo Display.
+OSL-18: Usa engine.ui.colors (doxcolors) — zero deps externas.
+God: Apolo — clareza, ordem e legibilidade no terminal.
+"""
+
+import sys
+
+from engine.ui.colors import c, ok, warn, erro, info, header, dimmed
+
+# ---------------------------------------------------------------------------
+# Constantes visuais
+# ---------------------------------------------------------------------------
+
+_SEP_MAJOR = "═" * 60
+_SEP_MINOR = "─" * 60
+_BANNER = r"""
+        ████████████  ████████████  ███     ████
+      ████████████  ████████████  █████   ████
+    ████████████  ████ ████     ████   █████
+  ████████████  ████     ████ ████     ███
+   o l D o x 2 2 2    R e d e    N e u r a l
+    
+"""
+
+
+class Display:
+    """Namespace estático para todos os outputs do ORN.
+
+    OSL-4: Métodos curtos, cada um com uma responsabilidade.
+    OSL-17: Única fonte de saída — módulos de lógica nunca printam diretamente.
+    """
+
+    # ------------------------------------------------------------------
+    # Identidade
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def banner() -> None:
+        """Exibe o banner ASCII do ORN."""
+        print(header(_BANNER))
+        print(dimmed("  AI CLI para Código — Qwen2.5-Coder local"))
+        print(dimmed(f"  {_SEP_MINOR}"))
+        print()
+
+    # ------------------------------------------------------------------
+    # Seções e separadores
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def section(comando: str, alvo: str) -> None:
+        """Cabeçalho de seção para um comando."""
+        alvo_str = f" → {alvo}" if alvo else ""
+        print(f"\n{header(_SEP_MAJOR)}")
+        print(header(f"  [{comando}]{alvo_str}"))
+        print(header(_SEP_MAJOR))
+
+    @staticmethod
+    def separator() -> None:
+        """Linha separadora menor."""
+        print(dimmed(_SEP_MINOR))
+
+    # ------------------------------------------------------------------
+    # Mensagens de status
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def success(msg: str) -> None:
+        print(ok(f"  [OK] {msg}"))
+
+    @staticmethod
+    def warn(msg: str) -> None:
+        print(warn(f"  [!]  {msg}"))
+
+    @staticmethod
+    def error(msg: str, fatal: bool = False) -> None:
+        """OSL-7: fatal=True encerra o processo — usar com moderação."""
+        print(erro(f"  [ERRO] {msg}"), file=sys.stderr)
+        if fatal:
+            sys.exit(1)
+
+    @staticmethod
+    def info(msg: str) -> None:
+        print(info(f"  {msg}"))
+
+    @staticmethod
+    def thinking(prompt: str) -> None:
+        """Indica que o modelo está processando."""
+        print(warn("\n  [ORN] Processando: ") + info(f'"{prompt}"'))
+        print(dimmed("  Aguarde..."))
+
+    # ------------------------------------------------------------------
+    # Desenvolvimento / stubs
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def not_implemented(comando: str) -> None:
+        """Placeholder para comandos ainda não implementados."""
+        print(warn(f"\n  [TODO] '{comando}' ainda não implementado."))
+        print(dimmed("  Consulte o roadmap em docs/ORN_planejamento.md"))
+
+    # ------------------------------------------------------------------
+    # Dados estruturados
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def kv(chave: str, valor: str) -> None:
+        """Par chave → valor alinhado."""
+        print(f"  {dimmed(chave.ljust(20))} {info(str(valor))}")
+
+    @staticmethod
+    def lista(titulo: str, itens: list[str]) -> None:
+        """Lista com título. OSL-5.2: valida itens."""
+        if not itens:
+            return
+        print(header(f"\n  {titulo}"))
+        for item in itens:
+            print(info(f"    • {item}"))
+
+    @staticmethod
+    def code_block(codigo: str, lang: str = "") -> None:
+        """Bloco de código destacado no terminal."""
+        lang_label = f" [{lang.upper()}]" if lang else ""
+        pad = 40 - len(lang)
+        print(dimmed(f"\n  ┌─ Código{lang_label} {'─' * max(pad, 4)}"))
+        for linha in codigo.splitlines():
+            print(f"  │ {c.get('CYAN')}{linha}{c.get('RESET')}")
+        print(dimmed("  └" + "─" * 46))
+    ]]></source_code>
+  </file>
+
+  <file path="engine/ui/__init__.py" role="Dionísio" complexity="0" status="stable">
+  </file>
+
+  <file path="engine/web/web_server.py" role="Dionísio" complexity="24" status="stable">
+    <classes>ORNHandler, WebCLI</classes>
+    <functions>_decide_search, _parse_search_decision, _run_crawler, _query_infer_raw, log_message, _send, do_GET, do_POST, run, _start, _stop</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""
+ORN — Web Interface Server (Apolo)
+Servidor HTTP local que serve a interface web e faz proxy para o SiCDox Server.
+
+Porta: 8372 (web) -> 8371 (inferencia)
+Uso:
+  orn-web start          inicia e abre o browser
+  orn-web start --no-browser  inicia sem abrir browser
+  orn-web stop           para o servidor
+
+Mudancas v0.3:
+  - Auto-search two-pass integrado no POST /ask
+  - Response JSON inclui source e source_url
+  - renderMarkdown: indentacao e tabs preservados
+  - Badge de fonte exibido na interface
+
+OSL-18: stdlib apenas (http.server, json, threading, webbrowser, socket).
+OSL-15: Erros de proxy nao derrubam o servidor web.
+God: Apolo — da forma e clareza ao pensamento do Hefesto.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+# [DOX-UNUSED] import sys
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+WEB_PORT   = 8372
+INFER_PORT = 8371
+HOST       = "127.0.0.1"
+PID_FILE   = Path("web_server.pid")
+
+
+# ---------------------------------------------------------------------------
+# HTML da interface
+# ---------------------------------------------------------------------------
+
+HTML = r"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORN — AI CLI Interface</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@400;700;800&display=swap');
+
+  :root {
+    --bg:        #0f0d0f;
+    --surface:   #19171a;
+    --surface2:  #2f2e30;
+    --border:    #5e5c5e;
+    --accent:    #26bc5f;
+    --accent2:   #197b3f;
+    --success:   #3dd68c;
+    --warn:      #f5a623;
+    --text:      #FF6700;
+    --text-dim:  #ffbe78;
+    --code-bg:   #001404;
+    --code-text: #a8e6a8;
+    --radius:    13px;
+    --mono:      'JetBrains Mono', monospace;
+    --sans:      'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── HEADER ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 15px 25px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .logo { display: flex; align-items: center; gap: 25px; }
+
+  .logo-mark {
+    width: 106px; height: 36px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono);
+    font-size: 14px; font-weight: 600;
+    color: #fff; letter-spacing: -1px;
+  }
+
+  .logo-text { font-size: 18px; font-weight: 800; letter-spacing: -0.5px; }
+  .logo-sub  { font-size: 11px; color: var(--text-dim); font-family: var(--mono); }
+
+  .server-status {
+    display: flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .status-dot {
+    width: 12px; height: 8px; border-radius: 50%;
+    background: var(--text-dim);
+    transition: background 0.3s;
+  }
+  .status-dot.online  { background: var(--success); box-shadow: 0 0 6px var(--success); }
+  .status-dot.offline { background: #ef4444; }
+
+  /* ── CHAT AREA ── */
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    scroll-behavior: smooth;
+  }
+
+  #chat::-webkit-scrollbar { width: 4px; }
+  #chat::-webkit-scrollbar-track { background: transparent; }
+  #chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .msg {
+    display: flex;
+    gap: 13px;
+    animation: fadeUp 0.25s ease;
+    max-width: 860px;
+    width: 80%;
+  }
+
+  .msg.user  { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.model { align-self: flex-start; }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .avatar {
+    width: 32px; height: 32px; border-radius: 8px;
+    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+  }
+
+  .msg.user  .avatar { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
+  .msg.model .avatar { background: var(--surface2); color: var(--accent); border: 1px solid var(--border); }
+
+  .bubble {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    line-height: 1.7;
+    max-width: calc(100% - 44px);
+  }
+
+  .msg.user  .bubble {
+    background: linear-gradient(135deg, #1e3a5f, #1a2d4f);
+    border: 1px solid #2a4a7f;
+    color: var(--text);
+    border-bottom-right-radius: 4px;
+  }
+
+  .msg.model .bubble {
+    background: var(--surface);
+    border: 1px solid var(--bor
+    ]]></source_code>
+  </file>
+
+  <file path="engine/web/__init__.py" role="Dionísio" complexity="0" status="stable">
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""ORN — Web Interface Package. God: Apolo — clareza e beleza."""
+    ]]></source_code>
+  </file>
+
+  <file path="engine/web/__main__.py" role="Zeus" complexity="24" status="stable">
+    <functions>_load_python_web_cli_fallback, _is_wrapper_signature_type_error, main</functions>
+    <source_code><![CDATA[
+# --- DOXOADE_VULCAN_BOOTSTRAP:START ---
+from pathlib import Path as _doxo_path
+import importlib.util as _doxo_importlib_util
+import sys as _doxo_sys
+import time as _doxo_time
+
+_doxo_activate_vulcan = None
+_doxo_install_meta_finder = None
+_doxo_probe_embedded = None
+_doxo_project_root = None
+_doxo_boot_t0 = _doxo_time.monotonic()
+
+# --- Lazy-loader --- 
+_doxo_lazy_mod = None
+try:
+    if _doxo_project_root:
+        _doxo_lazy_policy_f = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_policy.json"
+        _doxo_lazy_src_f    = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_loader.py"
+        if _doxo_lazy_policy_f.exists() and _doxo_lazy_src_f.exists():
+            _doxo_lazy_spec = _doxo_importlib_util.spec_from_file_location(
+                "_doxoade_vulcan_lazy", str(_doxo_lazy_src_f)
+            )
+            if _doxo_lazy_spec and _doxo_lazy_spec.loader:
+                _doxo_lazy_mod = _doxo_importlib_util.module_from_spec(_doxo_lazy_spec)
+                _doxo_sys.modules["_doxoade_vulcan_lazy"] = _doxo_lazy_mod
+                _doxo_lazy_spec.loader.exec_module(_doxo_lazy_mod)
+                _doxo_lazy_mod.install(
+                    _doxo_lazy_mod.load_policy(_doxo_lazy_policy_f)
+                )
+except Exception:
+    pass
+
+_doxo_install_ms = 0
+_doxo_embedded_ms = 0
+_doxo_fallback_ms = 0
+
+for _doxo_base in[_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
+    _doxo_runtime_file = _doxo_base / ".doxoade" / "vulcan" / "runtime.py"
+    if not _doxo_runtime_file.exists():
+        continue
+    _doxo_spec = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_runtime", str(_doxo_runtime_file))
+    if not (_doxo_spec and _doxo_spec.loader):
+        continue
+    _doxo_mod = _doxo_importlib_util.module_from_spec(_doxo_spec)
+    _doxo_sys.modules["_doxoade_vulcan_runtime"] = _doxo_mod
+    _doxo_spec.loader.exec_module(_doxo_mod)
+    _doxo_activate_vulcan = getattr(_doxo_mod, "activate_vulcan", None)
+    _doxo_install_meta_finder = getattr(_doxo_mod, "install_meta_finder", None)
+    _doxo_probe_embedded = getattr(_doxo_mod, "probe_embedded", None)
+    _doxo_project_root = str(_doxo_base)
+    break
+
+# 1. Instala MetaFinder primeiro
+if callable(_doxo_install_meta_finder) and _doxo_project_root:
+    _doxo_t = _doxo_time.monotonic()
+    try:
+        _doxo_install_meta_finder(_doxo_project_root)
+    except Exception:
+        pass
+    finally:
+        _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
+
+# 2. Tenta usar o loader "embedded"
+try:
+    _doxo_t = _doxo_time.monotonic()
+    if _doxo_project_root:
+        _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
+        if _embedded_path.exists():
+            _doxo_spec2 = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_embedded", str(_embedded_path))
+            if _doxo_spec2 and _doxo_spec2.loader:
+                _doxo_mod2 = _doxo_importlib_util.module_from_spec(_doxo_spec2)
+                _doxo_sys.modules["_doxoade_vulcan_embedded"] = _doxo_mod2
+                _doxo_spec2.loader.exec_module(_doxo_mod2)
+                _doxo_activate_embedded = getattr(_doxo_mod2, "activate_embedded", None)
+                _doxo_safe_call = getattr(_doxo_mod2, "safe_call", None)
+                if callable(_doxo_activate_embedded):
+                    try:
+                        _doxo_activate_embedded(globals(), __file__, _doxo_project_root)
+                    except Exception:
+                        pass
+                if callable(_doxo_safe_call):
+                    try:
+                        import sys as _d_sys
+                        _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
+                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
+                        _suffix_len    = len(_vulcan_suffix)
+                        for mname, mod in list(_d_sys.modules.items()):
+                            try:
+                                mfile = getattr(mod, "__file__", None)
+                                if not mfile:
+                                    continue
+                                mpath = _doxo_path(mfile)
+                                if _bin_dir not in mpath.parents:
+                                    continue
+                                for attr in dir(mod):
+                                    if not attr.endswith(_vulcan_suffix):
+                                        continue
+                                    native_obj = getattr(mod, attr, None)
+                                    if not callable(native_obj):
+                                        continue
+                                    base = attr[: -_suffix_len]
+                                    try:
+                                        setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
+                                    except Exception:
+                              
+    ]]></source_code>
+  </file>
+
+  <file path="native/orn_llama_wrapper.c" role="Dionísio" complexity="26" status="stable_c_cpp">
+    <classes>llama_model, llama_context, llama_sampler, llama_vocab, llama_model_params, llama_context_params, llama_sampler_chain_params, llama_context_params, llama_batch, llama_batch</classes>
+    <functions>orn_infer, orn_reset_state, orn_init, orn_free</functions>
+    <source_code><![CDATA[
+#include "orn_llama_wrapper.h"
+#include "llama.h"
+
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+
+#define ORN_MAX_PROMPT_TOKENS 2048
+#define ORN_MAX_PIECE_BYTES    256
+
+static struct llama_model    * g_model   = NULL;
+static struct llama_context  * g_ctx     = NULL;
+static struct llama_sampler  * g_smpl    = NULL;
+static const struct llama_vocab * g_vocab = NULL;
+static int g_ready = 0;
+
+// Guarda as configurações para recriar o contexto
+static int g_saved_n_ctx = 512;
+static int g_saved_n_threads = 2;
+
+static void orn_reset_state(void)
+{
+    if (g_smpl) {
+        llama_sampler_reset(g_smpl);
+    }
+}
+
+void orn_free(void)
+{
+    if (g_smpl) {
+        llama_sampler_free(g_smpl);
+        g_smpl = NULL;
+    }
+    if (g_ctx) {
+        llama_free(g_ctx);
+        g_ctx = NULL;
+    }
+    if (g_model) {
+        llama_model_free(g_model);
+        g_model = NULL;
+    }
+    g_vocab = NULL;
+    g_ready = 0;
+    llama_backend_free();
+}
+
+int orn_init(const char* model_path, int n_ctx, int n_threads)
+{
+    if (!model_path || !model_path[0]) return -10;
+    if (g_ready) orn_free();
+    
+    llama_log_set(NULL, NULL);
+    llama_backend_init();
+
+    g_saved_n_ctx = n_ctx;
+    g_saved_n_threads = n_threads;
+
+    struct llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = 0;
+
+    g_model = llama_model_load_from_file(model_path, mparams);
+    if (!g_model) { orn_free(); return -1; }
+
+    g_vocab = llama_model_get_vocab(g_model);
+    if (!g_vocab) { orn_free(); return -2; }
+
+    struct llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx            = (n_ctx > 0)     ? n_ctx     : 512;
+    cparams.n_batch          = 64;
+    cparams.n_ubatch         = 64;
+    cparams.n_threads        = (n_threads > 0) ? n_threads : 2;
+    cparams.n_threads_batch  = cparams.n_threads; 
+
+    g_ctx = llama_init_from_model(g_model, cparams);
+    if (!g_ctx) { orn_free(); return -3; }
+
+    struct llama_sampler_chain_params sparams = llama_sampler_chain_default_params();
+    g_smpl = llama_sampler_chain_init(sparams);
+    if (!g_smpl) { orn_free(); return -4; }
+
+    llama_sampler_chain_add(g_smpl, llama_sampler_init_greedy());
+
+    g_ready = 1;
+    return 0;
+}
+
+int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
+{
+    if (!g_ready || !g_model || !g_smpl || !g_vocab) return -1;
+    if (!prompt || !output || output_size <= 1 || max_tokens <= 0) return -2;
+
+    // --- RECRIA O CONTEXTO PARA GARANTIR MEMÓRIA LIMPA (Custo: 0.001s) ---
+    if (g_ctx) {
+        llama_free(g_ctx);
+    }
+    struct llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx            = (g_saved_n_ctx > 0)     ? g_saved_n_ctx     : 512;
+    cparams.n_batch          = 64;
+    cparams.n_ubatch         = 64;
+    cparams.n_threads        = (g_saved_n_threads > 0) ? g_saved_n_threads : 2;
+    cparams.n_threads_batch  = cparams.n_threads; 
+    
+    g_ctx = llama_init_from_model(g_model, cparams);
+    if (!g_ctx) return -6;
+    // ---------------------------------------------------------------------
+
+    output[0] = '\0';
+    orn_reset_state();
+
+    llama_token prompt_tokens[ORN_MAX_PROMPT_TOKENS];
+    const int n_prompt_bytes = (int)strlen(prompt);
+    int n_tokens = llama_tokenize(g_vocab, prompt, n_prompt_bytes,
+                                  prompt_tokens, ORN_MAX_PROMPT_TOKENS, true, true);
+    if (n_tokens < 0) return -3;
+    if (n_tokens == 0) return -4;
+
+    const int N_BATCH = 64;
+    clock_t t_prefill_start = clock();
+
+    for (int i = 0; i < n_tokens; i += N_BATCH) {
+        int chunk = (i + N_BATCH < n_tokens) ? N_BATCH : (n_tokens - i);
+        struct llama_batch batch = llama_batch_init(chunk, 0, 1);
+        batch.n_tokens = chunk;
+        for (int j = 0; j < chunk; ++j) {
+            batch.token[j]     = prompt_tokens[i + j];
+            batch.pos[j]       = i + j;
+            batch.n_seq_id[j]  = 1;
+            batch.seq_id[j][0] = 0;
+            batch.logits[j]    = ((i + j) == n_tokens - 1);
+        }
+        int rc = llama_decode(g_ctx, batch);
+        llama_batch_free(batch);
+        if (rc != 0) return -5;
+    }
+
+    double prefill_s = (double)(clock() - t_prefill_start) / CLOCKS_PER_SEC;
+    fprintf(stderr, "[ORN] prefill: %d tokens em %.3fs\n", n_tokens, prefill_s);
+
+    for (int i = 0; i < n_tokens; ++i)
+        llama_sampler_accept(g_smpl, prompt_tokens[i]);
+
+    int out_len = 0;
+    int pos = n_tokens;
+    struct llama_batch step = llama_batch_init(1, 0, 1);
+    clock_t t_gen_start = clock();
+    int gen_tokens = 0;
+
+    for (int i = 0; i < max_tokens; ++i) {
+        llama_token next = llama_sampler_sample(g_smpl, g_ctx, -1);
+        if (llama_vocab_is_eog(g_vocab, next)) break;
+
+        char piece[ORN_MAX_PIECE_BYTES];
+        int piece_len = llama_token_to_piece(g_vocab, next, piece, sizeof(piece), 0, true);
+        if (piece_len < 0) break;
+        if (out_len + piece_len >= output_size - 1) break;
+
+        memcpy(output + out_len, pie
+    ]]></source_code>
+  </file>
+
+  <file path="native/orn_llama_wrapper.h" role="Dionísio" complexity="1" status="stable_c_cpp">
+    <source_code><![CDATA[
+#ifndef ORN_LLAMA_WRAPPER_H
+#define ORN_LLAMA_WRAPPER_H
+
+#ifdef _WIN32
+  #define ORN_API __declspec(dllexport)
+#else
+  #define ORN_API
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+ORN_API int orn_init(const char* model_path, int n_ctx, int n_threads);
+
+ORN_API int orn_infer(
+    const char* prompt,
+    int max_tokens,
+    char* output,
+    int output_size
+);
+
+ORN_API void orn_free(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
+    ]]></source_code>
+  </file>
+
+  <file path="native/test.py" role="Dionísio" complexity="0" status="stable">
+    <source_code><![CDATA[
+import os
+from ctypes import cdll, c_char_p, c_int, create_string_buffer
+
+os.add_dll_directory(os.path.dirname(__file__))
+
+lib = cdll.LoadLibrary(os.path.join(os.path.dirname(__file__), "orn.dll"))
+
+lib.orn_init.argtypes = [c_char_p, c_int, c_int]
+lib.orn_init.restype = c_int
+
+lib.orn_infer.argtypes = [c_char_p, c_int, c_char_p, c_int]
+lib.orn_infer.restype = c_int
+
+lib.orn_free.argtypes = []
+lib.orn_free.restype = None
+
+rc = lib.orn_init(
+    br"..\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
+    256,
+    2,
+)
+print("orn_init =", rc)
+
+buf = create_string_buffer(8192)
+n = lib.orn_infer(
+    b"Explique recursao em C em 3 linhas.",
+    64,
+    buf,
+    len(buf),
+)
+print("orn_infer =", n)
+print(buf.value.decode("utf-8", errors="ignore"))
+
+lib.orn_free()
+    ]]></source_code>
+  </file>
+</codebase_map>
+```

@@ -372,7 +372,7 @@ def check_openmp():
 
 def check_llama_backend():
     try:
-        from llama_cpp import llama_cpp
+# [DOX-UNUSED]         from llama_cpp import llama_cpp
         print("  backend carregado")
         return True
     except Exception:

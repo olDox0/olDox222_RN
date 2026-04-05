@@ -9,7 +9,6 @@ import threading
 try:
     import psutil
 except Exception:
-    print("psutil indisponivel")
     psutil = None
 
 TELEMETRY_DIR = Path("telemetry")

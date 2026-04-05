@@ -1,6 +1,6 @@
 # engine/tools/kiwix_search.py
 import libzim
-from pathlib import Path
+# [DOX-UNUSED] from pathlib import Path
 
 class KiwixSearcher:
     def __init__(self, zim_path: str):
