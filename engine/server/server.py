@@ -32,13 +32,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from engine.server import server_bootstrap, server_utils
 from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
-
-try:
-    import resource as _resource  # Unix only
-    _HAS_RESOURCE = True
-except ImportError:
-    _HAS_RESOURCE = False
 
 
 HOST = "127.0.0.1"
@@ -87,63 +82,15 @@ _VULCAN_MSG = ""
 # ---------------------------------------------------------------------------
 
 def _looks_like_doxoade_root(path_str: str | None) -> bool:
-    if not path_str:
-        return False
-    try:
-        p = Path(path_str).resolve()
-    except Exception:
-        return False
-    return (p / "doxoade" / "__init__.py").exists()
+    return server_bootstrap.looks_like_doxoade_root(path_str)
 
 
 def _discover_doxoade_root() -> str | None:
-    env_root = os.environ.get("DOXOADE_ROOT")
-    if _looks_like_doxoade_root(env_root):
-        return str(Path(env_root).resolve())
-
-    here = Path(__file__).resolve()
-    for parent in [here.parent, *here.parents]:
-        if (parent / "doxoade" / "__init__.py").exists():
-            return str(parent)
-
-    return None
+    return server_bootstrap.discover_doxoade_root()
 
 
 def _vulcan_boot() -> tuple[bool, str]:
-    root = _discover_doxoade_root()
-    if root and root not in sys.path:
-        sys.path.insert(0, root)
-        os.environ["DOXOADE_ROOT"] = root
-
-    try:
-        import doxoade  # noqa: F401
-    except ImportError as exc:
-        return False, (
-            f"'doxoade' nao encontrado em sys.path nem instalado no venv.\n"
-            f"ImportError: {exc}\n"
-            f"Solucoes:\n"
-            f"  a) Execute na raiz do projeto\n"
-            f"  b) pip install -e <raiz>\n"
-            f"  c) defina DOXOADE_ROOT=<raiz>\n"
-        )
-
-    try:
-        from doxoade.tools.vulcan.runtime import find_vulcan_project_root, install_meta_finder
-
-        root_path = find_vulcan_project_root(Path.cwd()) or find_vulcan_project_root(__file__)
-        if root_path is None:
-            return False, (
-                "doxoade importado OK, mas '.doxoade/vulcan/bin' nao encontrado.\n"
-                "Execute 'doxoade vulcan lib' antes de iniciar o servidor."
-            )
-
-        install_meta_finder(root_path)
-
-        lib_bin = root_path / ".doxoade" / "vulcan" / "lib_bin"
-        n_bins = len(list(lib_bin.glob("*.pyd"))) if lib_bin.exists() else 0
-        return True, f"raiz='{root_path}' | {n_bins} binario(s) em lib_bin/"
-    except Exception:
-        return False, f"MetaFinder falhou:\n{traceback.format_exc()}"
+    return server_bootstrap.vulcan_boot()
 
 
 _t_boot0 = time.monotonic()
@@ -163,71 +110,23 @@ else:
 # ---------------------------------------------------------------------------
 
 def _observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") -> None:
-    try:
-        GLOBAL_TELEMETRY.observe(
-            name,
-            float(elapsed_ms),
-            category=category,
-            critical=(category == "exec"),
-            is_cold=False,
-            failed=False,
-        )
-    except Exception:
-        pass
+    server_utils.observe_telemetry(name, elapsed_ms, category=category)
 
 
 def _flush_telemetry_snapshot() -> None:
-    try:
-        GLOBAL_TELEMETRY.flush_json(Path("telemetry") / "server_runtime.json")
-    except Exception:
-        pass
+    server_utils.flush_telemetry_snapshot()
 
 
 def _system_perf_snapshot() -> dict[str, Any]:
-    rss_mb = 0.0
-    try:
-        if _HAS_RESOURCE:
-            rss_kb = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
-            if rss_kb > 10_000_000:
-                rss_mb = round(rss_kb / (1024.0 * 1024.0), 3)
-            else:
-                rss_mb = round(rss_kb / 1024.0, 3)
-    except Exception:
-        pass
-
-    load_1m = 0.0
-    try:
-        load_1m = round(float(os.getloadavg()[0]), 3)
-    except Exception:
-        pass
-        
-    import platform
-    return {
-        "pid": os.getpid(),
-        "threads": threading.active_count(),
-        "cpu_count": os.cpu_count() or 0,
-        "platform": platform.platform(),
-        "python": platform.python_version(),
-        "rss_mb": rss_mb,
-        "load_1m": load_1m,
-    }
+    return server_utils.system_perf_snapshot()
 
 
 def _json_line(resp: dict[str, Any]) -> bytes:
-    return (json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8")
+    return server_utils.json_line(resp)
 
 
 def _read_line_from_socket(conn: socket.socket, timeout: float = 10.0) -> str:
-    conn.settimeout(timeout)
-    data = bytearray()
-    while True:
-        chunk = conn.recv(RECV_SZ)
-        if not chunk:
-            break
-        data.extend(chunk)
-        if b"\n" in data:
-            break
-    return data.decode("utf-8", errors="replace").strip()
+    return server_utils.read_line_from_socket(conn, RECV_SZ, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +258,9 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
             "repeat_penalty": _cfg.repeat_penalty,
         }
 
-        if _cfg.min_p is not None:
-            infer_kwargs["min_p"] = float(_cfg.min_p)
+        min_p = getattr(_cfg, "min_p", None)
+        if min_p is not None:
+            infer_kwargs["min_p"] = float(min_p)
 
         # Chama o LLM passando a lista de tokens numéricos (MUITO mais rápido) ou a string bruta
         try:
