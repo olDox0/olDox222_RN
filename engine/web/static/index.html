@@ -221,6 +221,21 @@
     border: 1px solid var(--border);
   }
 
+  .copy-btn {
+    position: absolute;
+    top: 8px;
+    left: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 10px;
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+
   /* ── THINKING INDICATOR ── */
   .thinking-msg .bubble {
     display: flex; align-items: center; gap: 10px;
@@ -480,7 +495,8 @@ function renderMarkdown(text) {
     const codeClean = code.replace(/\n$/, '');
     const tag = lang ? `<span class="lang-tag">${escHtml(lang)}</span>` : '';
     const idx = blocks.length;
-    blocks.push(`<pre>${tag}<code>${escCode(codeClean)}</code></pre>`);
+    const btn = `<button class="copy-btn" onclick="copyCode('code-block-${idx}')">copiar</button>`;
+    blocks.push(`<pre>${btn}${tag}<code id="code-block-${idx}">${escCode(codeClean)}</code></pre>`);
     return `\x00BLOCK${idx}\x00`;
   });
 
@@ -527,6 +543,22 @@ function renderMarkdown(text) {
   html = html.replace(/\x00BLOCK(\d+)\x00/g, (_, i) => blocks[+i]);
 
   return html;
+}
+
+async function copyCode(codeId) {
+  const el = document.getElementById(codeId);
+  if (!el) return;
+  const text = el.innerText || '';
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
 }
 
 // ── Append message ────────────────────────────────────────────
@@ -604,6 +636,14 @@ async function sendPrompt() {
 
   const thinking = appendThinking();
   const progressBar = thinking.querySelector('#progressBar');
+  let progressPulse = null;
+  if (progressBar) {
+    let pseudo = 8;
+    progressPulse = setInterval(() => {
+      pseudo = Math.min(92, pseudo + 2);
+      progressBar.style.width = `${pseudo}%`;
+    }, 180);
+  }
 
   try {
     const res = await fetch('/ask_stream', {
@@ -651,10 +691,12 @@ async function sendPrompt() {
       }
     }
 
+    if (progressPulse) clearInterval(progressPulse);
     thinking.remove();
     const meta = `${elapsed || 0}s · streaming`;
     appendMsg('model', renderMarkdown(output), meta);
   } catch (e) {
+    if (progressPulse) clearInterval(progressPulse);
     thinking.remove();
     appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão/stream: ${e.message}</span>`);
   }
