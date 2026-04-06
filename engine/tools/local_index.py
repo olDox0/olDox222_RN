@@ -1068,7 +1068,7 @@ def _iter_zim_entries(zim_path: str, verbose: bool = True, start_scanned: int = 
 
 def build_index(zim_path: str, source_id: Optional[str] = None, batch_size: int = 1000, verbose: bool = True) -> Path:
     try:
-# [DOX-UNUSED]         import pyzim 
+        import pyzim 
     except ImportError:
         raise ImportError("pyzim não instalado. pip install pyzim")
 
