@@ -29,6 +29,35 @@ def query_infer_raw(payload: bytes, host: str, infer_port: int) -> dict[str, Any
         return None
 
 
+def stream_infer_events(prompt: str, max_tokens: int, host: str, infer_port: int):
+    """Fluxo de eventos NDJSON do servidor de inferência (modo stream)."""
+    payload = (
+        json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(5.0)
+        s.connect((host, infer_port))
+        s.settimeout(None)
+        s.sendall(payload)
+
+        buf = ""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk.decode("utf-8", errors="replace")
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except Exception:
+                    continue
+
+
 def parse_search_decision(text: str) -> str | None:
     """Parse defensivo da resposta de decisão."""
     if not text:

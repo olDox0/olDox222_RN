@@ -227,6 +227,8 @@
     color: var(--text-dim);
     font-family: var(--mono); font-size: 13px;
     padding: 14px 16px;
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .dots span {
@@ -242,6 +244,22 @@
   @keyframes pulse {
     0%,80%,100% { opacity: 0.2; transform: scale(0.8); }
     40%          { opacity: 1;   transform: scale(1);   }
+  }
+
+  .progress-wrap {
+    width: 280px;
+    max-width: 100%;
+    height: 6px;
+    background: #2a2a2a;
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 6px;
+  }
+  .progress-bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), #4ce58b);
+    transition: width 0.18s ease;
   }
 
   /* ── EMPTY STATE ── */
@@ -565,6 +583,7 @@ function appendThinking() {
     <div class="bubble">
       <div class="dots"><span></span><span></span><span></span></div>
       <span>processando...</span>
+      <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
     </div>`;
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
@@ -584,26 +603,60 @@ async function sendPrompt() {
   appendMsg('user', escHtml(prompt));
 
   const thinking = appendThinking();
+  const progressBar = thinking.querySelector('#progressBar');
 
   try {
-    const res = await fetch('/ask', {
+    const res = await fetch('/ask_stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt })
     });
-    const data = await res.json();
-    thinking.remove();
-
-    if (data.error) {
-      appendMsg('model', `<span style="color:#ef4444">⚠ ${escHtml(data.error)}</span>`);
-    } else {
-      const meta = `${data.elapsed_s}s · servidor`; 
-      appendMsg('model', renderMarkdown(data.output), meta,
-                data.source || null, data.source_url || null);
+    if (!res.body) {
+      throw new Error('stream indisponível');
     }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let output = '';
+    let elapsed = 0;
+    let chunks = 0;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      while (buffer.includes('\n')) {
+        const idx = buffer.indexOf('\n');
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+
+        if (event.event === 'chunk') {
+          const delta = event.delta || '';
+          output += delta;
+          chunks += 1;
+          if (progressBar) {
+            const pct = Math.min(96, 10 + chunks * 3);
+            progressBar.style.width = `${pct}%`;
+          }
+        } else if (event.event === 'done') {
+          output = event.output || output;
+          elapsed = event.elapsed_s || elapsed;
+          if (progressBar) progressBar.style.width = '100%';
+        } else if (event.event === 'error') {
+          throw new Error(event.error || 'erro no stream');
+        }
+      }
+    }
+
+    thinking.remove();
+    const meta = `${elapsed || 0}s · streaming`;
+    appendMsg('model', renderMarkdown(output), meta);
   } catch (e) {
     thinking.remove();
-    appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão: ${e.message}</span>`);
+    appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão/stream: ${e.message}</span>`);
   }
 
   busy = false;

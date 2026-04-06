@@ -18,6 +18,13 @@ static int g_ready = 0;
 static int g_saved_n_ctx = 512;
 static int g_saved_n_threads = 2;
 
+static void orn_silent_log_callback(enum ggml_log_level level, const char * text, void * user_data)
+{
+    (void)level;
+    (void)text;
+    (void)user_data;
+}
+
 static void orn_reset_state(void)
 {
     if (g_smpl) {
@@ -49,7 +56,7 @@ int orn_init(const char* model_path, int n_ctx, int n_threads)
     if (!model_path || !model_path[0]) return -10;
     if (g_ready) orn_free();
     
-    llama_log_set(NULL, NULL);
+    llama_log_set(orn_silent_log_callback, NULL);
     llama_backend_init();
 
     g_saved_n_ctx = n_ctx;
@@ -133,8 +140,7 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
         if (rc != 0) return -5;
     }
 
-    double prefill_s = (double)(clock() - t_prefill_start) / CLOCKS_PER_SEC;
-    fprintf(stderr, "[ORN] prefill: %d tokens em %.3fs\n", n_tokens, prefill_s);
+    (void)t_prefill_start;
 
     for (int i = 0; i < n_tokens; ++i)
         llama_sampler_accept(g_smpl, prompt_tokens[i]);
@@ -171,9 +177,8 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
     }
     llama_batch_free(step);
 
-    double gen_s = (double)(clock() - t_gen_start) / CLOCKS_PER_SEC;
-    fprintf(stderr, "[ORN] geração: %d tokens em %.3fs = %.2f t/s\n",
-            gen_tokens, gen_s, gen_s > 0 ? gen_tokens / gen_s : 0.0);
+    (void)t_gen_start;
+    (void)gen_tokens;
 
     output[out_len] = '\0';
     return out_len;

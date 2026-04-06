@@ -133,6 +133,10 @@ class ORNHandler(BaseHTTPRequestHandler):
             self._send(404, "", b"")
 
     def do_POST(self):
+        if self.path == "/ask_stream":
+            self._handle_ask_stream()
+            return
+
         if self.path != "/ask":
             self._send(404, "", b"")
             return
@@ -203,6 +207,50 @@ class ORNHandler(BaseHTTPRequestHandler):
 
         out = json.dumps(resp, ensure_ascii=False).encode()
         self._send(200, "application/json", out)
+
+    def _handle_ask_stream(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        try:
+            req = json.loads(body)
+        except Exception:
+            req = {}
+
+        prompt = str(req.get("prompt", "")).strip()
+        if "max_tokens" in req:
+            max_tokens = max(1, min(int(req.get("max_tokens", 128)), 2048))
+        else:
+            max_tokens = _suggest_max_tokens(prompt)
+
+        if not prompt:
+            self._send(
+                200,
+                "application/x-ndjson; charset=utf-8",
+                (json.dumps({"event": "error", "error": "prompt vazio"}, ensure_ascii=False) + "\n").encode("utf-8"),
+            )
+            return
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+
+            for event in web_proxy.stream_infer_events(prompt, max_tokens, host=HOST, infer_port=INFER_PORT):
+                # Encaminha eventos do servidor de inferência quase em passthrough.
+                line = json.dumps(event, ensure_ascii=False) + "\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
+        except Exception as exc:
+            try:
+                line = json.dumps({"event": "error", "error": str(exc)}, ensure_ascii=False) + "\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
