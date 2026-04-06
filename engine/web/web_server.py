@@ -26,15 +26,22 @@ import json
 import os
 # [DOX-UNUSED] import sys
 import threading
+import time
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from engine.web import web_proxy
 
 WEB_PORT   = 8372
 INFER_PORT = 8371
 HOST       = "127.0.0.1"
 PID_FILE   = Path("web_server.pid")
+STREAM_CACHE_LIMIT = 32
+STREAM_CACHE_TTL_S = 900
+_STREAM_CACHE: dict[str, dict] = {}
+_STREAM_CACHE_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +124,83 @@ def _normalize_stream_event(raw: dict) -> dict | None:
     return None
 
 
+def _prune_stream_cache(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    with _STREAM_CACHE_LOCK:
+        expired = [k for k, v in _STREAM_CACHE.items() if (now - float(v.get("created_at", now))) > STREAM_CACHE_TTL_S]
+        for key in expired:
+            _STREAM_CACHE.pop(key, None)
+        if len(_STREAM_CACHE) <= STREAM_CACHE_LIMIT:
+            return
+        keys_by_age = sorted(_STREAM_CACHE.keys(), key=lambda k: float(_STREAM_CACHE[k].get("created_at", now)))
+        for key in keys_by_age[: max(0, len(_STREAM_CACHE) - STREAM_CACHE_LIMIT)]:
+            _STREAM_CACHE.pop(key, None)
+
+
+def _stream_cache_start(prompt: str, max_tokens: int) -> str:
+    request_id = uuid.uuid4().hex
+    now = time.time()
+    with _STREAM_CACHE_LOCK:
+        _STREAM_CACHE[request_id] = {
+            "request_id": request_id,
+            "created_at": now,
+            "updated_at": now,
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "chunks": [],
+            "output": "",
+            "done": False,
+            "elapsed_s": 0,
+            "error": None,
+        }
+    _prune_stream_cache(now)
+    return request_id
+
+
+def _stream_cache_append(request_id: str, delta: str) -> int:
+    with _STREAM_CACHE_LOCK:
+        item = _STREAM_CACHE.get(request_id)
+        if not item:
+            return 0
+        chunks = item["chunks"]
+        chunks.append(delta)
+        item["updated_at"] = time.time()
+        item["output"] = "".join(chunks)
+        return len(chunks) - 1
+
+
+def _stream_cache_finish(request_id: str, output: str, elapsed_s: float, error: str | None = None) -> None:
+    with _STREAM_CACHE_LOCK:
+        item = _STREAM_CACHE.get(request_id)
+        if not item:
+            return
+        item["output"] = output
+        item["elapsed_s"] = elapsed_s
+        item["error"] = error
+        item["done"] = True
+        item["updated_at"] = time.time()
+
+
+def _stream_cache_get(request_id: str) -> dict | None:
+    _prune_stream_cache()
+    with _STREAM_CACHE_LOCK:
+        item = _STREAM_CACHE.get(request_id)
+        if not item:
+            return None
+        return {
+            "request_id": item["request_id"],
+            "created_at": item["created_at"],
+            "updated_at": item["updated_at"],
+            "prompt": item["prompt"],
+            "max_tokens": item["max_tokens"],
+            "chunks": list(item["chunks"]),
+            "output": item["output"],
+            "done": item["done"],
+            "elapsed_s": item["elapsed_s"],
+            "error": item["error"],
+        }
+
+
 # ---------------------------------------------------------------------------
 # Handler HTTP
 # ---------------------------------------------------------------------------
@@ -139,14 +223,27 @@ class ORNHandler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        parsed = urlparse(self.path)
+
+        if parsed.path in ("/", "/index.html"):
             self._send(200, "text/html; charset=utf-8", HTML.encode("utf-8"))
-        elif self.path == "/status":
+        elif parsed.path == "/status":
             resp = _query_infer_raw(b"STATUS\n")
             if resp is None:
                 resp = {"status": "offline", "error": "orn-server nao encontrado"}
             self._send(200, "application/json", json.dumps(resp).encode())
-        elif self.path == "/favicon.ico":
+        elif parsed.path == "/stream_cache":
+            q = parse_qs(parsed.query or "")
+            request_id = str((q.get("id") or [""])[0]).strip()
+            if not request_id:
+                self._send(400, "application/json", json.dumps({"error": "id ausente"}, ensure_ascii=False).encode("utf-8"))
+                return
+            item = _stream_cache_get(request_id)
+            if item is None:
+                self._send(404, "application/json", json.dumps({"error": "cache nao encontrado"}, ensure_ascii=False).encode("utf-8"))
+                return
+            self._send(200, "application/json", json.dumps(item, ensure_ascii=False).encode("utf-8"))
+        elif parsed.path == "/favicon.ico":
             self._send(204, "", b"")
         else:
             self._send(404, "", b"")
@@ -250,26 +347,51 @@ class ORNHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            request_id = _stream_cache_start(prompt, max_tokens)
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
+            start_line = json.dumps({"event": "start", "request_id": request_id}, ensure_ascii=False) + "\n"
+            self.wfile.write(start_line.encode("utf-8"))
+            self.wfile.flush()
 
             sent_terminal = False
             for raw_event in web_proxy.stream_infer_events(prompt, max_tokens, host=HOST, infer_port=INFER_PORT):
                 event = _normalize_stream_event(raw_event)
                 if event is None:
                     continue
+                if event.get("event") == "chunk":
+                    delta = str(event.get("delta", ""))
+                    idx = _stream_cache_append(request_id, delta)
+                    event["chunk_idx"] = idx
+                    event["request_id"] = request_id
                 if event.get("event") in {"done", "error"}:
                     sent_terminal = True
+                    event["request_id"] = request_id
+                    if event.get("event") == "done":
+                        cached = _stream_cache_get(request_id) or {}
+                        final_output = str(event.get("output", "")) or str(cached.get("output", ""))
+                        elapsed_s = float(event.get("elapsed_s", 0) or 0)
+                        _stream_cache_finish(request_id, final_output, elapsed_s, error=event.get("error"))
+                    else:
+                        cached = _stream_cache_get(request_id) or {}
+                        _stream_cache_finish(
+                            request_id,
+                            str(cached.get("output", "")),
+                            0,
+                            error=str(event.get("error") or "erro no stream"),
+                        )
                 # Encaminha eventos do servidor de inferência quase em passthrough.
                 line = json.dumps(event, ensure_ascii=False) + "\n"
                 self.wfile.write(line.encode("utf-8"))
                 self.wfile.flush()
             if not sent_terminal:
-                line = json.dumps({"event": "error", "error": "stream encerrado sem resposta"}, ensure_ascii=False) + "\n"
+                cached = _stream_cache_get(request_id) or {}
+                _stream_cache_finish(request_id, str(cached.get("output", "")), 0, error="stream encerrado sem resposta")
+                line = json.dumps({"event": "error", "error": "stream encerrado sem resposta", "request_id": request_id}, ensure_ascii=False) + "\n"
                 self.wfile.write(line.encode("utf-8"))
                 self.wfile.flush()
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):

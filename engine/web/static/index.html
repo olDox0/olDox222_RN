@@ -428,6 +428,22 @@ const dot       = document.getElementById('dot');
 const statusTxt = document.getElementById('statusText');
 
 let busy = false;
+const streamReuseCache = new Map();
+
+function cacheStreamResult(requestId, output, chunks) {
+  if (!requestId) return;
+  streamReuseCache.set(requestId, {
+    request_id: requestId,
+    output: output || '',
+    chunks: Array.isArray(chunks) ? [...chunks] : [],
+    updated_at: Date.now(),
+  });
+  // Mantém cache local pequeno para reuso futuro.
+  if (streamReuseCache.size > 20) {
+    const firstKey = streamReuseCache.keys().next().value;
+    if (firstKey) streamReuseCache.delete(firstKey);
+  }
+}
 
 // ── Auto-resize textarea ──────────────────────────────────────
 function resizeInput() {
@@ -696,7 +712,9 @@ async function sendPrompt() {
     let output = '';
     let elapsed = 0;
     let chunks = 0;
+    const tokenChunks = [];
     let liveMsg = null;
+    let requestId = null;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -710,9 +728,13 @@ async function sendPrompt() {
         let event;
         try { event = JSON.parse(line); } catch { continue; }
 
-        if (event.event === 'chunk') {
+        if (event.event === 'start') {
+          requestId = event.request_id || requestId;
+        } else if (event.event === 'chunk') {
+          requestId = event.request_id || requestId;
           const delta = event.delta || '';
           output += delta;
+          tokenChunks.push(delta);
           chunks += 1;
           if (!liveMsg && output.trim()) {
             if (progressPulse) clearInterval(progressPulse);
@@ -726,6 +748,7 @@ async function sendPrompt() {
             progressBar.style.width = `${pct}%`;
           }
         } else if (event.event === 'done') {
+          requestId = event.request_id || requestId;
           output = event.output || output;
           elapsed = event.elapsed_s || elapsed;
           if (progressBar) progressBar.style.width = '100%';
@@ -749,6 +772,7 @@ async function sendPrompt() {
       elapsed = data.elapsed_s || elapsed;
     }
     const meta = `${elapsed || 0}s · streaming`;
+    cacheStreamResult(requestId, output, tokenChunks);
     if (liveMsg) updateModelMsg(liveMsg, renderMarkdown(output), meta);
     else appendMsg('model', renderMarkdown(output), meta);
   } catch (e) {
