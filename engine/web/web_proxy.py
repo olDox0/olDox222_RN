@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from typing import Any
+
+STREAM_READ_TIMEOUT_S = float(os.getenv("ORN_WEB_STREAM_READ_TIMEOUT", "180"))
 
 
 def query_infer_raw(payload: bytes, host: str, infer_port: int) -> dict[str, Any] | None:
@@ -39,7 +42,7 @@ def stream_infer_events(prompt: str, max_tokens: int, host: str, infer_port: int
         s.settimeout(5.0)
         s.connect((host, infer_port))
         # Evita bloqueio infinito no loader quando o backend não finaliza stream.
-        s.settimeout(30.0)
+        s.settimeout(STREAM_READ_TIMEOUT_S)
         s.sendall(payload)
 
         buf = ""

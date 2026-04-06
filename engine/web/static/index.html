@@ -709,7 +709,25 @@ async function sendPrompt() {
   } catch (e) {
     if (progressPulse) clearInterval(progressPulse);
     thinking.remove();
-    appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão/stream: ${e.message}</span>`);
+    // Fallback resiliente: tenta /ask quando stream falha (timeout/restart/etc).
+    try {
+      const fallback = await fetch('/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+      const data = await fallback.json();
+      if (data && data.output && data.output.trim()) {
+        const meta = `${data.elapsed_s || 0}s · fallback`;
+        appendMsg('model', renderMarkdown(data.output), meta);
+      } else {
+        const err = (data && data.error) ? data.error : (e && e.message ? e.message : 'erro desconhecido');
+        appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão/stream: ${err}</span>`);
+      }
+    } catch (fallbackErr) {
+      const msg = fallbackErr?.message || e?.message || 'erro desconhecido';
+      appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão/stream: ${msg}</span>`);
+    }
   }
 
   busy = false;
