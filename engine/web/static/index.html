@@ -235,6 +235,10 @@
     cursor: pointer;
   }
   .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .copy-btn.copied {
+    color: var(--success);
+    border-color: var(--success);
+  }
 
   /* ── THINKING INDICATOR ── */
   .thinking-msg .bubble {
@@ -495,8 +499,8 @@ function renderMarkdown(text) {
     const codeClean = code.replace(/\n$/, '');
     const tag = lang ? `<span class="lang-tag">${escHtml(lang)}</span>` : '';
     const idx = blocks.length;
-    const btn = `<button class="copy-btn" onclick="copyCode('code-block-${idx}')">copiar</button>`;
-    blocks.push(`<pre>${btn}${tag}<code id="code-block-${idx}">${escCode(codeClean)}</code></pre>`);
+    const btn = `<button class="copy-btn" type="button" data-copy-code="1">copiar</button>`;
+    blocks.push(`<pre>${btn}${tag}<code>${escCode(codeClean)}</code></pre>`);
     return `\x00BLOCK${idx}\x00`;
   });
 
@@ -545,20 +549,52 @@ function renderMarkdown(text) {
   return html;
 }
 
-async function copyCode(codeId) {
-  const el = document.getElementById(codeId);
-  if (!el) return;
-  const text = el.innerText || '';
+async function copyCodeText(text) {
   try {
     await navigator.clipboard.writeText(text);
+    return true;
   } catch {
     const ta = document.createElement('textarea');
     ta.value = text;
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand('copy');
+    const ok = document.execCommand('copy');
     ta.remove();
+    return !!ok;
   }
+}
+
+chat.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('.copy-btn');
+  if (!btn) return;
+  const pre = btn.closest('pre');
+  const codeEl = pre ? pre.querySelector('code') : null;
+  if (!codeEl) return;
+  const ok = await copyCodeText(codeEl.innerText || codeEl.textContent || '');
+  if (!ok) return;
+  const old = btn.textContent;
+  btn.textContent = 'copiado!';
+  btn.classList.add('copied');
+  setTimeout(() => {
+    btn.textContent = old || 'copiar';
+    btn.classList.remove('copied');
+  }, 1200);
+});
+
+function updateModelMsg(msgEl, html, meta) {
+  if (!msgEl) return;
+  const bubble = msgEl.querySelector('.bubble');
+  if (!bubble) return;
+  bubble.innerHTML = html;
+  if (meta) {
+    const m = document.createElement('div');
+    m.className = 'meta';
+    const t = document.createElement('span');
+    t.textContent = meta;
+    m.appendChild(t);
+    bubble.appendChild(m);
+  }
+  chat.scrollTop = chat.scrollHeight;
 }
 
 // ── Append message ────────────────────────────────────────────
@@ -660,6 +696,7 @@ async function sendPrompt() {
     let output = '';
     let elapsed = 0;
     let chunks = 0;
+    let liveMsg = null;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -677,6 +714,13 @@ async function sendPrompt() {
           const delta = event.delta || '';
           output += delta;
           chunks += 1;
+          if (!liveMsg && output.trim()) {
+            if (progressPulse) clearInterval(progressPulse);
+            thinking.remove();
+            liveMsg = appendMsg('model', renderMarkdown(output), 'streaming…');
+          } else if (liveMsg) {
+            updateModelMsg(liveMsg, renderMarkdown(output), 'streaming…');
+          }
           if (progressBar) {
             const pct = Math.min(96, 10 + chunks * 3);
             progressBar.style.width = `${pct}%`;
@@ -692,7 +736,7 @@ async function sendPrompt() {
     }
 
     if (progressPulse) clearInterval(progressPulse);
-    thinking.remove();
+    if (thinking.parentNode) thinking.remove();
     if (!output || !output.trim()) {
       const fallback = await fetch('/ask', {
         method: 'POST',
@@ -705,10 +749,11 @@ async function sendPrompt() {
       elapsed = data.elapsed_s || elapsed;
     }
     const meta = `${elapsed || 0}s · streaming`;
-    appendMsg('model', renderMarkdown(output), meta);
+    if (liveMsg) updateModelMsg(liveMsg, renderMarkdown(output), meta);
+    else appendMsg('model', renderMarkdown(output), meta);
   } catch (e) {
     if (progressPulse) clearInterval(progressPulse);
-    thinking.remove();
+    if (thinking.parentNode) thinking.remove();
     // Fallback resiliente: tenta /ask quando stream falha (timeout/restart/etc).
     try {
       const fallback = await fetch('/ask', {
