@@ -60,6 +60,44 @@ def _run_crawler(query: str) -> tuple[str, str, str]:
     return web_proxy.run_crawler(query)
 
 
+def _suggest_max_tokens(prompt: str) -> int:
+    """Escolhe max_tokens automaticamente para manter paridade com `orn think`."""
+    try:
+        from engine.core.executive import _adaptive_max_tokens  # noqa: PLC0415
+
+        return max(64, min(int(_adaptive_max_tokens(prompt)), 2048))
+    except Exception:
+        return 384
+
+
+def _apply_code_hook_with_server_bridge(output: str, task: str, max_tokens: int) -> str:
+    """Aplica o mesmo mecanismo de correção pós-inferência usado no restante do sistema."""
+    try:
+        from engine.thinking.code_hook import apply_code_hook  # noqa: PLC0415
+
+        class ServerBridge:
+            def ask(self, p: str, max_tokens: int = 256, **kwargs) -> str:
+                r = _query_infer_raw(
+                    (json.dumps({"prompt": p, "max_tokens": max_tokens}) + "\n").encode("utf-8")
+                )
+                return str(r.get("output", "")) if r else ""
+
+        class DummyValidator:
+            def validar_output(self, text: str, lang: str | None = None):
+                return True, ""
+
+        return apply_code_hook(
+            output=output,
+            task=task,
+            bridge=ServerBridge(),
+            validator=DummyValidator(),
+            max_retries=1,
+            run_isolated=True,
+        )
+    except Exception:
+        return output
+
+
 # ---------------------------------------------------------------------------
 # Handler HTTP
 # ---------------------------------------------------------------------------
@@ -106,8 +144,11 @@ class ORNHandler(BaseHTTPRequestHandler):
         except Exception:
             req = {}
 
-        prompt     = str(req.get("prompt", "")).strip()
-        max_tokens = max(1, min(int(req.get("max_tokens", 128)), 2048))
+        prompt = str(req.get("prompt", "")).strip()
+        if "max_tokens" in req:
+            max_tokens = max(1, min(int(req.get("max_tokens", 128)), 2048))
+        else:
+            max_tokens = _suggest_max_tokens(prompt)
 
         if not prompt:
             resp = {"output": "", "elapsed_s": 0, "error": "prompt vazio",
@@ -150,8 +191,10 @@ class ORNHandler(BaseHTTPRequestHandler):
                     "error": "orn-server offline. Execute: orn-server start",
                     "source": None, "source_url": None}
         else:
+            output = str(infer_resp.get("output", ""))
+            output = _apply_code_hook_with_server_bridge(output, prompt, max_tokens)
             resp = {
-                "output":     infer_resp.get("output", ""),
+                "output":     output,
                 "elapsed_s":  infer_resp.get("elapsed_s", 0),
                 "error":      infer_resp.get("error"),
                 "source":     source or None,
