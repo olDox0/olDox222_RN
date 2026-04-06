@@ -693,6 +693,17 @@ async function sendPrompt() {
 
     if (progressPulse) clearInterval(progressPulse);
     thinking.remove();
+    if (!output || !output.trim()) {
+      const fallback = await fetch('/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+      const data = await fallback.json();
+      if (data.error) throw new Error(data.error);
+      output = data.output || '';
+      elapsed = data.elapsed_s || elapsed;
+    }
     const meta = `${elapsed || 0}s · streaming`;
     appendMsg('model', renderMarkdown(output), meta);
   } catch (e) {

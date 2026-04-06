@@ -98,6 +98,25 @@ def _apply_code_hook_with_server_bridge(output: str, task: str, max_tokens: int)
         return output
 
 
+def _normalize_stream_event(raw: dict) -> dict | None:
+    """Normaliza payloads stream vindos de versões diferentes do backend."""
+    if not isinstance(raw, dict):
+        return None
+    if "event" in raw:
+        return raw
+    # Compatibilidade: resposta não-stream encapsulada como JSON único.
+    if "output" in raw and "elapsed_s" in raw:
+        return {
+            "event": "done",
+            "output": raw.get("output", ""),
+            "elapsed_s": raw.get("elapsed_s", 0),
+            "error": raw.get("error"),
+        }
+    if raw.get("error"):
+        return {"event": "error", "error": raw.get("error")}
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Handler HTTP
 # ---------------------------------------------------------------------------
@@ -237,9 +256,19 @@ class ORNHandler(BaseHTTPRequestHandler):
             self.send_header("Connection", "keep-alive")
             self.end_headers()
 
-            for event in web_proxy.stream_infer_events(prompt, max_tokens, host=HOST, infer_port=INFER_PORT):
+            sent_terminal = False
+            for raw_event in web_proxy.stream_infer_events(prompt, max_tokens, host=HOST, infer_port=INFER_PORT):
+                event = _normalize_stream_event(raw_event)
+                if event is None:
+                    continue
+                if event.get("event") in {"done", "error"}:
+                    sent_terminal = True
                 # Encaminha eventos do servidor de inferência quase em passthrough.
                 line = json.dumps(event, ensure_ascii=False) + "\n"
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+            if not sent_terminal:
+                line = json.dumps({"event": "error", "error": "stream encerrado sem resposta"}, ensure_ascii=False) + "\n"
                 self.wfile.write(line.encode("utf-8"))
                 self.wfile.flush()
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
