@@ -170,6 +170,12 @@ def _load_model() -> None:
         _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
         _stats["start"] = time.monotonic()
         print(f"[BOOT] orn.dll ativo [{dll}]", flush=True)
+        print(
+            "[BOOT] nativo cfg "
+            f"n_ctx={_cfg.n_ctx} n_threads={_cfg.n_threads} "
+            f"temperature={_cfg.temperature} top_p={_cfg.top_p} top_k={_cfg.top_k} min_p={_cfg.min_p}",
+            flush=True,
+        )
         print(f"[BOOT] Pronto em {round(elapsed_ms / 1000.0, 1)}s — {HOST}:{PORT}", flush=True)
         return
 
@@ -250,7 +256,12 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
 
     if _native is not None:
         t0 = time.monotonic()
-        out = _native.call(prompt, max_tokens)
+        native_prompt = (
+            f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
+            f"<|im_start|>user\n{prompt}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
+        out = _native.call(native_prompt, max_tokens)
         elapsed = round(time.monotonic() - t0, 3)
         llm_call_ms = float(out.get("llm_call_ms", elapsed * 1000.0))
         _observe_telemetry("server.infer.lock_wait", 0.0)
@@ -334,6 +345,50 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
 
     elapsed = round(time.monotonic() - t0, 3)
     return out["choices"][0]["text"].strip(), elapsed
+
+
+def _infer_stream(prompt: str, max_tokens: int):
+    """Prepara caminho de streaming para reduzir latência percebida.
+
+    No backend nativo atual, ainda emite chunk único (pronto para evolução no wrapper C).
+    """
+    if (_llm is None and _native is None) or _cfg is None:
+        raise RuntimeError("Modelo nao carregado.")
+
+    if _native is not None:
+        text, elapsed = _infer(prompt, max_tokens)
+        yield {"delta": text, "done": True, "elapsed_s": elapsed}
+        return
+
+    prompt_input = (
+        f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
+        f"<|im_start|>user\n{prompt}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+    infer_kwargs: dict[str, Any] = {
+        "max_tokens": max_tokens,
+        "stop": ["<|im_end|>", "</s>"],
+        "echo": False,
+        "temperature": _cfg.temperature,
+        "top_p": _cfg.top_p,
+        "top_k": _cfg.top_k,
+        "repeat_penalty": _cfg.repeat_penalty,
+        "stream": True,
+    }
+    min_p = getattr(_cfg, "min_p", None)
+    if min_p is not None:
+        infer_kwargs["min_p"] = float(min_p)
+
+    t0 = time.monotonic()
+    acc: list[str] = []
+    for item in _llm(prompt_input, **infer_kwargs):
+        delta = str(item["choices"][0].get("text", ""))
+        if not delta:
+            continue
+        acc.append(delta)
+        yield {"delta": delta, "done": False}
+    elapsed = round(time.monotonic() - t0, 3)
+    yield {"delta": "".join(acc), "done": True, "elapsed_s": elapsed}
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +475,7 @@ def _handle_status() -> dict[str, Any]:
 
 def _handle(conn: socket.socket) -> None:
     resp: dict[str, Any] = {"output": "", "elapsed_s": 0, "error": "internal error"}
+    streamed = False
 
     try:
         line = _read_line_from_socket(conn, timeout=10.0)
@@ -460,6 +516,7 @@ def _handle(conn: socket.socket) -> None:
 
         prompt = str(req_data.get("prompt", "")).strip()
         max_tokens = max(1, min(int(req_data.get("max_tokens", 128)), 2048))
+        stream = bool(req_data.get("stream", False))
 
         if not prompt:
             resp = {"output": "", "elapsed_s": 0, "error": "prompt vazio"}
@@ -469,6 +526,39 @@ def _handle(conn: socket.socket) -> None:
             _stats["requests"] += 1
 
         try:
+            if stream:
+                streamed = True
+                pieces: list[str] = []
+                last_elapsed = 0.0
+                conn.sendall(_json_line({"event": "start", "error": None}))
+                for event in _infer_stream(prompt, max_tokens):
+                    if event.get("done"):
+                        last_elapsed = float(event.get("elapsed_s", 0.0))
+                        final_text = str(event.get("delta", ""))
+                        if final_text and not pieces:
+                            pieces.append(final_text)
+                        continue
+                    delta = str(event.get("delta", ""))
+                    if not delta:
+                        continue
+                    pieces.append(delta)
+                    conn.sendall(_json_line({"event": "chunk", "delta": delta, "error": None}))
+
+                output = "".join(pieces)
+                elapsed = last_elapsed
+                with _lock:
+                    _stats["total_tokens"] += max_tokens
+                    _stats["total_elapsed_s"] += elapsed
+                    _stats["infer_calls"] += 1
+                    _stats["last_infer_s"] = elapsed
+                    _stats["last_prompt_chars"] = len(prompt)
+                    _stats["last_output_chars"] = len(output)
+                    _stats["last_max_tokens"] = max_tokens
+                    _stats["sum_prompt_chars"] += len(prompt)
+                    _stats["sum_output_chars"] += len(output)
+                conn.sendall(_json_line({"event": "done", "output": output, "elapsed_s": elapsed, "error": None}))
+                return
+
             output, elapsed = _infer(prompt, max_tokens)
             with _lock:
                 _stats["total_tokens"] += max_tokens
@@ -502,10 +592,11 @@ def _handle(conn: socket.socket) -> None:
             "traceback": traceback.format_exc(),
         }
     finally:
-        try:
-            conn.sendall(_json_line(resp))
-        except Exception:
-            pass
+        if not streamed:
+            try:
+                conn.sendall(_json_line(resp))
+            except Exception:
+                pass
         try:
             conn.close()
         except Exception:
