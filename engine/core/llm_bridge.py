@@ -80,6 +80,7 @@ class BridgeConfig:
     # max_tokens reduzido para testes — 679s foi causado por resposta gigante
     # Regra: 128 para testes rápidos, 512 para uso normal
     max_tokens:    int   =   512
+    response_hard_limit: int = 2048
     # Parâmetros de sampling (doc ORN_up — seção 3)
     # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
     temperature:    float =  0.40
@@ -273,6 +274,14 @@ class BridgeConfig:
                 line_n = exc_tb.tb_lineno if exc_tb else 0
                 print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
                 self.min_p = 0.01
+        env_response_hard_limit = os.environ.get("ORN_RESPONSE_HARD_LIMIT", "").strip()
+        if env_response_hard_limit:
+            try:
+                parsed = int(env_response_hard_limit)
+                if parsed > 0:
+                    self.response_hard_limit = parsed
+            except ValueError:
+                pass
 
         env_memo = os.environ.get("ORN_REPETITION_MEMO")
         parsed_memo = self._normalize_optional_bool(env_memo) if env_memo is not None else None
@@ -714,6 +723,7 @@ class SiCDoxBridge:
                 "cpu_mask": self._cfg.cpu_mask,
                 "cpuset": self._cfg.cpuset,
                 "min_p": self._cfg.min_p,
+                "response_hard_limit": self._cfg.response_hard_limit,
                 "repetition_memo_enabled": self._cfg.repetition_memo_enabled,
                 "repetition_memo_size": self._cfg.repetition_memo_size,
                 "context_rotation": self._cfg.context_rotation,
@@ -860,24 +870,50 @@ class SiCDoxBridge:
         """
         
         print(f"[DEBUG-CE] native={self._native is not None}, ready={getattr(self._native, '_ready', 'N/A')}")
-        
-        if self._native is not None and self._native._ready:
-            print("[DEBUG-CE] → NATIVO")
-            p = prompt if isinstance(prompt, str) else \
-                self._llm.detokenize(prompt).decode("utf-8", errors="ignore")
-            
-            # Para o nativo: trunca prompt a 800 chars (~200 tokens)
-            # preserva a parte final (query + assistente)
-            if len(p) > 800:
-                p = p[-800:]
-                
-            return self._native.call(p, max_tokens)
-        
-        print("[DEBUG-CE] → PYTHON")
-        
+
         import time as _time
         if self._llm is None:
             raise RuntimeError("Modelo não carregado.")
+
+        hard_limit = max(1, int(getattr(self._cfg, "response_hard_limit", max_tokens)))
+        chunk_max = max(1, min(int(max_tokens), hard_limit))
+
+        if self._native is not None and self._native._ready:
+            print("[DEBUG-CE] → NATIVO")
+            p = prompt if isinstance(prompt, str) else self._llm.detokenize(prompt).decode("utf-8", errors="ignore")
+
+            acc: list[str] = []
+            total_completion = 0
+            total_ms = 0.0
+            while total_completion < hard_limit:
+                this_chunk = min(chunk_max, hard_limit - total_completion)
+                t0n = _time.perf_counter()
+                out = self._native.call(p + "".join(acc), this_chunk)
+                total_ms += (_time.perf_counter() - t0n) * 1000.0
+
+                text_piece = str(out.get("text", ""))
+                if not text_piece:
+                    break
+                acc.append(text_piece)
+
+                piece_tokens = int((out.get("usage", {}) or {}).get("completion_tokens", 0) or 0)
+                if piece_tokens <= 0:
+                    piece_tokens = max(1, len(text_piece.split()))
+                total_completion += piece_tokens
+
+                # Heurística: se retornou bem menos que o chunk, presume encerramento natural.
+                if piece_tokens < max(4, this_chunk // 2):
+                    break
+
+            final_text = "".join(acc)
+            usage = {
+                "prompt_tokens": 0,
+                "completion_tokens": total_completion,
+                "total_tokens": total_completion,
+            }
+            return {"text": final_text, "usage": usage, "llm_call_ms": round(total_ms, 3)}
+
+        print("[DEBUG-CE] → PYTHON")
 
         # Detecta bloco de código aberto — funciona tanto para str quanto para
         # list[int] (no caso de tokens, decodifica para verificar backticks).
@@ -899,40 +935,78 @@ class SiCDoxBridge:
         else:
             stop_tokens = ["<|im_end|>", "</s>"]
 
-        t0 = _time.perf_counter()
-        call_kwargs = {
-            "max_tokens":    max_tokens,
-            "stop":          stop_tokens,
-            "echo":          False,
-            "temperature":   self._cfg.temperature,
-            "top_p":         self._cfg.top_p,
-            "top_k":         self._cfg.top_k,
+        base_kwargs = {
+            "stop": stop_tokens,
+            "echo": False,
+            "temperature": self._cfg.temperature,
+            "top_p": self._cfg.top_p,
+            "top_k": self._cfg.top_k,
             "repeat_penalty": self._cfg.repeat_penalty,
         }
-
         if self._cfg.min_p is not None:
-            call_kwargs["min_p"] = self._cfg.min_p
+            base_kwargs["min_p"] = self._cfg.min_p
 
-        try:
-            output = self._llm(prompt, **call_kwargs)
-        except TypeError as exc:
-            msg = str(exc)
-            if "min_p" not in msg:
-                raise
-            call_kwargs.pop("min_p", None)
-            output = self._llm(prompt, **call_kwargs)
+        acc: list[str] = []
+        total_completion = 0
+        total_prompt = 0
+        total_ms = 0.0
+        prompt_for_call: str | list[int] = prompt
+        min_p_unsupported = False
 
-        llm_ms = (_time.perf_counter() - t0) * 1000.0
-        text    = output["choices"][0]["text"]
-        usage   = output.get("usage", {}) or {}
+        while total_completion < hard_limit:
+            remaining = hard_limit - total_completion
+            call_kwargs = dict(base_kwargs)
+            call_kwargs["max_tokens"] = min(chunk_max, remaining)
 
-        usage = {
-            "prompt_tokens":      usage.get("prompt_tokens", 0),
-            "completion_tokens":  usage.get("completion_tokens", 0),
-            "total_tokens":       usage.get("total_tokens", 0),
+            t0 = _time.perf_counter()
+            try:
+                output = self._llm(prompt_for_call, **call_kwargs)
+            except TypeError as exc:
+                msg = str(exc)
+                if "min_p" not in msg or min_p_unsupported:
+                    raise
+                min_p_unsupported = True
+                base_kwargs.pop("min_p", None)
+                call_kwargs.pop("min_p", None)
+                output = self._llm(prompt_for_call, **call_kwargs)
+            total_ms += (_time.perf_counter() - t0) * 1000.0
+
+            choice = (output.get("choices") or [{}])[0]
+            piece = str(choice.get("text", ""))
+            usage = output.get("usage", {}) or {}
+            if piece:
+                acc.append(piece)
+
+            prompt_t = int(usage.get("prompt_tokens", 0) or 0)
+            comp_t = int(usage.get("completion_tokens", 0) or 0)
+            if comp_t <= 0 and piece:
+                comp_t = max(1, len(piece.split()))
+            total_prompt = max(total_prompt, prompt_t)
+            total_completion += comp_t
+
+            finish_reason = str(choice.get("finish_reason", "") or "")
+            if finish_reason and finish_reason != "length":
+                break
+            if comp_t <= 0 or not piece:
+                break
+
+            # Após a primeira chamada com tokens pré-montados, segue como string.
+            if isinstance(prompt_for_call, list):
+                try:
+                    base_prompt = self._llm.detokenize(prompt_for_call).decode("utf-8", errors="ignore")
+                except Exception:
+                    base_prompt = self._build_prompt()
+                prompt_for_call = base_prompt + "".join(acc)
+            else:
+                prompt_for_call = prompt_for_call + piece
+
+        final_text = "".join(acc)
+        out_usage = {
+            "prompt_tokens": total_prompt,
+            "completion_tokens": total_completion,
+            "total_tokens": total_prompt + total_completion,
         }
-
-        return {"text": text, "usage": usage, "llm_call_ms": round(llm_ms, 3)}
+        return {"text": final_text, "usage": out_usage, "llm_call_ms": round(total_ms, 3)}
 
     def _build_prompt_tokens(self) -> list[int] | None:
         """Constrói prompt como lista de token IDs reutilizando _system_tokens.

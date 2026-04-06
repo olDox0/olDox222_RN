@@ -18,6 +18,7 @@ def test_bridge_config_reads_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("ORN_CONT_BATCHING", "1")
     monkeypatch.setenv("ORN_CPU_MASK", "0x3")
     monkeypatch.setenv("ORN_CPUSET", "0,1")
+    monkeypatch.setenv("ORN_RESPONSE_HARD_LIMIT", "1024")
 
     cfg = BridgeConfig(n_ctx=256, active_window=256)
 
@@ -36,6 +37,7 @@ def test_bridge_config_reads_env_overrides(monkeypatch) -> None:
     assert cfg.cont_batching is True
     assert cfg.cpu_mask == "0x3"
     assert cfg.cpuset == "0,1"
+    assert cfg.response_hard_limit == 1024
 
 
 def test_bridge_config_clamps_active_window_to_n_ctx(monkeypatch) -> None:
@@ -324,3 +326,34 @@ def test_bridge_config_low_profile_preserves_env_overrides(monkeypatch) -> None:
     assert cfg.use_mlock is True
     assert cfg.no_alloc is True
     assert cfg.active_window == 192
+
+
+def test_call_engine_extends_when_finish_reason_is_length() -> None:
+    class _FakeLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, _prompt, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "choices": [{"text": "abc", "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+                }
+            return {
+                "choices": [{"text": "de", "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
+            }
+
+        def detokenize(self, _tokens):
+            return b"prompt"
+
+    cfg = BridgeConfig(max_tokens=3, response_hard_limit=8)
+    bridge = SiCDoxBridge(cfg)
+    bridge._llm = _FakeLLM()
+    bridge._native = None
+
+    out = bridge._call_engine("prompt", 3)
+
+    assert out["text"] == "abcde"
+    assert out["usage"]["completion_tokens"] == 5
