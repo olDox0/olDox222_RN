@@ -643,19 +643,19 @@ _KW_COMPLEX_ALGO = re.compile(
 def _adaptive_max_tokens(prompt: str) -> int:
     """Limite de tokens calibrado para Celeron N2808 @ ~1.4 t/s.
 
-      320 tokens ≈ 229s  — algoritmo complexo / classe com buffer
-      256 tokens ≈ 183s  — geração de código simples (função única)
-      128 tokens ≈  91s  — pergunta sobre código
-       64 tokens ≈  46s  — texto puro
+      512 tokens — algoritmo complexo / classe com buffer
+      384 tokens — geração de código simples (função única)
+      192 tokens — pergunta sobre código
+       96 tokens — texto puro
     """
     p = prompt or ""
     is_gen  = bool(_KW_CODE_GEN.search(p))
     is_lang = bool(_KW_LANG.search(p))
 
     if is_gen and is_lang and _KW_COMPLEX_ALGO.search(p):
-        return 320   # algoritmo complexo — classe, recursão, buffer
+        return 512   # algoritmo complexo — classe, recursão, buffer
     if is_gen and is_lang:
-        return 256   # geração simples — função única
+        return 384   # geração simples — função única
     if is_lang:
-        return 128   # explicação / pergunta sobre código
-    return 64        # texto puro
+        return 192   # explicação / pergunta sobre código
+    return 96        # texto puro

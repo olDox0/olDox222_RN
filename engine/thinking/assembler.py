@@ -39,6 +39,9 @@ if TYPE_CHECKING:
 
 _PROMPT_GERAR = """\
 [TASK] Escreva código Python correto e funcional para: {task}
+Plano de execução em partes:
+{parts_plan}
+
 Regras:
 - Apenas código Python válido, sem texto explicativo antes do bloco.
 - Envolva o código em [code-begin] ... [code-end].
@@ -50,6 +53,8 @@ _PROMPT_FIX = """\
 [TASK] Corrija o código Python abaixo.
 
 Tarefa original: {task}
+Plano de execução em partes:
+{parts_plan}
 
 Esqueleto atual (resumo):
 {skeleton}
@@ -67,6 +72,7 @@ Regras:
 # Limite de execução isolada
 # ---------------------------------------------------------------------------
 _RUN_TIMEOUT: int = 8   # segundos — conservador para N2808
+_ASSEMBLER_MAX_TOKENS: int = 640
 
 
 # ---------------------------------------------------------------------------
@@ -131,13 +137,15 @@ class CodeAssembler:
         issues: list[str] = []
         attempts  = 0
         last_path: Path | None = None
+        task_parts = _decompose_task_parts(task)
+        parts_plan = _render_parts_plan(task_parts)
 
         for attempt in range(self._max_retries + 1):
             attempts = attempt + 1
 
             # ── 1. Gerar / corrigir via LLM ───────────────────────────
             if attempt == 0:
-                prompt = _PROMPT_GERAR.format(task=task)
+                prompt = _PROMPT_GERAR.format(task=task, parts_plan=parts_plan)
             else:
                 skeleton = CognitiveReducer.reduce_file(
                     "candidate.py", code, max_chars=400
@@ -145,11 +153,12 @@ class CodeAssembler:
                 errors_text = "\n".join(f"  • {i}" for i in issues[:10])
                 prompt = _PROMPT_FIX.format(
                     task=task,
+                    parts_plan=parts_plan,
                     skeleton=skeleton,
                     errors=errors_text,
                 )
 
-            raw_output = self._bridge.ask(prompt, max_tokens=256)
+            raw_output = self._bridge.ask(prompt, max_tokens=_ASSEMBLER_MAX_TOKENS)
 
             # ── 2. Extrair bloco de código ─────────────────────────────
             extracted = _extract_code(raw_output)
@@ -204,6 +213,35 @@ class CodeAssembler:
             "error":    error_summary,
             "attempts": attempts,
         }
+
+
+def _decompose_task_parts(task: str) -> list[str]:
+    """Quebra a tarefa em partes menores para guiar geração incremental."""
+    normalized = " ".join((task or "").strip().split())
+    if not normalized:
+        return []
+
+    raw_chunks = re.split(r"[;\n]|(?:\s+e\s+)|(?:\s+then\s+)|(?:\s+depois\s+)", normalized, flags=re.IGNORECASE)
+    parts: list[str] = []
+    for idx, chunk in enumerate(raw_chunks):
+        text = chunk.strip(" ,.-")
+        if not text:
+            continue
+        # Evita fragmentos muito pequenos (ex.: "e", "de", etc.).
+        if len(text) < 6 and idx > 0:
+            continue
+        parts.append(text)
+
+    if not parts:
+        return [normalized]
+    # Limite de partes para não poluir o prompt.
+    return parts[:6]
+
+
+def _render_parts_plan(parts: list[str]) -> str:
+    if not parts:
+        return "- Parte 1: resolver a tarefa principal."
+    return "\n".join(f"- Parte {i + 1}: {part}" for i, part in enumerate(parts))
 
 
 # ---------------------------------------------------------------------------
