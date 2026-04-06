@@ -253,8 +253,9 @@ class ORNHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
+            self.send_header("Connection", "close")
             self.end_headers()
+            self.close_connection = True
 
             sent_terminal = False
             for raw_event in web_proxy.stream_infer_events(prompt, max_tokens, host=HOST, infer_port=INFER_PORT):

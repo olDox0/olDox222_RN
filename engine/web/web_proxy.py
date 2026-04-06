@@ -6,9 +6,11 @@ from __future__ import annotations
 import json
 import os
 import socket
+import time
 from typing import Any
 
 STREAM_READ_TIMEOUT_S = float(os.getenv("ORN_WEB_STREAM_READ_TIMEOUT", "180"))
+STREAM_POLL_TIMEOUT_S = float(os.getenv("ORN_WEB_STREAM_POLL_TIMEOUT", "1.0"))
 
 
 def query_infer_raw(payload: bytes, host: str, infer_port: int) -> dict[str, Any] | None:
@@ -41,24 +43,28 @@ def stream_infer_events(prompt: str, max_tokens: int, host: str, infer_port: int
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(5.0)
         s.connect((host, infer_port))
-        # Evita bloqueio infinito no loader quando o backend não finaliza stream.
-        s.settimeout(STREAM_READ_TIMEOUT_S)
+        # Poll curto evita bloqueio longo e facilita interrupção (Ctrl+C) no servidor web.
+        s.settimeout(STREAM_POLL_TIMEOUT_S)
         s.sendall(payload)
 
         buf = ""
+        last_data_at = time.monotonic()
         while True:
             try:
                 chunk = s.recv(65536)
             except TimeoutError:
-                if buf.strip():
-                    try:
-                        yield json.loads(buf.strip())
-                    except Exception:
-                        pass
-                yield {"event": "error", "error": "timeout aguardando stream do servidor"}
-                break
+                if (time.monotonic() - last_data_at) >= STREAM_READ_TIMEOUT_S:
+                    if buf.strip():
+                        try:
+                            yield json.loads(buf.strip())
+                        except Exception:
+                            pass
+                    yield {"event": "error", "error": "timeout aguardando stream do servidor"}
+                    break
+                continue
             if not chunk:
                 break
+            last_data_at = time.monotonic()
             buf += chunk.decode("utf-8", errors="replace")
             while "\n" in buf:
                 line, buf = buf.split("\n", 1)
