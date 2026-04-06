@@ -40,6 +40,8 @@ HOST       = "127.0.0.1"
 PID_FILE   = Path("web_server.pid")
 STREAM_CACHE_LIMIT = 32
 STREAM_CACHE_TTL_S = 900
+STREAM_CACHE_MAX_CHUNKS = 256
+STREAM_CACHE_MAX_OUTPUT_CHARS = 120_000
 _STREAM_CACHE: dict[str, dict] = {}
 _STREAM_CACHE_LOCK = threading.Lock()
 
@@ -149,6 +151,7 @@ def _stream_cache_start(prompt: str, max_tokens: int) -> str:
             "max_tokens": max_tokens,
             "chunks": [],
             "output": "",
+            "truncated": False,
             "done": False,
             "elapsed_s": 0,
             "error": None,
@@ -164,8 +167,14 @@ def _stream_cache_append(request_id: str, delta: str) -> int:
             return 0
         chunks = item["chunks"]
         chunks.append(delta)
+        if len(chunks) > STREAM_CACHE_MAX_CHUNKS:
+            del chunks[: len(chunks) - STREAM_CACHE_MAX_CHUNKS]
         item["updated_at"] = time.time()
-        item["output"] = "".join(chunks)
+        out = str(item.get("output", "")) + delta
+        if len(out) > STREAM_CACHE_MAX_OUTPUT_CHARS:
+            out = out[-STREAM_CACHE_MAX_OUTPUT_CHARS:]
+            item["truncated"] = True
+        item["output"] = out
         return len(chunks) - 1
 
 
@@ -174,7 +183,11 @@ def _stream_cache_finish(request_id: str, output: str, elapsed_s: float, error: 
         item = _STREAM_CACHE.get(request_id)
         if not item:
             return
-        item["output"] = output
+        final_out = output
+        if len(final_out) > STREAM_CACHE_MAX_OUTPUT_CHARS:
+            final_out = final_out[-STREAM_CACHE_MAX_OUTPUT_CHARS:]
+            item["truncated"] = True
+        item["output"] = final_out
         item["elapsed_s"] = elapsed_s
         item["error"] = error
         item["done"] = True
@@ -195,6 +208,7 @@ def _stream_cache_get(request_id: str) -> dict | None:
             "max_tokens": item["max_tokens"],
             "chunks": list(item["chunks"]),
             "output": item["output"],
+            "truncated": bool(item.get("truncated", False)),
             "done": item["done"],
             "elapsed_s": item["elapsed_s"],
             "error": item["error"],

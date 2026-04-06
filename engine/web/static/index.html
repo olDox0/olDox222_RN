@@ -429,17 +429,25 @@ const statusTxt = document.getElementById('statusText');
 
 let busy = false;
 const streamReuseCache = new Map();
+const STREAM_REUSE_MAX_ITEMS = 20;
+const STREAM_REUSE_MAX_CHUNKS = 256;
+const STREAM_REUSE_MAX_OUTPUT_CHARS = 120000;
 
 function cacheStreamResult(requestId, output, chunks) {
   if (!requestId) return;
+  let safeOutput = output || '';
+  if (safeOutput.length > STREAM_REUSE_MAX_OUTPUT_CHARS) {
+    safeOutput = safeOutput.slice(-STREAM_REUSE_MAX_OUTPUT_CHARS);
+  }
+  const safeChunks = Array.isArray(chunks) ? chunks.slice(-STREAM_REUSE_MAX_CHUNKS) : [];
   streamReuseCache.set(requestId, {
     request_id: requestId,
-    output: output || '',
-    chunks: Array.isArray(chunks) ? [...chunks] : [],
+    output: safeOutput,
+    chunks: safeChunks,
     updated_at: Date.now(),
   });
   // Mantém cache local pequeno para reuso futuro.
-  if (streamReuseCache.size > 20) {
+  if (streamReuseCache.size > STREAM_REUSE_MAX_ITEMS) {
     const firstKey = streamReuseCache.keys().next().value;
     if (firstKey) streamReuseCache.delete(firstKey);
   }
