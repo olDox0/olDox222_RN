@@ -357,3 +357,24 @@ def test_call_engine_extends_when_finish_reason_is_length() -> None:
 
     assert out["text"] == "abcde"
     assert out["usage"]["completion_tokens"] == 5
+
+
+def test_call_engine_native_does_not_require_python_llm_loaded() -> None:
+    class _FakeNative:
+        _ready = True
+
+        def call(self, _prompt: str, _max_tokens: int):
+            return {
+                "text": "ok",
+                "usage": {"completion_tokens": 1},
+                "llm_call_ms": 1.0,
+            }
+
+    cfg = BridgeConfig(max_tokens=8, response_hard_limit=8)
+    bridge = SiCDoxBridge(cfg)
+    bridge._llm = None
+    bridge._native = _FakeNative()
+
+    out = bridge._call_engine("prompt", 8)
+
+    assert out["text"] == "ok"

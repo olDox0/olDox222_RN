@@ -872,15 +872,17 @@ class SiCDoxBridge:
         print(f"[DEBUG-CE] native={self._native is not None}, ready={getattr(self._native, '_ready', 'N/A')}")
 
         import time as _time
-        if self._llm is None:
-            raise RuntimeError("Modelo não carregado.")
-
         hard_limit = max(1, int(getattr(self._cfg, "response_hard_limit", max_tokens)))
         chunk_max = max(1, min(int(max_tokens), hard_limit))
 
         if self._native is not None and self._native._ready:
             print("[DEBUG-CE] → NATIVO")
-            p = prompt if isinstance(prompt, str) else self._llm.detokenize(prompt).decode("utf-8", errors="ignore")
+            if isinstance(prompt, str):
+                p = prompt
+            elif self._llm is not None:
+                p = self._llm.detokenize(prompt).decode("utf-8", errors="ignore")
+            else:
+                p = self._build_prompt()
 
             acc: list[str] = []
             total_completion = 0
@@ -912,6 +914,9 @@ class SiCDoxBridge:
                 "total_tokens": total_completion,
             }
             return {"text": final_text, "usage": usage, "llm_call_ms": round(total_ms, 3)}
+
+        if self._llm is None:
+            raise RuntimeError("Modelo não carregado.")
 
         print("[DEBUG-CE] → PYTHON")
 
