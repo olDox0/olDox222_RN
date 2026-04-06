@@ -38,6 +38,7 @@ import json
 from typing                   import Any
 from pathlib                  import Path
 from dataclasses              import dataclass
+from engine.core.cpu_affinity import apply_process_affinity
 from engine.telemetry.runtime import record_direct  # noqa: PLC0415
 from engine.core.prompt_utils import pitstop        # noqa: PLC0415
 # ---------------------------------------------------------------------------
@@ -71,6 +72,8 @@ class BridgeConfig:
     no_alloc: bool =         True        # Evita alocação interna inicial quando suportado pelo backend
     pin_threads: bool =      False     # Fixa threads em núcleos quando suportado
     cont_batching: bool =    True   # Continuous batching quando suportado
+    cpu_mask: str | None =   None
+    cpuset: str | None =     None
     # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
     # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
     ttl_seconds:   int  =    400   # 1 hora (era 300s — inadequado para N2808)
@@ -150,6 +153,8 @@ class BridgeConfig:
             "no_alloc": self.no_alloc,
             "pin_threads": self.pin_threads,
             "cont_batching": self.cont_batching,
+            "cpu_mask": self.cpu_mask,
+            "cpuset": self.cpuset,
             "n_batch": self.n_batch,
             "active_window": self.active_window,
             "ttl_seconds": self.ttl_seconds,
@@ -173,6 +178,8 @@ class BridgeConfig:
         # Normaliza valores opcionais recebidos no construtor.
         self.cache_type_k = self._normalize_optional_text(self.cache_type_k)
         self.cache_type_v = self._normalize_optional_text(self.cache_type_v)
+        self.cpu_mask = self._normalize_optional_text(self.cpu_mask)
+        self.cpuset = self._normalize_optional_text(self.cpuset)
         self.rope_freq_base = self._normalize_optional_float(str(self.rope_freq_base)) if self.rope_freq_base is not None else None
         self.rope_freq_scale = self._normalize_optional_float(str(self.rope_freq_scale)) if self.rope_freq_scale is not None else None
         self.flash_attn = self._normalize_optional_bool(self.flash_attn)
@@ -251,6 +258,10 @@ class BridgeConfig:
             self.cont_batching = parsed_cont_batching
         elif env_cont_batching is not None:
             self.cont_batching = False
+        env_cpu_mask = os.environ.get("ORN_CPU_MASK")
+        env_cpuset = os.environ.get("ORN_CPUSET")
+        self.cpu_mask = self._normalize_optional_text(env_cpu_mask) if env_cpu_mask is not None else self.cpu_mask
+        self.cpuset = self._normalize_optional_text(env_cpuset) if env_cpuset is not None else self.cpuset
         env_min_p = os.environ.get("ORN_MIN_P", "").strip()
         if env_min_p:
             try:
@@ -395,6 +406,7 @@ class SiCDoxBridge:
     """
     def __init__(self, config: BridgeConfig | None = None) -> None:
         self._cfg: BridgeConfig  = config or BridgeConfig()
+        self._affinity_applied = False
         
         self._native: Any = None
         if os.environ.get("ORN_NATIVE_BACKEND", "").lower() in {"1", "true", "on"}:
@@ -699,6 +711,8 @@ class SiCDoxBridge:
                 "no_alloc": self._cfg.no_alloc,
                 "pin_threads": self._cfg.pin_threads,
                 "cont_batching": self._cfg.cont_batching,
+                "cpu_mask": self._cfg.cpu_mask,
+                "cpuset": self._cfg.cpuset,
                 "min_p": self._cfg.min_p,
                 "repetition_memo_enabled": self._cfg.repetition_memo_enabled,
                 "repetition_memo_size": self._cfg.repetition_memo_size,
@@ -710,6 +724,16 @@ class SiCDoxBridge:
     # Internos — OSL-4: cada método faz uma coisa
     # ------------------------------------------------------------------
     def _ensure_loaded(self) -> None:
+        if not self._affinity_applied:
+            try:
+                applied, detail = apply_process_affinity(self._cfg.cpu_mask, self._cfg.cpuset)
+                if applied:
+                    print(f"[CPU-AFFINITY] {detail}")
+            except Exception as exc:
+                print(f"[CPU-AFFINITY] falha ao aplicar: {exc}")
+            finally:
+                self._affinity_applied = True
+
         # Backend nativo
         if self._native is not None:
             if not self._native._ready:

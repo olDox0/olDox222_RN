@@ -4,6 +4,7 @@ ORN — Native Backend (Vulcano Nativo)
 Chama orn.dll diretamente via ctypes — sem overhead do llama-cpp-python.
 """
 import os
+import sys
 import time
 from ctypes import cdll, c_char_p, c_int, create_string_buffer
 from pathlib import Path
@@ -36,7 +37,26 @@ class NativeBackend:
         if self._ready:
             return
 
-        os.add_dll_directory(str(self._dll_path.parent))
+        if not self._dll_path.exists():
+            raise FileNotFoundError(f"orn.dll não encontrado em: {self._dll_path}")
+
+        dll_dirs = [self._dll_path.parent]
+        root_dir = self._dll_path.parent.parent
+        dll_dirs.extend(
+            [
+                root_dir / "venv" / "Lib" / "site-packages" / "llama_cpp" / "lib",
+                Path(sys.prefix) / "Lib" / "site-packages" / "llama_cpp" / "lib",
+            ]
+        )
+        seen: set[str] = set()
+        for d in dll_dirs:
+            key = str(d).lower()
+            if key in seen or not d.exists():
+                continue
+            seen.add(key)
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(str(d))
+
         lib = cdll.LoadLibrary(str(self._dll_path))
 
         lib.orn_init.argtypes  = [c_char_p, c_int, c_int]

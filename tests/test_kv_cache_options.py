@@ -16,6 +16,8 @@ def test_bridge_config_reads_env_overrides(monkeypatch) -> None:
     monkeypatch.setenv("ORN_REPETITION_MEMO_SIZE", "16")
     monkeypatch.setenv("ORN_PIN_THREADS", "1")
     monkeypatch.setenv("ORN_CONT_BATCHING", "1")
+    monkeypatch.setenv("ORN_CPU_MASK", "0x3")
+    monkeypatch.setenv("ORN_CPUSET", "0,1")
 
     cfg = BridgeConfig(n_ctx=256, active_window=256)
 
@@ -32,6 +34,8 @@ def test_bridge_config_reads_env_overrides(monkeypatch) -> None:
     assert cfg.repetition_memo_size == 16
     assert cfg.pin_threads is True
     assert cfg.cont_batching is True
+    assert cfg.cpu_mask == "0x3"
+    assert cfg.cpuset == "0,1"
 
 
 def test_bridge_config_clamps_active_window_to_n_ctx(monkeypatch) -> None:
@@ -59,6 +63,8 @@ def test_server_cli_start_parses_new_flags(monkeypatch) -> None:
         cont_batching=False,
         no_mmap=False,
         no_alloc=False,
+        cpu_mask=None,
+        cpuset=None,
     ):
         called["background"] = background
         called["cache_type_k"] = cache_type_k
@@ -72,6 +78,8 @@ def test_server_cli_start_parses_new_flags(monkeypatch) -> None:
         called["cont_batching"] = cont_batching
         called["no_mmap"] = no_mmap
         called["no_alloc"] = no_alloc
+        called["cpu_mask"] = cpu_mask
+        called["cpuset"] = cpuset
 
     monkeypatch.setattr(cli, "_start", fake_start)
 
@@ -86,6 +94,8 @@ def test_server_cli_start_parses_new_flags(monkeypatch) -> None:
         "--min-p", "0.01",
         "--pin-threads",
         "--cont-batching",
+        "--cpu-mask", "0x3",
+        "--cpuset", "0,1",
         "--no-mmap",
         "--no-alloc",
     ])
@@ -103,6 +113,8 @@ def test_server_cli_start_parses_new_flags(monkeypatch) -> None:
         "cont_batching": True,
         "no_mmap": True,
         "no_alloc": True,
+        "cpu_mask": "0x3",
+        "cpuset": "0,1",
     }
 
 
@@ -110,7 +122,7 @@ def test_server_cli_start_env_includes_overrides(monkeypatch) -> None:
     cli = ServerCLI()
     monkeypatch.setenv("KEEP", "1")
 
-    env = cli._start_env("q8_0", "q4_0", "160", "10000", "0.5", "on", "0.01", True, True, True, True)
+    env = cli._start_env("q8_0", "q4_0", "160", "10000", "0.5", "on", "0.01", True, True, True, True, "0x3", "0,1")
 
     assert env["KEEP"] == "1"
     assert env["ORN_CACHE_TYPE_K"] == "q8_0"
@@ -124,6 +136,8 @@ def test_server_cli_start_env_includes_overrides(monkeypatch) -> None:
     assert env["ORN_CONT_BATCHING"] == "1"
     assert env["ORN_USE_MMAP"] == "0"
     assert env["ORN_NO_ALLOC"] == "1"
+    assert env["ORN_CPU_MASK"] == "0x3"
+    assert env["ORN_CPUSET"] == "0,1"
 
 
 def test_bridge_config_ignores_invalid_values(monkeypatch) -> None:
@@ -280,7 +294,7 @@ def test_server_cli_start_env_sets_doxoade_root_when_discovered(monkeypatch) -> 
     cli = ServerCLI()
     monkeypatch.setattr("engine.server.server._discover_doxoade_root", lambda: "/tmp/doxoade-root")
 
-    env = cli._start_env(None, None, None, None, None, None, None, False, False, False, False)
+    env = cli._start_env(None, None, None, None, None, None, None, False, False, False, False, None, None)
 
     assert env["DOXOADE_ROOT"] == "/tmp/doxoade-root"
 

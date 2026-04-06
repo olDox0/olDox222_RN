@@ -29,6 +29,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
+if exist "%LLAMA_LIB_PATH%\libllama.dll" (
+    copy /Y "%LLAMA_LIB_PATH%\libllama.dll" ".\libllama.dll" >nul
+)
+
 echo.
 echo [OK] orn.dll gerado.
 pause

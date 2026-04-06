@@ -1,9 +1,19 @@
 import os
+import sys
 from ctypes import cdll, c_char_p, c_int, create_string_buffer
 
-os.add_dll_directory(os.path.dirname(__file__))
+HERE = os.path.dirname(__file__)
+os.add_dll_directory(HERE)
 
-lib = cdll.LoadLibrary(os.path.join(os.path.dirname(__file__), "orn.dll"))
+candidate_lib_dirs = [
+    os.path.join(os.path.dirname(HERE), "venv", "Lib", "site-packages", "llama_cpp", "lib"),
+    os.path.join(sys.prefix, "Lib", "site-packages", "llama_cpp", "lib"),
+]
+for path in candidate_lib_dirs:
+    if os.path.isdir(path):
+        os.add_dll_directory(path)
+
+lib = cdll.LoadLibrary(os.path.join(HERE, "orn.dll"))
 
 lib.orn_init.argtypes = [c_char_p, c_int, c_int]
 lib.orn_init.restype = c_int

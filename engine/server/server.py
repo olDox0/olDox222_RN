@@ -32,6 +32,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from engine.core.cpu_affinity import apply_process_affinity
 from engine.server import server_bootstrap, server_utils
 from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
 
@@ -45,6 +46,7 @@ PID_FILE = Path("server.pid")
 LOG_FILE = Path("server.log")
 
 _llm = None
+_native = None
 _cfg = None
 _lock = threading.Lock()
 _system_tokens = None
@@ -134,16 +136,44 @@ def _read_line_from_socket(conn: socket.socket, timeout: float = 10.0) -> str:
 # ---------------------------------------------------------------------------
 
 def _load_model() -> None:
-    global _llm, _cfg
+    global _llm, _cfg, _native
 
     from engine.core.llm_bridge import BridgeConfig
-    from llama_cpp import Llama
 
     _cfg = BridgeConfig()
+
+    try:
+        applied, detail = apply_process_affinity(_cfg.cpu_mask, _cfg.cpuset)
+        if applied:
+            print(f"[CPU-AFFINITY] {detail}", flush=True)
+    except Exception as exc:
+        print(f"[CPU-AFFINITY] falha ao aplicar: {exc}", flush=True)
 
     if not _cfg.model_path.exists():
         print(f"[ERRO] Modelo nao encontrado: {_cfg.model_path}", flush=True)
         sys.exit(1)
+
+    if os.environ.get("ORN_NATIVE_BACKEND", "").lower() in {"1", "true", "on"}:
+        from engine.core.native_backend import NativeBackend
+
+        dll = Path(__file__).parent.parent.parent / "native" / "orn.dll"
+        _native = NativeBackend(
+            dll_path=dll,
+            model_path=_cfg.model_path,
+            n_ctx=_cfg.n_ctx,
+            n_threads=_cfg.n_threads,
+        )
+        t0 = time.monotonic()
+        _native.load()
+        elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
+        _boot_perf["model_load_ms"] = elapsed_ms
+        _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
+        _stats["start"] = time.monotonic()
+        print(f"[BOOT] orn.dll ativo [{dll}]", flush=True)
+        print(f"[BOOT] Pronto em {round(elapsed_ms / 1000.0, 1)}s — {HOST}:{PORT}", flush=True)
+        return
+
+    from llama_cpp import Llama
 
     backend = "VULCAN/nativo" if _VULCAN_ACTIVE else "Python puro"
     print(f"[BOOT] {_cfg.model_path.name}  [{backend}]", flush=True)
@@ -215,8 +245,21 @@ def _load_model() -> None:
 
 @orn_probe(category="exec", critical=True, probe_name="server.infer")
 def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
-    if _llm is None or _cfg is None:
+    if (_llm is None and _native is None) or _cfg is None:
         raise RuntimeError("Modelo nao carregado.")
+
+    if _native is not None:
+        t0 = time.monotonic()
+        out = _native.call(prompt, max_tokens)
+        elapsed = round(time.monotonic() - t0, 3)
+        llm_call_ms = float(out.get("llm_call_ms", elapsed * 1000.0))
+        _observe_telemetry("server.infer.lock_wait", 0.0)
+        _observe_telemetry("server.infer.llm_call", llm_call_ms)
+        with _lock:
+            _stats["last_lock_wait_ms"] = 0.0
+            _stats["last_llm_call_ms"] = round(llm_call_ms, 4)
+            _stats["sum_llm_call_ms"] += llm_call_ms
+        return str(out.get("text", "")).strip(), elapsed
 
     global _system_tokens
     prompt_input = None
@@ -474,7 +517,14 @@ def _handle(conn: socket.socket) -> None:
 # ---------------------------------------------------------------------------
 
 def _shutdown() -> None:
-    global _llm
+    global _llm, _native
+    if _native is not None:
+        try:
+            _native.shutdown()
+        except Exception:
+            pass
+        _native = None
+
     if _llm is not None:
         try:
             _llm.close()
@@ -550,6 +600,8 @@ class ServerCLI:
             cont_batching = "--cont-batching" in start_args
             no_mmap = "--no-mmap" in start_args
             no_alloc = "--no-alloc" in start_args
+            cpu_mask = self._arg_value(start_args, "--cpu-mask")
+            cpuset = self._arg_value(start_args, "--cpuset")
 
             self._start(
                 background=background,
@@ -564,6 +616,8 @@ class ServerCLI:
                 cont_batching=cont_batching,
                 no_mmap=no_mmap,
                 no_alloc=no_alloc,
+                cpu_mask=cpu_mask,
+                cpuset=cpuset,
             )
         elif args[0] == "stop":
             self._stop()
@@ -593,6 +647,8 @@ class ServerCLI:
         cont_batching: bool = False,
         no_mmap: bool = False,
         no_alloc: bool = False,
+        cpu_mask: str | None = None,
+        cpuset: str | None = None,
     ) -> None:
         if self._is_online():
             print(f"[SRV] Servidor ja rodando na porta {PORT}.")
@@ -623,6 +679,10 @@ class ServerCLI:
                 child_args += ["--no-mmap"]
             if no_alloc:
                 child_args += ["--no-alloc"]
+            if cpu_mask:
+                child_args += ["--cpu-mask", cpu_mask]
+            if cpuset:
+                child_args += ["--cpuset", cpuset]
 
             subprocess.Popen(
                 child_args,
@@ -640,6 +700,8 @@ class ServerCLI:
                     cont_batching,
                     no_mmap,
                     no_alloc,
+                    cpu_mask,
+                    cpuset,
                 ),
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
@@ -668,6 +730,8 @@ class ServerCLI:
             cont_batching,
             no_mmap,
             no_alloc,
+            cpu_mask,
+            cpuset,
         )
         _load_model()
         _serve()
@@ -824,6 +888,8 @@ class ServerCLI:
         cont_batching: bool,
         no_mmap: bool,
         no_alloc: bool,
+        cpu_mask: str | None,
+        cpuset: str | None,
     ) -> dict[str, str]:
         env = os.environ.copy()
         if cache_type_k:
@@ -848,6 +914,10 @@ class ServerCLI:
             env["ORN_USE_MMAP"] = "0"
         if no_alloc:
             env["ORN_NO_ALLOC"] = "1"
+        if cpu_mask:
+            env["ORN_CPU_MASK"] = cpu_mask
+        if cpuset:
+            env["ORN_CPUSET"] = cpuset
 
         root = _discover_doxoade_root()
         if root:
@@ -867,6 +937,8 @@ class ServerCLI:
         cont_batching: bool,
         no_mmap: bool,
         no_alloc: bool,
+        cpu_mask: str | None,
+        cpuset: str | None,
     ) -> None:
         env = self._start_env(
             cache_type_k,
@@ -880,6 +952,8 @@ class ServerCLI:
             cont_batching,
             no_mmap,
             no_alloc,
+            cpu_mask,
+            cpuset,
         )
         os.environ.update(env)
 
@@ -894,6 +968,8 @@ class ServerCLI:
         print("  start --flash-attn on")
         print("  start --min-p 0.01")
         print("  start --pin-threads --cont-batching")
+        print("  start --cpu-mask 0x3")
+        print("  start --cpuset 0,1")
         print("  start --no-mmap --no-alloc")
         print("  stop           para o servidor")
         print("  status         exibe uptime e estatisticas")
