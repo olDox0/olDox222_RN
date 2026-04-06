@@ -38,12 +38,22 @@ def stream_infer_events(prompt: str, max_tokens: int, host: str, infer_port: int
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(5.0)
         s.connect((host, infer_port))
-        s.settimeout(None)
+        # Evita bloqueio infinito no loader quando o backend não finaliza stream.
+        s.settimeout(30.0)
         s.sendall(payload)
 
         buf = ""
         while True:
-            chunk = s.recv(65536)
+            try:
+                chunk = s.recv(65536)
+            except TimeoutError:
+                if buf.strip():
+                    try:
+                        yield json.loads(buf.strip())
+                    except Exception:
+                        pass
+                yield {"event": "error", "error": "timeout aguardando stream do servidor"}
+                break
             if not chunk:
                 break
             buf += chunk.decode("utf-8", errors="replace")
@@ -56,6 +66,14 @@ def stream_infer_events(prompt: str, max_tokens: int, host: str, infer_port: int
                     yield json.loads(line)
                 except Exception:
                     continue
+
+        # Compatibilidade: alguns backends retornam JSON único sem '\n' final.
+        trailing = buf.strip()
+        if trailing:
+            try:
+                yield json.loads(trailing)
+            except Exception:
+                pass
 
 
 def parse_search_decision(text: str) -> str | None:
