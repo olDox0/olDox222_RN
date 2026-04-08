@@ -110,11 +110,18 @@ class NativeBackend:
         text = buf.value.decode("utf-8", errors="ignore")
         real_token_count = len(text.split())  # estimativa rápida
 
+        # --- ADICIONE ESTE BLOCO AQUI ---
+        # Limpeza agressiva da RAM (OSL-18)
+        del buf
+        import gc
+        gc.collect()
+        # -------------------------------
+
         return {
             "text":       text,
             "usage":      {
                 "prompt_tokens":     0,
-                "completion_tokens": real_token_count,  # era: n (bytes)
+                "completion_tokens": real_token_count, 
                 "total_tokens":      real_token_count,
             },
             "llm_call_ms": round(llm_ms, 3),

@@ -54,19 +54,26 @@ _VOCAB_ENTRY_SIZE_V3 = struct.calcsize(_VOCAB_ENTRY_FMT_V3)  # 4+8+4 = 16 bytes
 # Varint encoding
 # ---------------------------------------------------------------------------
 
-def encode_varint(n: int) -> bytes:
-    """Codifica inteiro não-negativo em varint (1-9 bytes)."""
-    out = bytearray()
-    while True:
-        b = n & 0x7F
-        n >>= 7
-        if n:
-            out.append(b | 0x80)
-        else:
-            out.append(b)
-            break
-    return bytes(out)
+#def encode_varint(n: int) -> bytes:
+#    """Codifica inteiro não-negativo em varint (1-9 bytes)."""
+#    out = bytearray()
+#    while True:
+#        b = n & 0x7F
+#        n >>= 7
+#        if n:
+#            out.append(b | 0x80)
+#        else:
+#            out.append(b)
+#            break
+#    return bytes(out)
 
+def append_varint(buf: bytearray, n: int) -> None:
+    if n < 0:
+        raise ValueError("varint exige inteiro não-negativo")
+    while n >= 0x80:
+        buf.append((n & 0x7F) | 0x80)
+        n >>= 7
+    buf.append(n)
 
 def decode_varint(data: bytes | mmap.mmap, pos: int) -> tuple[int, int]:
     """Decodifica varint em data[pos:]. Retorna (valor, próxima_posição)."""
@@ -88,73 +95,106 @@ def decode_varint(data: bytes | mmap.mmap, pos: int) -> tuple[int, int]:
 
 class InvertedIndexBuilder:
     def __init__(self) -> None:
-        # postings: token_id -> list of (doc_id, [positions...])
-        self.postings: dict[int, dict[int, list[int]]] = defaultdict(lambda: defaultdict(list))
-        self.doc_count: int = 0
-        # store document lengths for avgdl
-        self._doc_lengths: dict[int, int] = {}
+        # token_id -> doc_id -> positions
+        self.postings = {}
+        self._doc_lengths = {}
+        self._doc_ids_seen = set()
+
+        self._terms_added = 0
+        self._max_doc_id = -1
+
+    def _get_bucket(self, token_id: int):
+        b = self.postings.get(token_id)
+        if b is None:
+            b = {}
+            self.postings[token_id] = b
+        return b
 
     def add_document(self, doc_id: int, tokens) -> None:
-        """tokens: iterable of term ids (int). We record positions starting at 1."""
         pos = 1
         length = 0
+
+        # acumula local → evita tocar estrutura global toda hora
+        per_doc = {}
+
         for t in tokens:
             t = int(t)
-            self.postings[t][doc_id].append(pos)
+            lst = per_doc.get(t)
+            if lst is None:
+                lst = []
+                per_doc[t] = lst
+            lst.append(pos)
             pos += 1
             length += 1
+
+        for token_id, positions in per_doc.items():
+            bucket = self._get_bucket(token_id)
+            bucket[doc_id] = positions
+
         self._doc_lengths[doc_id] = length
-        if doc_id > self.doc_count:
-            self.doc_count = doc_id
+        self._doc_ids_seen.add(doc_id)
+        self._terms_added += length
+
+        if doc_id > self._max_doc_id:
+            self._max_doc_id = doc_id
 
     def finalize(self) -> None:
-        # sort positions and ensure posting doc-ids are sorted lists
-        for token, docs in list(self.postings.items()):
-            for d in list(docs.keys()):
-                docs[d].sort()
+        # opcional agora — já ordenamos no write
+        pass
 
     def write(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
-        vocab_entries: list[tuple[int, int, int]] = []  # token_id, offset, df
-        postings_buf = bytearray()
 
-        # write postings: tokens sorted by token_id
+        from engine.native.varint_helper import encode_varint
+
+        postings_buf = bytearray()
+        vocab_entries = []
+
+        av = encode_varint  # alias local = mais rápido
+
         for token_id in sorted(self.postings.keys()):
             docs_map = self.postings[token_id]
-            docs_items = sorted(docs_map.items())  # list of (doc_id, positions)
+            docs_items = sorted(docs_map.items())
+
             offset = len(postings_buf)
             df = len(docs_items)
-            vocab_entries.append((int(token_id), offset, df))
+            vocab_entries.append((token_id, offset, df))
 
-            # length-prefix (n_docs)
-            postings_buf += encode_varint(df)
+            av(postings_buf, df)
+
             prev_doc = 0
             for doc_id, positions in docs_items:
-                postings_buf += encode_varint(doc_id - prev_doc)
+                av(postings_buf, doc_id - prev_doc)
                 prev_doc = doc_id
-                # tf
+
                 tf = len(positions)
-                postings_buf += encode_varint(tf)
-                # positions: delta-encode within document
+                av(postings_buf, tf)
+
                 prev_pos = 0
                 for p in positions:
-                    postings_buf += encode_varint(p - prev_pos)
+                    av(postings_buf, p - prev_pos)
                     prev_pos = p
 
+        # write postings
         with open(path / "postings.bin", "wb") as f:
             f.write(postings_buf)
 
-        # vocab.bin v3: token_id(u32), offset(u64), df(u32)
+        # vocab
         with open(path / "vocab.bin", "wb") as f:
             for token_id, offset, df in vocab_entries:
                 f.write(struct.pack(_VOCAB_ENTRY_FMT_V3, token_id, offset, df))
 
-        # meta.json: include doc_count, avgdl, fmt
-        total_dl = sum(self._doc_lengths.values()) or 0
-        doc_count = max(1, len(self._doc_lengths))
-        avgdl = total_dl / doc_count if doc_count else 0.0
+        # meta
+        total_dl = sum(self._doc_lengths.values()) or 1
+        doc_count = len(self._doc_ids_seen) or 1
+        avgdl = total_dl / doc_count
+
         with open(path / "meta.json", "w", encoding="utf-8") as f:
-            json.dump({"doc_count": doc_count, "avgdl": avgdl, "fmt": 3}, f)
+            json.dump({
+                "doc_count": doc_count,
+                "avgdl": avgdl,
+                "fmt": 3
+            }, f)
 
 class DocumentStore:
     """Armazena documentos em docs.bin como: len(varint) + utf8 bytes.

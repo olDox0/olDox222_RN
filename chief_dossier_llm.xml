@@ -1,20 +1,19 @@
 # DOXOADE NEXUS INTELLIGENCE REPORT
 **Target Project:** ORN
-**Generated At:** 2026-04-05T21:40:22.022456+00:00
+**Generated At:** 2026-04-08T22:22:02.589542+00:00
 **Focus Applied:** NONE
 
 ```xml
 <project_summary>
-  <total_files_scanned>56</total_files_scanned>
-  <total_files_in_report>56</total_files_in_report>
-  <average_complexity>16.43</average_complexity>
+  <total_files_scanned>69</total_files_scanned>
+  <total_files_in_report>69</total_files_in_report>
+  <average_complexity>21.41</average_complexity>
   <total_debt_tags>0</total_debt_tags>
   <god_distribution>
     <zeus>6</zeus>
-    <dionísio>46</dionísio>
+    <dionísio>60</dionísio>
     <atena>1</atena>
     <hades>2</hades>
-    <unknown>1</unknown>
   </god_distribution>
 </project_summary>
 
@@ -456,6 +455,101 @@ class DoxoBoard:
     ]]></source_code>
   </file>
 
+  <file path="engine/core/cpu_affinity.py" role="Dionísio" complexity="19" status="stable">
+    <functions>_parse_cpuset, _mask_from_cpus, cpus_from_options, apply_process_affinity</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""Helpers para configuração de afinidade de CPU (processo atual)."""
+
+from __future__ import annotations
+
+import os
+from typing import Iterable
+
+
+def _parse_cpuset(cpuset: str) -> set[int]:
+    result: set[int] = set()
+    for chunk in cpuset.split(","):
+        part = chunk.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            start = int(a.strip(), 10)
+            end = int(b.strip(), 10)
+            if end < start:
+                start, end = end, start
+            for cpu in range(start, end + 1):
+                if cpu >= 0:
+                    result.add(cpu)
+            continue
+        cpu = int(part, 10)
+        if cpu >= 0:
+            result.add(cpu)
+    return result
+
+
+def _mask_from_cpus(cpus: Iterable[int]) -> int:
+    mask = 0
+    for cpu in cpus:
+        if cpu >= 0:
+            mask |= 1 << cpu
+    return mask
+
+
+def cpus_from_options(cpu_mask: str | None, cpuset: str | None) -> set[int]:
+    if cpuset:
+        return _parse_cpuset(cpuset)
+    if not cpu_mask:
+        return set()
+    value = int(cpu_mask, 0)
+    cpus: set[int] = set()
+    bit = 0
+    while value:
+        if value & 1:
+            cpus.add(bit)
+        value >>= 1
+        bit += 1
+    return cpus
+
+
+def apply_process_affinity(cpu_mask: str | None, cpuset: str | None) -> tuple[bool, str]:
+    """Aplica afinidade no processo atual.
+
+    Prioridade: cpuset > cpu_mask.
+    Retorna (aplicado, detalhe).
+    """
+    cpus = cpus_from_options(cpu_mask, cpuset)
+    if not cpus:
+        return False, "sem afinidade (cpu_mask/cpuset vazio)"
+
+    cpu_count = os.cpu_count() or 0
+    if cpu_count > 0:
+        cpus = {c for c in cpus if c < cpu_count}
+    if not cpus:
+        return False, "afinidade vazia apos filtro por CPUs disponiveis"
+
+    # Linux/Unix
+    if hasattr(os, "sched_setaffinity"):
+        os.sched_setaffinity(0, cpus)
+        return True, f"cpuset={sorted(cpus)}"
+
+    # Windows
+    if os.name == "nt":
+        import ctypes
+
+        mask = _mask_from_cpus(cpus)
+        handle = ctypes.windll.kernel32.GetCurrentProcess()
+        ok = ctypes.windll.kernel32.SetProcessAffinityMask(handle, ctypes.c_size_t(mask))
+        if not ok:
+            raise OSError("SetProcessAffinityMask falhou")
+        return True, f"mask=0x{mask:X} (cpus={sorted(cpus)})"
+
+    return False, "plataforma sem suporte para afinidade"
+
+    ]]></source_code>
+  </file>
+
   <file path="engine/core/executive.py" role="Dionísio" complexity="52" status="stable">
     <classes>GoalResult, SiCDoxExecutive</classes>
     <functions>classify_prompt, _decompose_query, _read_file_safe, _looks_degenerate_think_output, _deterministic_code_answer, _adaptive_max_tokens, __init__, process_goal, shutdown, bridge_stats, board_summary, clear_board, _dispatch, _run_think, _run_audit, _run_fix, _run_gen, _run_brain, _run_graph, _get_bridge, _get_board, _get_validator, _get_planner, _get_assembler, _get_drawer_router, _get_memory</functions>
@@ -706,7 +800,7 @@ def install_lazy_imports(prefixes: list[str]):
     ]]></source_code>
   </file>
 
-  <file path="engine/core/llm_bridge.py" role="Dionísio" complexity="97" status="stable">
+  <file path="engine/core/llm_bridge.py" role="Dionísio" complexity="112" status="stable">
     <classes>BridgeConfig, ContextWindow, SiCDoxBridge, _NullSpan</classes>
     <functions>_normalize_optional_text, _normalize_optional_float, _normalize_memory_profile, _apply_memory_profile_defaults, effective_memory_flags, _normalize_optional_bool, __post_init__, __init__, push, _compact_old_turns, get_turns, _view_turns, clear, stats, __init__, ask, _log_runtime, _memo_key, _memo_order_discard, _memo_get, _memo_put, shutdown, clear_context, stats, _ensure_loaded, _load, _build_prompt, _call_engine, _build_prompt_tokens, __enter__, __exit__</functions>
     <source_code><![CDATA[
@@ -750,6 +844,7 @@ import json
 from typing                   import Any
 from pathlib                  import Path
 from dataclasses              import dataclass
+from engine.core.cpu_affinity import apply_process_affinity
 from engine.telemetry.runtime import record_direct  # noqa: PLC0415
 from engine.core.prompt_utils import pitstop        # noqa: PLC0415
 # ---------------------------------------------------------------------------
@@ -770,7 +865,7 @@ class BridgeConfig:
         #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
     memory_profile:          str  = "default"  # default|low (env: ORN_MEMORY_PROFILE)
-    n_ctx:                   int  = 1024   # era 2048 — reduz KV-cache pela metade
+    n_ctx:                   int  = 512   # era 2048 — reduz KV-cache pela metade
     active_window:           int  = 256    # era 1024 — proporcional
     n_batch:                 int  = 64     # NOVO — era 512 (default llama.cpp)
                                  # 64 = menos pressão de memória no N2808
@@ -779,33 +874,33 @@ class BridgeConfig:
     n_threads_batch:         int = 2
     n_gpu_layers:            int = 0     # CPU-only (sem GPU no N2808)
     use_mmap: bool =         True        # mmap para pesos (carregamento preguiçoso)
-    use_mlock: bool =        True       # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
+    use_mlock: bool =        False       # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
     no_alloc: bool =         True        # Evita alocação interna inicial quando suportado pelo backend
     pin_threads: bool =      False     # Fixa threads em núcleos quando suportado
     cont_batching: bool =    True   # Continuous batching quando suportado
+    cpu_mask: str | None =   None
+    cpuset: str | None =     None
     # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
     # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
-    ttl_seconds:   int  =    400   # 1 hora (era 300s — inadequado para N2808)
+    ttl_seconds:   int  =    400        # 1 hora (era 300s — inadequado para N2808)
     # max_tokens reduzido para testes — 679s foi causado por resposta gigante
     # Regra: 128 para testes rápidos, 512 para uso normal
     max_tokens:    int   =   512
+    response_hard_limit: int = 2048
     # Parâmetros de sampling (doc ORN_up — seção 3)
     # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
     temperature:    float =  0.40
-    top_p:          float =  0.80 #top_p:          float =  0.85
-    top_k:          int   =  20   #top_k:          int   =  35
+    top_p:          float =  0.80       #top_p:          float =  0.85
+    top_k:          int   =  20         #top_k:          int   =  35
     repeat_penalty: float =  1.05
-    min_p:          float =  0.01 #min_p:          float =  0.05 ou None
+    min_p:          float =  0.01       #min_p:          float =  0.05 ou None
     # Menemonização de repetições (com pruning LRU)
     repetition_memo_enabled: bool = True
     repetition_memo_size:    int  = 128
     # Context rotation + compactação para conversas longas
     context_rotation: bool = True
     context_compact_ratio:   float = 0.7
-    # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
-    cache_type_k: q8_0 | None = None
-    cache_type_v: q8_0 | None = None
-    # Parâmetros RoPE para ajuste de extrapolação/contexto
+    # Qu
     ]]></source_code>
   </file>
 
@@ -882,7 +977,7 @@ class SiCDoxValidator:
     ]]></source_code>
   </file>
 
-  <file path="engine/core/native_backend.py" role="Dionísio" complexity="5" status="stable">
+  <file path="engine/core/native_backend.py" role="Dionísio" complexity="9" status="stable">
     <classes>NativeBackend</classes>
     <functions>__init__, load, shutdown, call</functions>
     <source_code><![CDATA[
@@ -892,6 +987,7 @@ ORN — Native Backend (Vulcano Nativo)
 Chama orn.dll diretamente via ctypes — sem overhead do llama-cpp-python.
 """
 import os
+import sys
 import time
 from ctypes import cdll, c_char_p, c_int, create_string_buffer
 from pathlib import Path
@@ -924,7 +1020,26 @@ class NativeBackend:
         if self._ready:
             return
 
-        os.add_dll_directory(str(self._dll_path.parent))
+        if not self._dll_path.exists():
+            raise FileNotFoundError(f"orn.dll não encontrado em: {self._dll_path}")
+
+        dll_dirs = [self._dll_path.parent]
+        root_dir = self._dll_path.parent.parent
+        dll_dirs.extend(
+            [
+                root_dir / "venv" / "Lib" / "site-packages" / "llama_cpp" / "lib",
+                Path(sys.prefix) / "Lib" / "site-packages" / "llama_cpp" / "lib",
+            ]
+        )
+        seen: set[str] = set()
+        for d in dll_dirs:
+            key = str(d).lower()
+            if key in seen or not d.exists():
+                continue
+            seen.add(key)
+            if hasattr(os, "add_dll_directory"):
+                os.add_dll_directory(str(d))
+
         lib = cdll.LoadLibrary(str(self._dll_path))
 
         lib.orn_init.argtypes  = [c_char_p, c_int, c_int]
@@ -978,11 +1093,18 @@ class NativeBackend:
         text = buf.value.decode("utf-8", errors="ignore")
         real_token_count = len(text.split())  # estimativa rápida
 
+        # --- ADICIONE ESTE BLOCO AQUI ---
+        # Limpeza agressiva da RAM (OSL-18)
+        del buf
+        import gc
+        gc.collect()
+        # -------------------------------
+
         return {
             "text":       text,
             "usage":      {
                 "prompt_tokens":     0,
-                "completion_tokens": real_token_count,  # era: n (bytes)
+                "completion_tokens": real_token_count, 
                 "total_tokens":      real_token_count,
             },
             "llm_call_ms": round(llm_ms, 3),
@@ -1326,6 +1448,223 @@ class VectorDB:
   <file path="engine/memory/__init__.py" role="Dionísio" complexity="0" status="stable">
   </file>
 
+  <file path="engine/native/html_helper.py" role="Dionísio" complexity="3" status="stable">
+    <functions>_load, strip_html_fast</functions>
+    <source_code><![CDATA[
+# engine/native/html_helper.py
+import os
+import ctypes
+from ctypes import cdll, c_char_p, c_size_t
+
+_lib = None
+
+def _load():
+    global _lib
+    if _lib is not None:
+        return _lib
+
+    dll_path = os.path.join(os.path.dirname(__file__), "orn_html.dll")
+    dll_path = os.path.abspath(dll_path)
+
+    if not os.path.exists(dll_path):
+        return None
+
+    lib = cdll.LoadLibrary(dll_path)
+    lib.orn_strip_html.argtypes = [c_char_p, c_size_t, c_char_p]
+    lib.orn_strip_html.restype = c_size_t
+
+    _lib = lib
+    return _lib
+
+def strip_html_fast(html_bytes: bytes) -> str:
+    """Extrai texto do HTML usando a DLL otimizada em C."""
+    lib = _load()
+    if lib is None or not html_bytes:
+        return "" # Fallback handled by caller if needed
+
+    in_len = len(html_bytes)
+    # O buffer de saída nunca será maior que o buffer de entrada
+    out_buf = ctypes.create_string_buffer(in_len)
+    
+    out_size = lib.orn_strip_html(html_bytes, in_len, out_buf)
+    
+    # Retorna decodificando do utf-8
+    return out_buf[:out_size].decode("utf-8", errors="replace")
+    ]]></source_code>
+  </file>
+
+  <file path="engine/native/orn_html.c" role="Dionísio" complexity="22" status="stable_c_cpp">
+    <functions>case_insensitive_match, palavras, defined, orn_strip_html</functions>
+    <source_code><![CDATA[
+// engine/native/orn_html.c
+#include <stdint.h>
+#include <stddef.h>
+#include <ctype.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#define ORN_API __declspec(dllexport)
+#else
+#define ORN_API
+#endif
+
+// Função auxiliar para comparar prefixos ignorando case
+static int case_insensitive_match(const char *str, const char *prefix, size_t len) {
+    for (size_t i = 0; i < len; ++i) {
+        if (tolower((unsigned char)str[i]) != tolower((unsigned char)prefix[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+ORN_API size_t orn_strip_html(const char *input, size_t in_len, char *output) {
+    size_t out_pos = 0;
+    size_t i = 0;
+    int in_tag = 0;
+    int last_was_space = 1; // Começa como 1 para dar trim no início
+
+    while (i < in_len) {
+        if (input[i] == '<') {
+            // Ignorar <!-- Comentários -->
+            if (i + 3 < in_len && input[i+1] == '!' && input[i+2] == '-' && input[i+3] == '-') {
+                i += 4;
+                while (i + 2 < in_len && !(input[i] == '-' && input[i+1] == '-' && input[i+2] == '>')) {
+                    i++;
+                }
+                i += 3;
+                continue;
+            }
+            
+            // Ignorar <script> e seu conteúdo
+            if (i + 6 < in_len && case_insensitive_match(&input[i+1], "script", 6)) {
+                i += 7;
+                while (i + 8 < in_len) {
+                    if (input[i] == '<' && input[i+1] == '/' && case_insensitive_match(&input[i+2], "script", 6) && input[i+8] == '>') {
+                        i += 9;
+                        break;
+                    }
+                    i++;
+                }
+                continue;
+            }
+
+            // Ignorar <style> e seu conteúdo
+            if (i + 5 < in_len && case_insensitive_match(&input[i+1], "style", 5)) {
+                i += 6;
+                while (i + 7 < in_len) {
+                    if (input[i] == '<' && input[i+1] == '/' && case_insensitive_match(&input[i+2], "style", 5) && input[i+7] == '>') {
+                        i += 8;
+                        break;
+                    }
+                    i++;
+                }
+                continue;
+            }
+
+            // Ignorar tags padrão <...>
+            in_tag = 1;
+            i++;
+            continue;
+        }
+
+        if (in_tag) {
+            if (input[i] == '>') {
+                in_tag = 0;
+                // Adiciona espaço após tag de bloco para evitar colagem de palavras (ex: </h1><p>)
+                if (!last_was_space) {
+                    output[out_pos++] = ' ';
+                    last_was_space = 1;
+                }
+            }
+            i++;
+            continue;
+        }
+
+        // Processar texto (fora de tags)
+        char c = input[i];
+        if (isspace((unsigned char)c)) {
+            if (!last_was_space) {
+                // Preserva newlines como formatação básica
+                if (c == '\n') {
+                    output[out_pos++] = '\n';
+                } else {
+                    output[out_pos++] = ' ';
+                }
+                last_was_space = 1;
+            }
+        } else {
+            output[out_pos++] = c;
+            last_was_space = 0;
+        }
+        i++;
+    }
+
+    // Remover espaço final se houver
+    if (out_pos > 0 && isspace((unsigned char)output[out_pos - 1])) {
+        out_pos--;
+    }
+
+    output[out_pos] = '\0';
+    return out_pos;
+}
+    ]]></source_code>
+  </file>
+
+  <file path="engine/native/varint_helper.py" role="Dionísio" complexity="4" status="stable">
+    <functions>_load, encode_varint</functions>
+    <source_code><![CDATA[
+import os
+from ctypes import cdll, c_uint64, c_size_t, c_void_p, POINTER, c_uint8
+
+_lib = None
+
+def _load():
+    global _lib
+    if _lib is not None:
+        return _lib
+
+    dll_path = os.path.join(
+        os.path.dirname(__file__),
+        "../../native/orn_varint.dll"
+    )
+    dll_path = os.path.abspath(dll_path)
+
+    if not os.path.exists(dll_path):
+        return None
+
+    lib = cdll.LoadLibrary(dll_path)
+
+    lib.orn_encode_varint_u64.argtypes = [
+        c_uint64,
+        POINTER(c_uint8)
+    ]
+    lib.orn_encode_varint_u64.restype = c_size_t
+
+    _lib = lib
+    return _lib
+
+
+def encode_varint(buf: bytearray, n: int):
+    lib = _load()
+
+    if lib is None:
+        # fallback Python
+        while n >= 0x80:
+            buf.append((n & 0x7F) | 0x80)
+            n >>= 7
+        buf.append(n)
+        return
+
+    # buffer temporário stack-like (10 bytes máximo para u64)
+    tmp = (c_uint8 * 10)()
+    # A função C continua recebendo (n, tmp) corretamente
+    size = lib.orn_encode_varint_u64(n, tmp)
+
+    buf.extend(tmp[:size])
+    ]]></source_code>
+  </file>
+
   <file path="engine/runtime/infer_queue.py" role="Dionísio" complexity="2" status="stable">
     <classes>InferQueue</classes>
     <functions>__init__, submit, shutdown, _task</functions>
@@ -1335,7 +1674,9 @@ class VectorDB:
 
 from __future__ import annotations
 
+import gc
 import threading
+
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -1357,23 +1698,21 @@ class InferQueue:
 
     def submit(self, prompt, max_tokens=None, token_hint=None, system_hint=None):
         """Submete uma requisição de forma segura (síncrona ou assíncrona)."""
-        
         def _task():
-            # A mágica da harmonia: O Lock impede que o modelo sofra concorrência.
-            # As threads aguardam aqui pacificamente a vez delas.
             with self._lock:
-                return self._bridge.ask(
-                    prompt=prompt,
-                    max_tokens=max_tokens,
-                    token_hint=token_hint,
-                    system_hint=system_hint,
-                )
+                try:
+                    return self._bridge.ask(
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                        token_hint=token_hint,
+                        system_hint=system_hint,
+                    )
+                finally:
+                    # FORÇA A LIMPEZA DE RAM NO FINAL DE CADA USO DO LLM
+                    gc.collect()
 
         if not self._async:
             return _task()
-
-        # No modo assíncrono, a thread principal é liberada instantaneamente.
-        # Isso permite que o `orn-server` continue respondendo a /status no HTTP.
         return self._executor.submit(_task)
 
     def shutdown(self, wait: bool = True) -> None:
@@ -1390,9 +1729,9 @@ class InferQueue:
     ]]></source_code>
   </file>
 
-  <file path="engine/server/server.py" role="Dionísio" complexity="93" status="stable">
+  <file path="engine/server/server.py" role="Dionísio" complexity="101" status="stable">
     <classes>ServerCLI</classes>
-    <functions>_looks_like_doxoade_root, _discover_doxoade_root, _vulcan_boot, _observe_telemetry, _flush_telemetry_snapshot, _system_perf_snapshot, _json_line, _read_line_from_socket, _load_model, _infer, _telemetry_hotspots, _handle_status, _handle, _shutdown, _sigterm_handler, _serve, main, run, _start, _stop, _status, _ask, _arg_value, _start_env, _apply_start_env, _help, _is_online, _query_status, _query, _raw_query</functions>
+    <functions>_looks_like_doxoade_root, _discover_doxoade_root, _vulcan_boot, _observe_telemetry, _flush_telemetry_snapshot, _system_perf_snapshot, _json_line, _read_line_from_socket, _load_model, _infer, _infer_stream, _telemetry_hotspots, _handle_status, _handle, _shutdown, _sigterm_handler, _serve, main, run, _start, _stop, _status, _ask, _arg_value, _start_env, _apply_start_env, _help, _is_online, _query_status, _query, _raw_query</functions>
     <source_code><![CDATA[
 # -*- coding: utf-8 -*-
 # engine/server/server.py
@@ -1428,13 +1767,9 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from engine.core.cpu_affinity import apply_process_affinity
+from engine.server import server_bootstrap, server_utils
 from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
-
-try:
-    import resource as _resource  # Unix only
-    _HAS_RESOURCE = True
-except ImportError:
-    _HAS_RESOURCE = False
 
 
 HOST = "127.0.0.1"
@@ -1446,6 +1781,7 @@ PID_FILE = Path("server.pid")
 LOG_FILE = Path("server.log")
 
 _llm = None
+_native = None
 _cfg = None
 _lock = threading.Lock()
 _system_tokens = None
@@ -1483,63 +1819,15 @@ _VULCAN_MSG = ""
 # ---------------------------------------------------------------------------
 
 def _looks_like_doxoade_root(path_str: str | None) -> bool:
-    if not path_str:
-        return False
-    try:
-        p = Path(path_str).resolve()
-    except Exception:
-        return False
-    return (p / "doxoade" / "__init__.py").exists()
+    return server_bootstrap.looks_like_doxoade_root(path_str)
 
 
 def _discover_doxoade_root() -> str | None:
-    env_root = os.environ.get("DOXOADE_ROOT")
-    if _looks_like_doxoade_root(env_root):
-        return str(Path(env_root).resolve())
-
-    here = Path(__file__).resolve()
-    for parent in [here.parent, *here.parents]:
-        if (parent / "doxoade" / "__init__.py").exists():
-            return str(parent)
-
-    return None
+    return server_bootstrap.discover_doxoade_root()
 
 
 def _vulcan_boot() -> tuple[bool, str]:
-    root = _discover_doxoade_root()
-    if root and root not in sys.path:
-        sys.path.insert(0, root)
-        os.environ["DOXOADE_ROOT"] = root
-
-    try:
-        import doxoade  # noqa: F401
-    except ImportError as exc:
-        return False, (
-            f"'doxoade' nao encontrado em sys.path nem instalado no venv.\n"
-            f"ImportError: {exc}\n"
-            f"Solucoes:\n"
-            f"  a) Execute na raiz do projeto\n"
-            f"  b) pip install -e <raiz>\n"
-            f"  c) defina DOXOADE_ROOT=<raiz>\n"
-        )
-
-    try:
-        from doxoade.tools.vulcan.runtime import find_vulcan_project_root, install_meta_finder
-
-        root_path = find_vulcan_project_root(Path.cwd()) or find_vulcan_project_root(__file__)
-        if root_path is None:
-            return False, (
-                "doxoade importado OK, mas '.doxoade/vulcan/bin' nao encontrado.\n"
-                "Execute 'doxoade vulcan lib' antes de iniciar o servidor."
-            )
-
-        install_meta_finder(root_path)
-
-        lib_bin = root_path / ".doxoade" / "vulcan" / "lib_bin"
-        n_bins = len(list(lib_bin.glob("*.pyd"))) if lib_bin.exists() else 0
-        return True, f"raiz='{root_path}' | {n_bins} binario(s) em lib_bin/"
-    except Exception:
-        return False, f"MetaFinder falhou:\n{traceback.format_exc()}"
+    return server_bootstrap.vulcan_boot()
 
 
 _t_boot0 = time.monotonic()
@@ -1559,22 +1847,67 @@ else:
 # ---------------------------------------------------------------------------
 
 def _observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") -> None:
-    try:
-        GLOBAL_TELEMETRY.observe(
-            name,
-            float(elapsed_ms),
-            category=category,
-            critical=(category == "exec"),
-            is_cold=False,
-            failed=False,
-        )
-    except Exception:
-        pass
+    server_utils.observe_telemetry(name, elapsed_ms, category=category)
 
 
 def _flush_telemetry_snapshot() -> None:
+    server_utils.flush_telemetry_snapshot()
+
+
+def _system_perf_snapshot() -> dict[str, Any]:
+    return server_utils.system_perf_snapshot()
+
+
+def _json_line(resp: dict[str, Any]) -> bytes:
+    return server_utils.json_line(resp)
+
+
+def _read_line_from_socket(conn: socket.socket, timeout: float = 10.0) -> str:
+    return server_utils.read_line_from_socket(conn, RECV_SZ, timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Modelo
+# ---------------------------------------------------------------------------
+
+def _load_model() -> None:
+    global _llm, _cfg, _native
+
+    from engine.core.llm_bridge import BridgeConfig
+
+    _cfg = BridgeConfig()
+
     try:
-        GLOBAL_TELEMETRY.flush_json(Path("tele
+        applied, detail = apply_process_affinity(_cfg.cpu_mask, _cfg.cpuset)
+        if applied:
+            print(f"[CPU-AFFINITY] {detail}", flush=True)
+    except Exception as exc:
+        print(f"[CPU-AFFINITY] falha ao aplicar: {exc}", flush=True)
+
+    if not _cfg.model_path.exists():
+        print(f"[ERRO] Modelo nao encontrado: {_cfg.model_path}", flush=True)
+        sys.exit(1)
+
+    if os.environ.get("ORN_NATIVE_BACKEND", "").lower() in {"1", "true", "on"}:
+        from engine.core.native_backend import NativeBackend
+
+        dll = Path(__file__).parent.parent.parent / "native" / "orn.dll"
+        _native = NativeBackend(
+            dll_path=dll,
+            model_path=_cfg.model_path,
+            n_ctx=_cfg.n_ctx,
+            n_threads=_cfg.n_threads,
+        )
+        t0 = time.monotonic()
+        _native.load()
+        elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
+        _boot_perf["model_load_ms"] = elapsed_ms
+        _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
+        _stats["start"] = time.monotonic()
+        print(f"[BOOT] orn.dll ativo [{dll}]", flush=True)
+        print(
+            "[BOOT] nativo cfg "
+            f"n_ctx={_cfg.n_ctx} 
     ]]></source_code>
   </file>
 
@@ -1736,6 +2069,177 @@ def inspect_llama_cpp() -> dict:
 
     except Exception as exc:
         result["vulcan_msg"] = f"MetaFinder falhou: {exc}\n{traceback.form
+    ]]></source_code>
+  </file>
+
+  <file path="engine/server/server_bootstrap.py" role="Dionísio" complexity="6" status="stable">
+    <functions>looks_like_doxoade_root, discover_doxoade_root, vulcan_boot</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""Bootstrap helpers for ORN server runtime."""
+
+from __future__ import annotations
+
+import os
+import sys
+import traceback
+from pathlib import Path
+
+
+def looks_like_doxoade_root(path_str: str | None) -> bool:
+    if not path_str:
+        return False
+    try:
+        p = Path(path_str).resolve()
+    except Exception:
+        return False
+    return (p / "doxoade" / "__init__.py").exists()
+
+
+def discover_doxoade_root() -> str | None:
+    env_root = os.environ.get("DOXOADE_ROOT")
+    if looks_like_doxoade_root(env_root):
+        return str(Path(env_root).resolve())
+
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / "doxoade" / "__init__.py").exists():
+            return str(parent)
+
+    return None
+
+
+def vulcan_boot() -> tuple[bool, str]:
+    root = discover_doxoade_root()
+    if root and root not in sys.path:
+        sys.path.insert(0, root)
+        os.environ["DOXOADE_ROOT"] = root
+
+    try:
+        import doxoade  # noqa: F401
+    except ImportError as exc:
+        return False, (
+            f"'doxoade' nao encontrado em sys.path nem instalado no venv.\n"
+            f"ImportError: {exc}\n"
+            f"Solucoes:\n"
+            f"  a) Execute na raiz do projeto\n"
+            f"  b) pip install -e <raiz>\n"
+            f"  c) defina DOXOADE_ROOT=<raiz>\n"
+        )
+
+    try:
+        from doxoade.tools.vulcan.runtime import find_vulcan_project_root, install_meta_finder
+
+        root_path = find_vulcan_project_root(Path.cwd()) or find_vulcan_project_root(__file__)
+        if root_path is None:
+            return False, (
+                "doxoade importado OK, mas '.doxoade/vulcan/bin' nao encontrado.\n"
+                "Execute 'doxoade vulcan lib' antes de iniciar o servidor."
+            )
+
+        install_meta_finder(root_path)
+
+        lib_bin = root_path / ".doxoade" / "vulcan" / "lib_bin"
+        n_bins = len(list(lib_bin.glob("*.pyd"))) if lib_bin.exists() else 0
+        return True, f"raiz='{root_path}' | {n_bins} binario(s) em lib_bin/"
+    except Exception:
+        return False, f"MetaFinder falhou:\n{traceback.format_exc()}"
+
+    ]]></source_code>
+  </file>
+
+  <file path="engine/server/server_utils.py" role="Dionísio" complexity="5" status="stable">
+    <functions>observe_telemetry, flush_telemetry_snapshot, system_perf_snapshot, json_line, read_line_from_socket</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""Shared utility helpers for ORN server runtime."""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import threading
+from pathlib import Path
+from typing import Any
+
+from engine.telemetry import GLOBAL_TELEMETRY
+
+try:
+    import resource as _resource  # Unix only
+    _HAS_RESOURCE = True
+except ImportError:
+    _HAS_RESOURCE = False
+
+
+def observe_telemetry(name: str, elapsed_ms: float, *, category: str = "exec") -> None:
+    try:
+        GLOBAL_TELEMETRY.observe(
+            name,
+            float(elapsed_ms),
+            category=category,
+            critical=(category == "exec"),
+            is_cold=False,
+            failed=False,
+        )
+    except Exception:
+        pass
+
+
+def flush_telemetry_snapshot() -> None:
+    try:
+        GLOBAL_TELEMETRY.flush_json(Path("telemetry") / "server_runtime.json")
+    except Exception:
+        pass
+
+
+def system_perf_snapshot() -> dict[str, Any]:
+    rss_mb = 0.0
+    try:
+        if _HAS_RESOURCE:
+            rss_kb = float(_resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss)
+            if rss_kb > 10_000_000:
+                rss_mb = round(rss_kb / (1024.0 * 1024.0), 3)
+            else:
+                rss_mb = round(rss_kb / 1024.0, 3)
+    except Exception:
+        pass
+
+    load_1m = 0.0
+    try:
+        load_1m = round(float(os.getloadavg()[0]), 3)
+    except Exception:
+        pass
+
+    import platform
+
+    return {
+        "pid": os.getpid(),
+        "threads": threading.active_count(),
+        "cpu_count": os.cpu_count() or 0,
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "rss_mb": rss_mb,
+        "load_1m": load_1m,
+    }
+
+
+def json_line(resp: dict[str, Any]) -> bytes:
+    return (json.dumps(resp, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def read_line_from_socket(conn: socket.socket, recv_sz: int, timeout: float = 10.0) -> str:
+    conn.settimeout(timeout)
+    data = bytearray()
+    while True:
+        chunk = conn.recv(recv_sz)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if b"\n" in data:
+            break
+    return data.decode("utf-8", errors="replace").strip()
+
     ]]></source_code>
   </file>
 
@@ -2458,9 +2962,9 @@ __all__ = ["GLOBAL_TELEMETRY", "TelemetryAggregator", "orn_probe"]
     ]]></source_code>
   </file>
 
-  <file path="engine/thinking/assembler.py" role="Dionísio" complexity="10" status="stable">
+  <file path="engine/thinking/assembler.py" role="Dionísio" complexity="16" status="stable">
     <classes>CodeAssembler</classes>
-    <functions>_extract_code, _extract_markdown_code, _run_isolated_script, _save_to_drawer, __init__, assemble, _refine_loop</functions>
+    <functions>_decompose_task_parts, _render_parts_plan, _extract_code, _extract_markdown_code, _run_isolated_script, _save_to_drawer, __init__, assemble, _refine_loop</functions>
     <source_code><![CDATA[
 # -*- coding: utf-8 -*-
 """
@@ -2503,6 +3007,9 @@ if TYPE_CHECKING:
 
 _PROMPT_GERAR = """\
 [TASK] Escreva código Python correto e funcional para: {task}
+Plano de execução em partes:
+{parts_plan}
+
 Regras:
 - Apenas código Python válido, sem texto explicativo antes do bloco.
 - Envolva o código em [code-begin] ... [code-end].
@@ -2514,6 +3021,8 @@ _PROMPT_FIX = """\
 [TASK] Corrija o código Python abaixo.
 
 Tarefa original: {task}
+Plano de execução em partes:
+{parts_plan}
 
 Esqueleto atual (resumo):
 {skeleton}
@@ -2531,6 +3040,7 @@ Regras:
 # Limite de execução isolada
 # ---------------------------------------------------------------------------
 _RUN_TIMEOUT: int = 8   # segundos — conservador para N2808
+_ASSEMBLER_MAX_TOKENS: int = 640
 
 
 # ---------------------------------------------------------------------------
@@ -2595,18 +3105,15 @@ class CodeAssembler:
         issues: list[str] = []
         attempts  = 0
         last_path: Path | None = None
+        task_parts = _decompose_task_parts(task)
+        parts_plan = _render_parts_plan(task_parts)
 
         for attempt in range(self._max_retries + 1):
             attempts = attempt + 1
 
             # ── 1. Gerar / corrigir via LLM ───────────────────────────
             if attempt == 0:
-                prompt = _PROMPT_GERAR.format(task=task)
-            else:
-                skeleton = CognitiveReducer.reduce_file(
-                    "candidate.py", code, max_chars=400
-                )
-                errors_text = "\n".join(f"  • 
+                prompt = _PROMPT_
     ]]></source_code>
   </file>
 
@@ -3332,8 +3839,9 @@ class CodeDrawer:
     ]]></source_code>
   </file>
 
-  <file path="engine/tools/code_sandbox.py" role="Hades" complexity="8" status="stable">
-    <functions>safe_codegen_dir, stage_code, lint_python_text, diagnose_python_file</functions>
+  <file path="engine/tools/code_sandbox.py" role="Hades" complexity="39" status="stable">
+    <classes>_Visitor</classes>
+    <functions>safe_codegen_dir, stage_code, lint_python_text, _detect_incomplete_blocks, _detect_mutable_defaults, _detect_probable_undefined_names, _extract_assigned_names, diagnose_python_file, visit_Import, visit_ImportFrom, visit_FunctionDef, visit_ClassDef, visit_Assign, visit_AnnAssign, visit_For, visit_Name</functions>
     <source_code><![CDATA[
 # -*- coding: utf-8 -*-
 """Sandbox local para staging e diagnóstico de código (stdlib only)."""
@@ -3341,6 +3849,7 @@ class CodeDrawer:
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
 import time
 from pathlib import Path
@@ -3379,18 +3888,76 @@ def lint_python_text(text: str) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ExceptHandler) and node.type is None:
             issues.append(f"L{node.lineno}: bare except detectado.")
+        if isinstance(node, ast.ExceptHandler) and isinstance(node.type, ast.Name) and node.type.id == "Exception":
+            issues.append(f"L{node.lineno}: except Exception genérico; prefira exceções específicas.")
         if isinstance(node, ast.ImportFrom) and any(n.name == "*" for n in node.names):
             issues.append(f"L{node.lineno}: import * não permitido.")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"eval", "exec"}:
             issues.append(f"L{node.lineno}: uso de {node.func.id} não permitido.")
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)):
+            if isinstance(node.right, ast.Constant) and node.right.value == 0:
+                issues.append(f"L{node.lineno}: possível divisão/módulo por zero.")
+
+    issues.extend(_detect_incomplete_blocks(tree))
+    issues.extend(_detect_mutable_defaults(tree))
+    issues.extend(_detect_probable_undefined_names(tree))
 
     return issues
 
 
-def diagnose_python_file(path: Path) -> list[str]:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    return lint_python_text(text)
+def _detect_incomplete_blocks(tree: ast.AST) -> list[str]:
+    issues: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = [stmt for stmt in node.body if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Constant) or not isinstance(stmt.value.value, str)]
+            if len(body) == 1 and isinstance(body[0], ast.Pass):
+                issues.append(f"L{node.lineno}: função '{node.name}' está incompleta (apenas pass).")
+        if isinstance(node, ast.ClassDef):
+            body = [stmt for stmt in node.body if not isinstance(stmt, ast.Expr) or not isinstance(stmt.value, ast.Constant) or not isinstance(stmt.value.value, str)]
+            if len(body) == 1 and isinstance(body[0], ast.Pass):
+                issues.append(f"L{node.lineno}: classe '{node.name}' está incompleta (apenas pass).")
+    return issues
 
+
+def _detect_mutable_defaults(tree: ast.AST) -> list[str]:
+    issues: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for default in node.args.defaults:
+            if isinstance(default, (ast.List, ast.Dict, ast.Set)):
+                issues.append(f"L{default.lineno}: argumento com default mutável em '{node.name}'.")
+        for default in node.args.kw_defaults:
+            if isinstance(default, (ast.List, ast.Dict, ast.Set)):
+                issues.append(f"L{default.lineno}: kw-default mutável em '{node.name}'.")
+    return issues
+
+
+def _detect_probable_undefined_names(tree: ast.AST) -> list[str]:
+    """Heurística simples para detectar nomes usados sem definição local/import."""
+    builtins_set = set(dir(builtins))
+    declared: set[str] = set()
+    used: dict[str, int] = {}
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                declared.add(alias.asname or alias.name.split(".")[0])
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                declared.add(alias.asname or alias.name)
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            declared.add(node.name)
+            for arg in [*node.args.args, *node.args.kwonlyargs]:
+                declared.add(arg.arg)
+            if node.args.vararg:
+                declared.add(node.arg
     ]]></source_code>
   </file>
 
@@ -3407,7 +3974,7 @@ class ConceptMapper:
     ]]></source_code>
   </file>
 
-  <file path="engine/tools/crawler.py" role="Dionísio" complexity="99" status="stable">
+  <file path="engine/tools/crawler.py" role="Dionísio" complexity="92" status="stable">
     <classes>CrawlerResult, _EthicalScraper, OrnCrawler</classes>
     <functions>_get_requests, _get_bs4, _get_local_index, _make_session, _clean_wiki_html, search_wikipedia, search_stackoverflow, search_arxiv, search_pypi, search_github, search_generic, ok, to_prompt_block, __init__, can_fetch, __init__, _is_code_query, _rank_local_source_ids, _rate_wait, _cache_key, _cached, search, _auto_search, clear_cache, check_deps, _score</functions>
     <source_code><![CDATA[
@@ -3444,26 +4011,23 @@ God: Hermes — mensageiro, veloz e ético.
 
 from __future__ import annotations
 
-# [DOX-UNUSED] import json
 import time
 import urllib.parse
 import urllib.robotparser
 import xml.etree.ElementTree as ET
+import re
+import gc  # Adicionado para limpeza agressiva de RAM
 from dataclasses import dataclass
 from typing import Optional
-import re
 
 # ---------------------------------------------------------------------------
-# Importação lazy de dependências opcionais — carregadas UMA VEZ e cacheadas.
-# Antes: _get_requests() executava `import requests` a cada chamada (~7x/run),
-# re-carregando certifi + urllib3 no N2808 a cada vez (76 hits no profiler).
-# Agora: import acontece só no primeiro acesso; demais chamadas lêem a variável.
+# Importação lazy de dependências opcionais
 # ---------------------------------------------------------------------------
 
-_requests_cached:    object | None = None   # módulo requests ou None
-_http_adapter_cached: object | None = None   # HTTPAdapter ou None
-_retry_cached:        object | None = None   # Retry ou None
-_bs4_cached:          object | None = None   # BeautifulSoup ou None
+_requests_cached:    object | None = None
+_http_adapter_cached: object | None = None
+_retry_cached:        object | None = None
+_bs4_cached:          object | None = None
 _requests_loaded      = False
 _bs4_loaded           = False
 
@@ -3508,12 +4072,11 @@ def _get_local_index():
 
 @dataclass
 class CrawlerResult:
-    """Resultado unificado de qualquer fonte."""
-    source:  str               # "wikipedia", "stackoverflow", etc.
-    query:   str               # termo buscado
+    source:  str
+    query:   str
     title:   str = ""
     url:     str = ""
-    context: str = ""          # texto limpo, pronto para injeção no prompt
+    context: str = ""
     error:   Optional[str] = None
 
     @property
@@ -3521,10 +4084,6 @@ class CrawlerResult:
         return self.error is None and bool(self.context.strip())
 
     def to_prompt_block(self, max_chars: int = 2000) -> str:
-        """Formata para injeção no prompt do modelo.
-
-        Usa contrato [CTX-BEGIN]/[CTX-END] alinhado com executive.py e cli.py.
-        """
         if not self.ok:
             return ""
         return (
@@ -3537,7 +4096,7 @@ class CrawlerResult:
 
 
 # ---------------------------------------------------------------------------
-# Sessão HTTP resiliente (reciclado de OLINE BaseCollector v1.1)
+# Sessão HTTP resiliente
 # ---------------------------------------------------------------------------
 
 def _make_session(user_agent: str = "ORN-Crawler/1.0 (local, ethical, non-commercial)",
@@ -3551,7 +4110,28 @@ def _make_session(user_agent: str = "ORN-Crawler/1.0 (local, ethical, non-commer
     s.mount("http://",  HTTPAdapter(max_retries=retries))
     s.headers.update({
         "User-Agent": user_agent,
-        "Accept-Language": "
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Accept": "application/json, text/html;q=0.9, */*;q=0.8",
+    })
+    if not verify_ssl:
+        s.verify = False
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    return s
+
+
+# ---------------------------------------------------------------------------
+# EthicalScraper — robots.txt
+# ---------------------------------------------------------------------------
+
+class _EthicalScraper:
+    def __init__(self, user_agent: str = "ORN-Crawler/1.0"):
+        self._cache: dict[str, urllib.robotparser.RobotFileParser] = {}
+        self.user_agent = user_agent
+
+    def can_fetch(self, url: str) -> bool:
+        try:
+           
     ]]></source_code>
   </file>
 
@@ -3713,9 +4293,9 @@ class GraphInspector:
     ]]></source_code>
   </file>
 
-  <file path="engine/tools/inverted_index.py" role="Dionísio" complexity="29" status="stable">
+  <file path="engine/tools/inverted_index.py" role="Dionísio" complexity="30" status="stable">
     <classes>InvertedIndexBuilder, DocumentStore, InvertedIndexSearcher</classes>
-    <functions>encode_varint, decode_varint, __init__, add_document, finalize, write, __init__, get_doc_text, close, __init__, _load_vocab_binary_v3, _get_offset_and_df, _read_postings_with_tf_positions, _idf, search_bm25, _get_doc_length, _build_snippet, close, __enter__, __exit__</functions>
+    <functions>append_varint, decode_varint, __init__, _get_bucket, add_document, finalize, write, __init__, get_doc_text, close, __init__, _load_vocab_binary_v3, _get_offset_and_df, _read_postings_with_tf_positions, _idf, search_bm25, _get_doc_length, _build_snippet, close, __enter__, __exit__</functions>
     <source_code><![CDATA[
 # -*- coding: utf-8 -*-
 # engine/tools/inverted_index.py
@@ -3773,19 +4353,26 @@ _VOCAB_ENTRY_SIZE_V3 = struct.calcsize(_VOCAB_ENTRY_FMT_V3)  # 4+8+4 = 16 bytes
 # Varint encoding
 # ---------------------------------------------------------------------------
 
-def encode_varint(n: int) -> bytes:
-    """Codifica inteiro não-negativo em varint (1-9 bytes)."""
-    out = bytearray()
-    while True:
-        b = n & 0x7F
-        n >>= 7
-        if n:
-            out.append(b | 0x80)
-        else:
-            out.append(b)
-            break
-    return bytes(out)
+#def encode_varint(n: int) -> bytes:
+#    """Codifica inteiro não-negativo em varint (1-9 bytes)."""
+#    out = bytearray()
+#    while True:
+#        b = n & 0x7F
+#        n >>= 7
+#        if n:
+#            out.append(b | 0x80)
+#        else:
+#            out.append(b)
+#            break
+#    return bytes(out)
 
+def append_varint(buf: bytearray, n: int) -> None:
+    if n < 0:
+        raise ValueError("varint exige inteiro não-negativo")
+    while n >= 0x80:
+        buf.append((n & 0x7F) | 0x80)
+        n >>= 7
+    buf.append(n)
 
 def decode_varint(data: bytes | mmap.mmap, pos: int) -> tuple[int, int]:
     """Decodifica varint em data[pos:]. Retorna (valor, próxima_posição)."""
@@ -3807,60 +4394,76 @@ def decode_varint(data: bytes | mmap.mmap, pos: int) -> tuple[int, int]:
 
 class InvertedIndexBuilder:
     def __init__(self) -> None:
-        # postings: token_id -> list of (doc_id, [positions...])
-        self.postings: dict[int, dict[int, list[int]]] = defaultdict(lambda: defaultdict(list))
-        self.doc_count: int = 0
-        # store document lengths for avgdl
-        self._doc_lengths: dict[int, int] = {}
+        # token_id -> doc_id -> positions
+        self.postings = {}
+        self._doc_lengths = {}
+        self._doc_ids_seen = set()
+
+        self._terms_added = 0
+        self._max_doc_id = -1
+
+    def _get_bucket(self, token_id: int):
+        b = self.postings.get(token_id)
+        if b is None:
+            b = {}
+            self.postings[token_id] = b
+        return b
 
     def add_document(self, doc_id: int, tokens) -> None:
-        """tokens: iterable of term ids (int). We record positions starting at 1."""
         pos = 1
         length = 0
+
+        # acumula local → evita tocar estrutura global toda hora
+        per_doc = {}
+
         for t in tokens:
             t = int(t)
-            self.postings[t][doc_id].append(pos)
+            lst = per_doc.get(t)
+            if lst is None:
+                lst = []
+                per_doc[t] = lst
+            lst.append(pos)
             pos += 1
             length += 1
+
+        for token_id, positions in per_doc.items():
+            bucket = self._get_bucket(token_id)
+            bucket[doc_id] = positions
+
         self._doc_lengths[doc_id] = length
-        if doc_id > self.doc_count:
-            self.doc_count = doc_id
+        self._doc_ids_seen.add(doc_id)
+        self._terms_added += length
+
+        if doc_id > self._max_doc_id:
+            self._max_doc_id = doc_id
 
     def finalize(self) -> None:
-        # sort positions and ensure posting doc-ids are sorted lists
-        for token, docs in list(self.postings.items()):
-            for d in list(docs.keys()):
-                docs[d].sort()
+        # opcional agora — já ordenamos no write
+        pass
 
     def write(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
-        vocab_entries: list[tuple[int, int, int]] = []  # token_id, offset, df
-        postings_buf = bytearray()
 
-        # write postings: tokens sorted by token_id
+        from engine.native.varint_helper import encode_varint
+
+        postings_buf = bytearray()
+        vocab_entries = []
+
+        av = encode_varint  # alias local = mais rápido
+
         for token_id in sorted(self.postings.keys()):
             docs_map = self.postings[token_id]
-            docs_items = sorted(docs_map.items())  # list of (doc_id, positions)
+            docs_items = sorted(docs_map.items())
+
             offset = len(postings_buf)
             df = len(docs_items)
-            vocab_entries.append((int(token_id), offset, df))
+            vocab_entries.append((token_id, offset, df))
 
-            # length-prefix (n_docs)
-            postings_buf += encode_varint(df)
+            av(postings_buf, df)
+
             prev_doc = 0
             for doc_id, positions in docs_items:
-                postings_buf += encode_varint(doc_id - prev_doc)
-                prev_doc = doc_id
-                # tf
-                tf = len(positions)
-                postings_buf += encode_varint(tf)
-                # positions: delta-encode within document
-                prev_pos = 0
-                for p in positions:
-                    postings_buf += encode_varint(p - prev_pos)
-                    prev_pos = p
-
-        with open(path / "postings.bin", "wb
+                av(posti
     ]]></source_code>
   </file>
 
@@ -3892,7 +4495,159 @@ class KiwixSearcher:
     ]]></source_code>
   </file>
 
-  <file path="engine/tools/local_index.py" role="Unknown" complexity="0" status="unknown">
+  <file path="engine/tools/local_index.py" role="Dionísio" complexity="210" status="stable">
+    <classes>TokenizerBridge, LocalIndexCache, LocalResult, _EntryResult, _BuildAccumulator, _ResumeState, _DecodedBody, FakeCommand, FakeCtx</classes>
+    <functions>_normalize_text_for_match, _trigrams_for, _similarity_ratio, _normalize_math_text, _extract_lang_from_attrs, _extract_code_blocks, _restore_code_placeholders, _truncate_respecting_blocks, _strip_html, _norm_key, _deduplicate_heading, _deduplicate_short_top, _truncate_lines, _clean_body, _like_escape, _compress, _decompress, _extract_code_blocks_for_search, _canonical_query_languages, _score_code_only_match, _format_code_only_body, _format_snippet_for_terminal, _find_term_positions, _safe_extend_right, _highlight_words, _build_snippet_from_positions, _leading_snippet, _zim_to_source_id, _source_id_to_db, _find_zim_for_source, _read_entry_content, _iter_zim_entries, _process_entry, _drain_futures, _flush_content, _commit_batch, _init_db, _check_resume, _cleanup_stale, build_index, _simple_query_tokens, _fuzzy_title_search, _harvest_candidates, _decode_blob, _title_boost, _score_candidate, _assemble_result, search_local, index_info, list_indexes, _read_zim_header, probe_zim, diagnose_zim, _cli_main, _code_repl, _math_repl, _server_available, _server_tokenize, _server_detokenize, get_gguf_path, get_vocab, text_to_bytes, bytes_to_text, get, evict, preload, __init__, ok, get_snippet, to_prompt_block</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/tools/local_index.py
+
+from __future__ import annotations
+
+import argparse
+import array
+import concurrent.futures
+import difflib
+import hashlib
+import html as _html_lib
+import logging
+import os
+import re
+import sqlite3
+import struct
+import time
+import unicodedata
+from dataclasses import dataclass, field
+from pathlib import Path
+from threading import Lock
+from typing import Iterator, List, Optional, Tuple
+
+from engine.tools.inverted_index import InvertedIndexBuilder, InvertedIndexSearcher
+
+# ---------------------------------------------------------------------------
+# Config / constantes
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger("engine.tools.local_index")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+ZIM_DIR   = Path(os.environ.get("SICDOX_ZIM_DIR",   "data/zim"))
+INDEX_DIR = Path(os.environ.get("SICDOX_INDEX_DIR", "data/index"))
+
+_DEFAULT_GGUF  = r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto_OIA\olDox222RN\ORN\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+_GGUF_PATH_ENV = "SICDOX_GGUF"
+
+# ---------------------------------------------------------------------------
+# Regexes de módulo
+# ---------------------------------------------------------------------------
+
+_RE_SCRIPT = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+_RE_NAV    = re.compile(
+    r'<[^>]*(navbox|mw-toc|mw-jump|sidebar|reflist)[^>]*>.*?</\w+>',
+    re.DOTALL | re.IGNORECASE,
+)
+_RE_CODE   = re.compile(
+    r"(?P<open><(?P<tag>pre|code|syntaxhighlight|source|math|math-display)"
+    r"(?P<attrs>[^>]*)>)(?P<body>.*?)(?P<close></(?P=tag)>)",
+    re.DOTALL | re.IGNORECASE,
+)
+_RE_TAG    = re.compile(r"<[^>\n]+>")
+_RE_ENTITY = re.compile(r"&(?:[a-zA-Z]{2,8}|#\d{1,6});")
+_RE_MULTI  = re.compile(r"[ \t]{2,}")
+_RE_NEWL   = re.compile(r"\n{3,}")
+_RE_URL    = re.compile(r"https?://\S+")
+
+_CODE_BLOCK_SEARCH_RE = re.compile(
+    r"\[CODE-BEGIN\s*(?P<lang>[^\]\n]*)\]\n?(?P<body>.*?)\n?\[CODE-END\]",
+    re.DOTALL | re.IGNORECASE,
+)
+
+_LANGUAGE_ALIASES: dict[str, str] = {
+    "py": "python",    "python": "python",
+    "js": "javascript","javascript": "javascript",
+    "ts": "typescript","typescript": "typescript",
+    "java": "java",
+    "c": "c",
+    "cpp": "cpp",      "c++": "cpp",
+    "csharp": "csharp","cs": "csharp",
+    "go": "go",        "golang": "go",
+    "rust": "rust",
+    "rb": "ruby",      "ruby": "ruby",
+    "php": "php",
+    "swift": "swift",
+    "kotlin": "kotlin",
+    "scala": "scala",
+}
+
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _HAS_RAPIDFUZZ = True
+except Exception:
+    _fuzz = None
+    _HAS_RAPIDFUZZ = False
+
+# Pesos de scoring
+_SCORE_WEIGHTS_NORMAL = dict(title_boost=120.0, early_density=300.0, density=120.0, tf=30.0,  front_bonus=80.0)
+_SCORE_WEIGHTS_CODE   = dict(title_boost=45.0,  early_density=420.0, density=220.0, tf=55.0,  front_bonus=20.0)
+
+_ZIM_MAGIC       = 0x044D495A
+_ZIM_HEADER_SIZE = 80
+
+
+# ===========================================================================
+# § Normalização de texto
+# ===========================================================================
+
+def _normalize_text_for_match(s: str) -> str:
+    if not s:
+        return ""
+    s = s.lower().strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", s)
+
+
+def _trigrams_for(s: str) -> set[str]:
+    s = _normalize_text_for_match(s)
+    if not s:
+        return set()
+    padded = f"  {s} "
+    return {padded[i : i + 3] for i in range(len(padded) - 2)}
+
+
+def _similarity_ratio(a: str, b: str) -> float:
+    if _HAS_RAPIDFUZZ:
+        return _fuzz.token_sort_ratio(a, b) / 100.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _normalize_math_text(text: str) -> str:
+    if not text:
+        return ""
+    compact = " ".join(ln.strip() for ln in text.splitlines() if ln.strip())
+    compact = re.sub(r"\s+", " ", compact).strip()
+    m = re.search(r"\{\\displaystyle\s*(.+)\}\s*$", compact)
+    if m and m.group(1).strip():
+        compact = m.group(1).strip()
+    compact = re.sub(r"\s+([\)\]\}])", r"\1", compact)
+    compact = re.sub(r"([\(\[\{])\s+",  r"\1", compact)
+    return compact
+
+
+# ===========================================================================
+# § HTML → texto
+# ===========================================================================
+
+def _extract_lang_from_attrs(attrs: str) -> str:
+    data_lang = re.search(r'data-lang=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+    if data_lang:
+        return data_lang.group(1).lower()
+    cls_m = re.search(r'class=["\']([^"\']+)["\']', attrs, re.IGNORECASE)
+    if cls_m:
+        for p in reversed(re.split(r"[^\w+-]+", cls_m.group(1))):
+            if p and len(p) <= 20 and re.match(r"^[a-zA-Z0-9_+-]+$", 
+    ]]></source_code>
   </file>
 
   <file path="engine/tools/server_client.py" role="Zeus" complexity="25" status="stable">
@@ -4080,6 +4835,467 @@ HTML = r"""<!DOCTYPE html>
   </file>
 
   <file path="engine/tools/__init__.py" role="Dionísio" complexity="0" status="stable">
+  </file>
+
+  <file path="engine/tools/local_index/_build.py" role="Dionísio" complexity="54" status="stable">
+    <classes>_EntryResult, _ResumeState, _BuildAccumulator</classes>
+    <functions>zim_to_source_id, source_id_to_db, find_zim_for_source, _iter_zim_entries, _is_html, _decode_attr, _read_entry_content, _process_entry, _init_db, _check_resume, _cleanup_stale, _drain_futures, _flush_content, _commit_batch, build_index</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/tools/local_index/_build.py
+"""
+ORN — LocalIndex / Build (Hefesto)
+Constrói o banco SQLite tokenizado + índice invertido opcional a partir de ZIPs ZIM.
+
+Responsabilidades deste módulo:
+  - Iterar entradas de um arquivo .zim  (_iter_zim_entries)
+  - Processar cada entrada em worker thread (_process_zim_entry)
+  - Montar/retomar o banco SQLite (_init_db, _check_resume, _cleanup_stale)
+  - Drenar o pool de futures e gravar em lote (_drain_futures)
+  - Orquestrar o pipeline completo (build_index)
+
+OSL-4:  Cada função faz uma coisa.
+OSL-7:  build_index() retorna Path ou levanta — sem retorno silencioso None.
+OSL-15: Erros em workers individuais são ignorados (continue), não derrubam o build.
+OSL-18: stdlib + dependências de projeto; pyzim/pyzstd importados lazy.
+"""
+
+from __future__ import annotations
+
+import array
+import concurrent.futures
+import hashlib
+import logging
+import os
+import re
+import sqlite3
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterator, List, Optional
+
+from engine.telemetry.core import orn_span
+from engine.tools.inverted_index import InvertedIndexBuilder
+
+# ---------------------------------------------------------------------------
+# Config herdada do pacote pai (injetada por __init__.py ou definida aqui
+# como fallback para uso standalone)
+# ---------------------------------------------------------------------------
+
+try:
+    from engine.tools.local_index._config import ZIM_DIR, INDEX_DIR
+except ImportError:
+    ZIM_DIR  = Path(os.environ.get("SICDOX_ZIM_DIR",  "data/zim"))
+    INDEX_DIR = Path(os.environ.get("SICDOX_INDEX_DIR", "data/index"))
+
+logger = logging.getLogger("engine.tools.local_index.build")
+
+
+# ---------------------------------------------------------------------------
+# Helpers de path (sem lógica de negócio)
+# ---------------------------------------------------------------------------
+
+def zim_to_source_id(zim_path: str | Path) -> str:
+    """Deriva um source_id estável a partir do stem do arquivo ZIM."""
+    name = Path(zim_path).stem
+    name = name.replace("-", "_").replace(".", "_")
+    name = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+    return re.sub(r"_+", "_", name).strip("_").lower()
+
+
+def source_id_to_db(source_id: str) -> Path:
+    return INDEX_DIR / f"{source_id}.db"
+
+
+def find_zim_for_source(source_id: str) -> Optional[Path]:
+    if ZIM_DIR.exists():
+        for zim in ZIM_DIR.glob("*.zim"):
+            if zim_to_source_id(zim) == source_id:
+                return zim
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Iterador de entradas ZIM
+# ---------------------------------------------------------------------------
+
+def _iter_zim_entries(
+    zim_path: str,
+    verbose: bool = True,
+    start_scanned: int = 0,
+) -> Iterator[tuple[int, str, str, str]]:
+    """Itera entradas HTML válidas de um ZIM.
+
+    Yields:
+        (scanned_idx, title, path, html_content)
+    """
+    import pyzim  # lazy — OSL-3
+
+    p = Path(zim_path).absolute()
+    stats = dict(scanned=0, yielded=0, redirect=0, non_html=0, empty=0, error=0)
+
+    with pyzim.Zim.open(str(p), mode="r") as zim:
+        for entry in zim.iter_entries():
+            stats["scanned"] += 1
+            idx = stats["scanned"]
+
+            if start_scanned and idx <= start_scanned:
+                continue
+
+            if verbose and idx % 5000 == 0:
+                logger.info(
+                    "[ZIM] scanned=%d yielded=%d redirect=%d non_html=%d empty=%d",
+                    idx, stats["yielded"], stats["redirect"],
+                    stats["non_html"], stats["empty"],
+                )
+
+            if getattr(entry, "is_redirect", False):
+                stats["redirect"] += 1
+                continue
+
+            ns = getattr(entry, "namespace", None)
+            if ns is not None:
+                if isinstance(ns, bytes):
+                    ns = ns.decode("utf-8", errors="ignore")
+                if str(ns).strip() in ("I", "-", "X"):
+                    stats["non_html"] += 1
+                    continue
+
+            content_bytes = _read_entry_content(entry)
+            if not content_bytes:
+                stats["empty"] += 1
+                continue
+
+            if not _is_html(content_bytes):
+                stats["non_html"] += 1
+                continue
+
+            try:
+                title = _decode_attr(entry, "title") or ""
+                path  = _decode_attr(entry, "url") or _decode_attr(entry, "path") or ""
+                if not title:
+                    title = path.split("/")[-1].replace("_", " ").strip()
+                html = content_bytes.decode("utf-8", errors="replace")
+                stats["yielded"] += 1
+                yield idx, title, path, html
+            except Exception:
+                stats["error"] += 1
+                continue
+
+    if verbose:
+        logger.info(
+            "[ZIM] total: scanned=%d yielded=%d redirect=%d non_html=%d empty=%d
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/local_index/_search.py" role="Dionísio" complexity="59" status="stable">
+    <classes>LocalResult, _DecodedBody</classes>
+    <functions>_find_term_positions, _safe_extend_right, _highlight_words, _build_snippet_from_positions, _leading_snippet, _normalize_source_id, _simple_query_tokens, _fuzzy_title_search, _harvest_candidates, _decode_blob, _title_boost, _score_candidate, _assemble_result, search_local, index_info, list_indexes, __init__, ok, get_snippet, to_prompt_block</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/tools/local_index/_search.py
+"""
+ORN — LocalIndex / Search
+Pipeline de busca local sobre o banco SQLite tokenizado.
+
+Fases de search_local:
+  1. Exact title match   — retorno imediato se título == query
+  2. Candidate harvest   — IDs via InvertedIndex + LIKE + fuzzy title
+  3. Scoring             — cada candidato recebe score BM25-like
+  4. Result assembly     — top-N candidatos viram LocalResult
+
+Tipos exportados: LocalResult
+Funções exportadas: search_local, index_info, list_indexes
+
+OSL-4:  Cada função faz uma coisa.
+OSL-7:  search_local() sempre retorna lista (nunca None).
+OSL-15: Erros de DB/decode viram candidatos ignorados, não exceções.
+OSL-18: stdlib + dependências de projeto.
+"""
+
+from __future__ import annotations
+
+import array
+import hashlib
+import logging
+import re
+import sqlite3
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+logger = logging.getLogger("engine.tools.local_index.search")
+
+# ---------------------------------------------------------------------------
+# Imports lazy de dependências do pacote (OSL-3)
+# ---------------------------------------------------------------------------
+# Resolvidos em tempo de chamada para evitar importação circular.
+#
+#   from engine.tools.local_index._cache     import LocalIndexCache
+#   from engine.tools.local_index._tokenizer import TokenizerBridge
+#   from engine.tools.local_index._text_utils import (
+#       normalize_text_for_match, trigrams_for, similarity_ratio,
+#       decompress, clean_body, like_escape,
+#       score_code_only_match, format_code_only_body,
+#   )
+#   from engine.tools.local_index._config import ZIM_DIR, INDEX_DIR
+#   from engine.tools.local_index._build  import (
+#       zim_to_source_id, source_id_to_db, find_zim_for_source
+#   )
+
+# ---------------------------------------------------------------------------
+# Constantes de scoring
+# ---------------------------------------------------------------------------
+
+_SCORE_WEIGHTS_NORMAL = dict(
+    title_boost=120.0,
+    early_density=300.0,
+    density=120.0,
+    tf=30.0,
+    front_bonus=80.0,
+)
+_SCORE_WEIGHTS_CODE = dict(
+    title_boost=45.0,
+    early_density=420.0,
+    density=220.0,
+    tf=55.0,
+    front_bonus=20.0,
+)
+
+
+# ===========================================================================
+# LocalResult — tipo de retorno de search_local
+# ===========================================================================
+
+class LocalResult:
+    """Resultado de uma busca local com snippet extraível.
+
+    Attributes:
+        source: Identificador da fonte (ex: "wikipedia_en-local").
+        title:  Título do artigo.
+        body:   Texto limpo do artigo.
+        path:   Caminho interno no ZIM.
+    """
+
+    __slots__ = ("source", "title", "body", "path")
+
+    def __init__(self, source: str, title: str, body: str, path: str = "") -> None:
+        self.source = source
+        self.title  = title
+        self.body   = body
+        self.path   = path
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.title and self.body.strip())
+
+    # ------------------------------------------------------------------
+    # Snippet com highlight de termos e proteção de blocos
+    # ------------------------------------------------------------------
+
+    def get_snippet(self, query: str = "", max_chars: int = 1200, n_snippets: int = 3) -> str:
+        """Retorna trecho relevante do body com termos da query em **negrito**.
+
+        Nunca corta um bloco [CODE-BEGIN] ou [MATH-BEGIN] no meio.
+        """
+        if not self.ok:
+            return ""
+
+        text = self.body
+        q    = (query or "").strip()
+
+        if q:
+            positions = _find_term_positions(text, q)
+            if positions:
+                return _build_snippet_from_positions(text, positions, q, max_chars, n_snippets)
+
+        return _leading_snippet(text, max_chars)
+
+    def to_prompt_block(self, max_chars: int = 600, query: str = "") -> str:
+        if not self.ok:
+            return ""
+        snippet = self.get_snippet(query, max_chars)
+        return f"[CTX-BEGIN]\nscope: {self.source} | {self.title}\n{snippet}\n[CTX-END]\n"
+
+
+# ---------------------------------------------------------------------------
+# Helpers de snippet
+# ---------------------------------------------------------------------------
+
+def _find_term_positions(text: str, q: str) -> list[int]:
+    """Posições de ocorrência de cada palavra da query em `text`."""
+    qlower = q.lower()
+    words  = re.findall(r"[A-Za-z0-9_]{2,}", qlower)
+    positions: list[int] = []
+
+    if words:
+        for w in words:
+            start = 0
+            while True:
+                idx = text.lower().find(w, start)
+                if idx == -1:
+                    break
+                positions.append(idx)
+                start = idx + len(w)
+    else:
+        idx = text.lower().find(qlower)
+        if idx != -1:
+            positions.append(idx)
+
+    return sorted
+    ]]></source_code>
+  </file>
+
+  <file path="engine/tools/local_index/_text_utils.py" role="Dionísio" complexity="49" status="stable">
+    <functions>normalize_text_for_match, trigrams_for, similarity_ratio, normalize_math_text, extract_code_blocks, _extract_lang_from_attrs, restore_code_placeholders, strip_html, _truncate_respecting_blocks, clean_body, _norm_key, _deduplicate_heading, _deduplicate_short_top, _truncate_lines, like_escape, compress, decompress, extract_code_blocks_for_search, canonical_query_languages, score_code_only_match, format_code_only_body, format_snippet_for_terminal, _code_repl, _math_repl</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+# engine/tools/local_index/_text_utils.py
+"""
+ORN — LocalIndex / Text Utilities
+Funções puras de transformação e normalização de texto.
+
+Grupos de responsabilidade:
+  § Normalização       — normalize_text_for_match, trigrams_for,
+                         similarity_ratio, normalize_math_text
+  § HTML → texto       — strip_html, extract_code_blocks,
+                         restore_code_placeholders
+  § Limpeza de corpo   — clean_body, like_escape
+  § Compressão         — compress, decompress
+  § Código (busca)     — extract_code_blocks_for_search,
+                         canonical_query_languages,
+                         score_code_only_match, format_code_only_body
+  § Formatação CLI     — format_snippet_for_terminal
+
+OSL-4:  Cada função faz uma coisa. Sem efeitos colaterais.
+OSL-15: Funções de parse nunca levantam — retornam "" / [] / set() em falha.
+OSL-18: stdlib + rapidfuzz opcional; pyzstd e pyzim importados lazy.
+"""
+
+from __future__ import annotations
+
+import difflib
+import html as _html_lib
+import logging
+import re
+import unicodedata
+from typing import Optional
+
+logger = logging.getLogger("engine.tools.local_index.text_utils")
+
+# ---------------------------------------------------------------------------
+# Aliases de linguagem (compartilhados com _search.py)
+# ---------------------------------------------------------------------------
+
+LANGUAGE_ALIASES: dict[str, str] = {
+    "py": "python",   "python": "python",
+    "js": "javascript", "javascript": "javascript",
+    "ts": "typescript", "typescript": "typescript",
+    "java": "java",
+    "c": "c",
+    "cpp": "cpp",     "c++": "cpp",
+    "csharp": "csharp", "cs": "csharp",
+    "go": "go",       "golang": "go",
+    "rust": "rust",
+    "rb": "ruby",     "ruby": "ruby",
+    "php": "php",
+    "swift": "swift",
+    "kotlin": "kotlin",
+    "scala": "scala",
+}
+
+# ---------------------------------------------------------------------------
+# Regexes de módulo (compiladas uma vez)
+# ---------------------------------------------------------------------------
+
+_RE_SCRIPT  = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+_RE_NAV     = re.compile(
+    r'<[^>]*(navbox|mw-toc|mw-jump|sidebar|reflist)[^>]*>.*?</\w+>',
+    re.DOTALL | re.IGNORECASE,
+)
+_RE_CODE    = re.compile(
+    r"(?P<open><(?P<tag>pre|code|syntaxhighlight|source|math|math-display)"
+    r"(?P<attrs>[^>]*)>)(?P<body>.*?)(?P<close></(?P=tag)>)",
+    re.DOTALL | re.IGNORECASE,
+)
+_RE_TAG     = re.compile(r"<[^>\n]+>")
+_RE_ENTITY  = re.compile(r"&(?:[a-zA-Z]{2,8}|#\d{1,6});")
+_RE_MULTI   = re.compile(r"[ \t]{2,}")
+_RE_NEWL    = re.compile(r"\n{3,}")
+_RE_URL     = re.compile(r"https?://\S+")
+
+_CODE_BLOCK_SEARCH_RE = re.compile(
+    r"\[CODE-BEGIN\s*(?P<lang>[^\]\n]*)\]\n?(?P<body>.*?)\n?\[CODE-END\]",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# rapidfuzz é opcional — fallback para difflib
+try:
+    from rapidfuzz import fuzz as _fuzz
+    _HAS_RAPIDFUZZ = True
+except Exception:
+    _fuzz = None
+    _HAS_RAPIDFUZZ = False
+
+
+# ===========================================================================
+# § Normalização
+# ===========================================================================
+
+def normalize_text_for_match(s: str) -> str:
+    """Lowercase + strip de acentos + colapso de espaços.
+
+    Nunca levanta — retorna "" para entrada inválida.
+    """
+    if not s:
+        return ""
+    s = s.lower().strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", s)
+
+
+def trigrams_for(s: str) -> set[str]:
+    """Conjunto de trigramas de `s` (normalizado com padding de bordas)."""
+    s = normalize_text_for_match(s)
+    if not s:
+        return set()
+    padded = f"  {s} "
+    return {padded[i : i + 3] for i in range(len(padded) - 2)}
+
+
+def similarity_ratio(a: str, b: str) -> float:
+    """Razão de similaridade [0.0, 1.0] entre duas strings."""
+    if _HAS_RAPIDFUZZ:
+        return _fuzz.token_sort_ratio(a, b) / 100.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def normalize_math_text(text: str) -> str:
+    """Compacta fórmulas LaTeX/MathML para exibição em terminal."""
+    if not text:
+        return ""
+    compact = " ".join(ln.strip() for ln in text.splitlines() if ln.strip())
+    compact = re.sub(r"\s+", " ", compact).strip()
+    m = re.search(r"\{\\displaystyle\s*(.+)\}\s*$", compact)
+    if m and m.group(1).strip():
+        compact = m.group(1).strip()
+    compact = re.sub(r"\s+([\)\]\}])", r"\1", compact)
+    compact = re.sub(r"([\(\[\{])\s+",  r"\1", compact)
+    return compact
+
+
+# ===========================================================================
+# § HTML → texto
+# ===========================================================================
+
+def extract_code_blocks(html: str) -> tuple[str, list[tuple[str, str]]]:
+    """Substitui blocos <pre>/<code>/<math> por placeholders.
+
+    Returns:
+        (html_sem_blocos, [(placeholder, representação_textual),
+    ]]></source_code>
   </file>
 
   <file path="engine/ui/colors.py" role="Dionísio" complexity="17" status="stable">
@@ -4368,9 +5584,166 @@ class Display:
   <file path="engine/ui/__init__.py" role="Dionísio" complexity="0" status="stable">
   </file>
 
-  <file path="engine/web/web_server.py" role="Dionísio" complexity="24" status="stable">
-    <classes>ORNHandler, WebCLI</classes>
-    <functions>_decide_search, _parse_search_decision, _run_crawler, _query_infer_raw, log_message, _send, do_GET, do_POST, run, _start, _stop</functions>
+  <file path="engine/web/web_page.py" role="Dionísio" complexity="0" status="stable">
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""Carrega HTML estático da interface web ORN."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+_HTML_PATH = Path(__file__).with_name("static") / "index.html"
+HTML = _HTML_PATH.read_text(encoding="utf-8")
+
+
+    ]]></source_code>
+  </file>
+
+  <file path="engine/web/web_proxy.py" role="Dionísio" complexity="16" status="stable">
+    <functions>query_infer_raw, stream_infer_events, parse_search_decision, decide_search, run_crawler</functions>
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""Helpers de proxy HTTP->TCP para o servidor de inferência."""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import time
+from typing import Any
+
+STREAM_READ_TIMEOUT_S = float(os.getenv("ORN_WEB_STREAM_READ_TIMEOUT", "180"))
+STREAM_POLL_TIMEOUT_S = float(os.getenv("ORN_WEB_STREAM_POLL_TIMEOUT", "1.0"))
+
+
+def query_infer_raw(payload: bytes, host: str, infer_port: int) -> dict[str, Any] | None:
+    """Envia payload para o SiCDox Server e retorna dict ou None."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(3.0)
+            s.connect((host, infer_port))
+            s.settimeout(None)
+            s.sendall(payload)
+            data = b""
+            while True:
+                chunk = s.recv(1048576)  # 1 MB
+                if not chunk:
+                    break
+                data += chunk
+                if data.endswith(b"\n"):
+                    break
+        return json.loads(data.decode("utf-8").strip())
+    except Exception:
+        return None
+
+
+def stream_infer_events(prompt: str, max_tokens: int, host: str, infer_port: int):
+    """Fluxo de eventos NDJSON do servidor de inferência (modo stream)."""
+    payload = (
+        json.dumps({"prompt": prompt, "max_tokens": max_tokens, "stream": True}, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(5.0)
+        s.connect((host, infer_port))
+        # Poll curto evita bloqueio longo e facilita interrupção (Ctrl+C) no servidor web.
+        s.settimeout(STREAM_POLL_TIMEOUT_S)
+        s.sendall(payload)
+
+        buf = ""
+        last_data_at = time.monotonic()
+        while True:
+            try:
+                chunk = s.recv(65536)
+            except TimeoutError:
+                if (time.monotonic() - last_data_at) >= STREAM_READ_TIMEOUT_S:
+                    if buf.strip():
+                        try:
+                            yield json.loads(buf.strip())
+                        except Exception:
+                            pass
+                    yield {"event": "error", "error": "timeout aguardando stream do servidor"}
+                    break
+                continue
+            if not chunk:
+                break
+            last_data_at = time.monotonic()
+            buf += chunk.decode("utf-8", errors="replace")
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except Exception:
+                    continue
+
+        # Compatibilidade: alguns backends retornam JSON único sem '\n' final.
+        trailing = buf.strip()
+        if trailing:
+            try:
+                yield json.loads(trailing)
+            except Exception:
+                pass
+
+
+def parse_search_decision(text: str) -> str | None:
+    """Parse defensivo da resposta de decisão."""
+    if not text:
+        return None
+    normalized = text.strip().lower()
+    for prefix in ("search:", "busca:", "pesquisar:", "buscar:", "pesquisa:"):
+        if normalized.startswith(prefix):
+            term = text.strip()[len(prefix):].strip()
+            if not term or len(term.split()) > 5:
+                return None
+            return term
+    return None
+
+
+def decide_search(prompt: str, host: str, infer_port: int) -> str | None:
+    """1ª pass: pergunta ao modelo se precisa de busca externa."""
+    decision_prompt = (
+        "Você é um motor de decisão de busca.\n"
+        "Leia a pergunta e decida:\n"
+        "- Se precisar de dados externos, fatos específicos ou pesquisa: responda APENAS com BUSCA:<termo>\n"
+        "- Se for conhecimento geral de programação: responda APENAS com NO\n\n"
+        "Regras:\n"
+        "- BUSCA:<termo> deve ter no máximo 3 palavras\n"
+        "- Nenhuma explicação extra\n\n"
+        f"Pergunta: {prompt.strip()}"
+    )
+    resp = query_infer_raw(
+        (json.dumps({"prompt": decision_prompt, "max_tokens": 20}) + "\n").encode(),
+        host=host,
+        infer_port=infer_port,
+    )
+    if not resp or resp.get("error"):
+        return None
+    return parse_search_decision(str(resp.get("output", "")))
+
+
+def run_crawler(query: str) -> tuple[str, str, str]:
+    """Executa o crawler e retorna (context_block, source, source_url)."""
+    try:
+        from engine.tools.crawler import OrnCrawler  # noqa: PLC0415
+
+        result = OrnCrawler().search(query, source="auto")
+        if result.ok:
+            return result.to_prompt_block(), result.source, result.url
+    except Exception:
+        pass
+    return "", "", ""
+
+    ]]></source_code>
+  </file>
+
+  <file path="engine/web/web_server.py" role="Dionísio" complexity="41" status="stable">
+    <classes>ORNHandler, WebCLI, ServerBridge, DummyValidator</classes>
+    <functions>_decide_search, _parse_search_decision, _run_crawler, _suggest_max_tokens, _apply_code_hook_with_server_bridge, _normalize_stream_event, _prune_stream_cache, _stream_cache_start, _stream_cache_append, _stream_cache_finish, _stream_cache_get, _query_infer_raw, log_message, _send, do_GET, do_POST, _handle_ask_stream, run, _start, _stop, ask, validar_output</functions>
     <source_code><![CDATA[
 # -*- coding: utf-8 -*-
 """
@@ -4398,24 +5771,254 @@ from __future__ import annotations
 
 import json
 import os
-import socket
 # [DOX-UNUSED] import sys
 import threading
+import time
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+from engine.web import web_proxy
 
 WEB_PORT   = 8372
 INFER_PORT = 8371
 HOST       = "127.0.0.1"
 PID_FILE   = Path("web_server.pid")
+STREAM_CACHE_LIMIT = 32
+STREAM_CACHE_TTL_S = 900
+STREAM_CACHE_MAX_CHUNKS = 256
+STREAM_CACHE_MAX_OUTPUT_CHARS = 120_000
+_STREAM_CACHE: dict[str, dict] = {}
+_STREAM_CACHE_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
 # HTML da interface
 # ---------------------------------------------------------------------------
 
-HTML = r"""<!DOCTYPE html>
+from engine.web.web_page import HTML
+
+
+# ---------------------------------------------------------------------------
+# Auto-search two-pass (inline — sem import do engine para manter stdlib)
+# ---------------------------------------------------------------------------
+
+def _decide_search(prompt: str) -> str | None:
+    return web_proxy.decide_search(prompt, host=HOST, infer_port=INFER_PORT)
+
+
+def _parse_search_decision(text: str) -> str | None:
+    return web_proxy.parse_search_decision(text)
+
+
+def _run_crawler(query: str) -> tuple[str, str, str]:
+    return web_proxy.run_crawler(query)
+
+
+def _suggest_max_tokens(prompt: str) -> int:
+    """Escolhe max_tokens automaticamente para manter paridade com `orn think`."""
+    try:
+        from engine.core.executive import _adaptive_max_tokens  # noqa: PLC0415
+
+        return max(64, min(int(_adaptive_max_tokens(prompt)), 2048))
+    except Exception:
+        return 384
+
+
+def _apply_code_hook_with_server_bridge(output: str, task: str, max_tokens: int) -> str:
+    """Aplica o mesmo mecanismo de correção pós-inferência usado no restante do sistema."""
+    try:
+        from engine.thinking.code_hook import apply_code_hook  # noqa: PLC0415
+
+        class ServerBridge:
+            def ask(self, p: str, max_tokens: int = 256, **kwargs) -> str:
+                r = _query_infer_raw(
+                    (json.dumps({"prompt": p, "max_tokens": max_tokens}) + "\n").encode("utf-8")
+                )
+                return str(r.get("output", "")) if r else ""
+
+        class DummyValidator:
+            def validar_output(self, text: str, lang: str | None = None):
+                return True, ""
+
+        return apply_code_hook(
+            output=output,
+            task=task,
+            bridge=ServerBridge(),
+            validator=DummyValidator(),
+            max_retries=1,
+            run_isolated=True,
+        )
+    except Exception:
+        return output
+
+
+def _normalize_stream_event(raw: dict) -> dict | None:
+    """Normaliza payloads stream vindos de versões diferentes do backend."""
+    if not isinstance(raw, dict):
+        return None
+    if "event" in raw:
+        return raw
+    # Compatibilidade: resposta não-stream encapsulada como JSON único.
+    if "output" in raw and "elapsed_s" in raw:
+        return {
+            "event": "done",
+            "output": raw.get("output", ""),
+            "elapsed_s": raw.get("elapsed_s", 0),
+            "error": raw.get("error"),
+        }
+    if raw.get("error"):
+        return {"event": "error", "error": raw.get("error")}
+    return None
+
+
+def _prune_stream_cache(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    with _STREAM_CACHE_LOCK:
+        expired = [k for k, v in _STREAM_CACHE.items() if (now - float(v.get("created_at", now))) > STREAM_CACHE_TTL_S]
+        for key in expired:
+            _STREAM_CACHE.pop(key, None)
+        if len(_STREAM_CACHE) <= STREAM_CACHE_LIMIT:
+            return
+        keys_by_age = sorted(_STREAM_CACHE.keys(), key=lambda k: float(_STREAM_CACHE[k].get("created_at", now)))
+        for key in keys_by_age[: max(0, len(_STREAM_CACHE) - STREAM_CACHE_LIMIT)]:
+            _STREAM_CACHE.pop(key, None)
+
+
+def _stream_cache_start(prompt: str, max_tokens: int) -> str:
+    request_id = uuid.uuid4().hex
+    now = time.time()
+    with _STREAM_CACHE_LOCK:
+        _STREAM_CACHE[request_id] = {
+            "request_id": request_id,
+            "created_at": now,
+            "updated_at": now,
+            "prompt": 
+    ]]></source_code>
+  </file>
+
+  <file path="engine/web/__init__.py" role="Dionísio" complexity="0" status="stable">
+    <source_code><![CDATA[
+# -*- coding: utf-8 -*-
+"""ORN — Web Interface Package. God: Apolo — clareza e beleza."""
+    ]]></source_code>
+  </file>
+
+  <file path="engine/web/__main__.py" role="Zeus" complexity="24" status="stable">
+    <functions>_load_python_web_cli_fallback, _is_wrapper_signature_type_error, main</functions>
+    <source_code><![CDATA[
+# --- DOXOADE_VULCAN_BOOTSTRAP:START ---
+from pathlib import Path as _doxo_path
+import importlib.util as _doxo_importlib_util
+import sys as _doxo_sys
+import time as _doxo_time
+
+_doxo_activate_vulcan = None
+_doxo_install_meta_finder = None
+_doxo_probe_embedded = None
+_doxo_project_root = None
+_doxo_boot_t0 = _doxo_time.monotonic()
+
+# --- Lazy-loader --- 
+_doxo_lazy_mod = None
+try:
+    if _doxo_project_root:
+        _doxo_lazy_policy_f = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_policy.json"
+        _doxo_lazy_src_f    = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_loader.py"
+        if _doxo_lazy_policy_f.exists() and _doxo_lazy_src_f.exists():
+            _doxo_lazy_spec = _doxo_importlib_util.spec_from_file_location(
+                "_doxoade_vulcan_lazy", str(_doxo_lazy_src_f)
+            )
+            if _doxo_lazy_spec and _doxo_lazy_spec.loader:
+                _doxo_lazy_mod = _doxo_importlib_util.module_from_spec(_doxo_lazy_spec)
+                _doxo_sys.modules["_doxoade_vulcan_lazy"] = _doxo_lazy_mod
+                _doxo_lazy_spec.loader.exec_module(_doxo_lazy_mod)
+                _doxo_lazy_mod.install(
+                    _doxo_lazy_mod.load_policy(_doxo_lazy_policy_f)
+                )
+except Exception:
+    pass
+
+_doxo_install_ms = 0
+_doxo_embedded_ms = 0
+_doxo_fallback_ms = 0
+
+for _doxo_base in[_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
+    _doxo_runtime_file = _doxo_base / ".doxoade" / "vulcan" / "runtime.py"
+    if not _doxo_runtime_file.exists():
+        continue
+    _doxo_spec = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_runtime", str(_doxo_runtime_file))
+    if not (_doxo_spec and _doxo_spec.loader):
+        continue
+    _doxo_mod = _doxo_importlib_util.module_from_spec(_doxo_spec)
+    _doxo_sys.modules["_doxoade_vulcan_runtime"] = _doxo_mod
+    _doxo_spec.loader.exec_module(_doxo_mod)
+    _doxo_activate_vulcan = getattr(_doxo_mod, "activate_vulcan", None)
+    _doxo_install_meta_finder = getattr(_doxo_mod, "install_meta_finder", None)
+    _doxo_probe_embedded = getattr(_doxo_mod, "probe_embedded", None)
+    _doxo_project_root = str(_doxo_base)
+    break
+
+# 1. Instala MetaFinder primeiro
+if callable(_doxo_install_meta_finder) and _doxo_project_root:
+    _doxo_t = _doxo_time.monotonic()
+    try:
+        _doxo_install_meta_finder(_doxo_project_root)
+    except Exception:
+        pass
+    finally:
+        _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
+
+# 2. Tenta usar o loader "embedded"
+try:
+    _doxo_t = _doxo_time.monotonic()
+    if _doxo_project_root:
+        _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
+        if _embedded_path.exists():
+            _doxo_spec2 = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_embedded", str(_embedded_path))
+            if _doxo_spec2 and _doxo_spec2.loader:
+                _doxo_mod2 = _doxo_importlib_util.module_from_spec(_doxo_spec2)
+                _doxo_sys.modules["_doxoade_vulcan_embedded"] = _doxo_mod2
+                _doxo_spec2.loader.exec_module(_doxo_mod2)
+                _doxo_activate_embedded = getattr(_doxo_mod2, "activate_embedded", None)
+                _doxo_safe_call = getattr(_doxo_mod2, "safe_call", None)
+                if callable(_doxo_activate_embedded):
+                    try:
+                        _doxo_activate_embedded(globals(), __file__, _doxo_project_root)
+                    except Exception:
+                        pass
+                if callable(_doxo_safe_call):
+                    try:
+                        import sys as _d_sys
+                        _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
+                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
+                        _suffix_len    = len(_vulcan_suffix)
+                        for mname, mod in list(_d_sys.modules.items()):
+                            try:
+                                mfile = getattr(mod, "__file__", None)
+                                if not mfile:
+                                    continue
+                                mpath = _doxo_path(mfile)
+                                if _bin_dir not in mpath.parents:
+                                    continue
+                                for attr in dir(mod):
+                                    if not attr.endswith(_vulcan_suffix):
+                                        continue
+                                    native_obj = getattr(mod, attr, None)
+                                    if not callable(native_obj):
+                                        continue
+                                    base = attr[: -_suffix_len]
+                                    try:
+                                        setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
+                                    except Exception:
+                              
+    ]]></source_code>
+  </file>
+
+  <file path="engine/web/static/index.html" role="Dionísio" complexity="32" status="unknown">
+    <source_code><![CDATA[
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
@@ -4552,131 +6155,64 @@ HTML = r"""<!DOCTYPE html>
 
   .msg.model .bubble {
     background: var(--surface);
-    border: 1px solid var(--bor
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-bottom-left-radius: 4px;
+  }
+
+  /* ── META + SOURCE ── */
+  .bubble .meta {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .source-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(38, 188, 95, 0.12);
+    border: 1px solid rgba(38, 188, 95, 0.35);
+    border-radius: 4px;
+    padding: 1px 7px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--success);
+    text-decoration: none;
+    transition: background 0.2s;
+  }
+  .source-badge:hover { background: rgba(38, 188, 95, 0.22); }
+  .source-badge::before { content: "⬡"; font-size: 9px; }
+
+  /* ── CODE BLOCKS ── */
+  .bubble pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 10px 0;
+    overflow-x: auto;
+    position: relative;
+  }
+
+  .bubble pre::-webkit-scrollbar { height: 3px; }
+  .b
     ]]></source_code>
   </file>
 
-  <file path="engine/web/__init__.py" role="Dionísio" complexity="0" status="stable">
-    <source_code><![CDATA[
-# -*- coding: utf-8 -*-
-"""ORN — Web Interface Package. God: Apolo — clareza e beleza."""
-    ]]></source_code>
-  </file>
-
-  <file path="engine/web/__main__.py" role="Zeus" complexity="24" status="stable">
-    <functions>_load_python_web_cli_fallback, _is_wrapper_signature_type_error, main</functions>
-    <source_code><![CDATA[
-# --- DOXOADE_VULCAN_BOOTSTRAP:START ---
-from pathlib import Path as _doxo_path
-import importlib.util as _doxo_importlib_util
-import sys as _doxo_sys
-import time as _doxo_time
-
-_doxo_activate_vulcan = None
-_doxo_install_meta_finder = None
-_doxo_probe_embedded = None
-_doxo_project_root = None
-_doxo_boot_t0 = _doxo_time.monotonic()
-
-# --- Lazy-loader --- 
-_doxo_lazy_mod = None
-try:
-    if _doxo_project_root:
-        _doxo_lazy_policy_f = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_policy.json"
-        _doxo_lazy_src_f    = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_loader.py"
-        if _doxo_lazy_policy_f.exists() and _doxo_lazy_src_f.exists():
-            _doxo_lazy_spec = _doxo_importlib_util.spec_from_file_location(
-                "_doxoade_vulcan_lazy", str(_doxo_lazy_src_f)
-            )
-            if _doxo_lazy_spec and _doxo_lazy_spec.loader:
-                _doxo_lazy_mod = _doxo_importlib_util.module_from_spec(_doxo_lazy_spec)
-                _doxo_sys.modules["_doxoade_vulcan_lazy"] = _doxo_lazy_mod
-                _doxo_lazy_spec.loader.exec_module(_doxo_lazy_mod)
-                _doxo_lazy_mod.install(
-                    _doxo_lazy_mod.load_policy(_doxo_lazy_policy_f)
-                )
-except Exception:
-    pass
-
-_doxo_install_ms = 0
-_doxo_embedded_ms = 0
-_doxo_fallback_ms = 0
-
-for _doxo_base in[_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
-    _doxo_runtime_file = _doxo_base / ".doxoade" / "vulcan" / "runtime.py"
-    if not _doxo_runtime_file.exists():
-        continue
-    _doxo_spec = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_runtime", str(_doxo_runtime_file))
-    if not (_doxo_spec and _doxo_spec.loader):
-        continue
-    _doxo_mod = _doxo_importlib_util.module_from_spec(_doxo_spec)
-    _doxo_sys.modules["_doxoade_vulcan_runtime"] = _doxo_mod
-    _doxo_spec.loader.exec_module(_doxo_mod)
-    _doxo_activate_vulcan = getattr(_doxo_mod, "activate_vulcan", None)
-    _doxo_install_meta_finder = getattr(_doxo_mod, "install_meta_finder", None)
-    _doxo_probe_embedded = getattr(_doxo_mod, "probe_embedded", None)
-    _doxo_project_root = str(_doxo_base)
-    break
-
-# 1. Instala MetaFinder primeiro
-if callable(_doxo_install_meta_finder) and _doxo_project_root:
-    _doxo_t = _doxo_time.monotonic()
-    try:
-        _doxo_install_meta_finder(_doxo_project_root)
-    except Exception:
-        pass
-    finally:
-        _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
-
-# 2. Tenta usar o loader "embedded"
-try:
-    _doxo_t = _doxo_time.monotonic()
-    if _doxo_project_root:
-        _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
-        if _embedded_path.exists():
-            _doxo_spec2 = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_embedded", str(_embedded_path))
-            if _doxo_spec2 and _doxo_spec2.loader:
-                _doxo_mod2 = _doxo_importlib_util.module_from_spec(_doxo_spec2)
-                _doxo_sys.modules["_doxoade_vulcan_embedded"] = _doxo_mod2
-                _doxo_spec2.loader.exec_module(_doxo_mod2)
-                _doxo_activate_embedded = getattr(_doxo_mod2, "activate_embedded", None)
-                _doxo_safe_call = getattr(_doxo_mod2, "safe_call", None)
-                if callable(_doxo_activate_embedded):
-                    try:
-                        _doxo_activate_embedded(globals(), __file__, _doxo_project_root)
-                    except Exception:
-                        pass
-                if callable(_doxo_safe_call):
-                    try:
-                        import sys as _d_sys
-                        _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
-                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
-                        _suffix_len    = len(_vulcan_suffix)
-                        for mname, mod in list(_d_sys.modules.items()):
-                            try:
-                                mfile = getattr(mod, "__file__", None)
-                                if not mfile:
-                                    continue
-                                mpath = _doxo_path(mfile)
-                                if _bin_dir not in mpath.parents:
-                                    continue
-                                for attr in dir(mod):
-                                    if not attr.endswith(_vulcan_suffix):
-                                        continue
-                                    native_obj = getattr(mod, attr, None)
-                                    if not callable(native_obj):
-                                        continue
-                                    base = attr[: -_suffix_len]
-                                    try:
-                                        setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
-                                    except Exception:
-                              
-    ]]></source_code>
-  </file>
-
-  <file path="native/orn_llama_wrapper.c" role="Dionísio" complexity="26" status="stable_c_cpp">
-    <classes>llama_model, llama_context, llama_sampler, llama_vocab, llama_model_params, llama_context_params, llama_sampler_chain_params, llama_context_params, llama_batch, llama_batch</classes>
-    <functions>orn_infer, orn_reset_state, orn_init, orn_free</functions>
+  <file path="native/orn_llama_wrapper.c" role="Dionísio" complexity="24" status="stable_c_cpp">
+    <classes>llama_model, llama_context, llama_sampler, llama_vocab, llama_model_params, llama_context_params, llama_sampler_chain_params, llama_batch, llama_batch</classes>
+    <functions>orn_infer, orn_init, orn_reset_state, orn_silent_log_callback, orn_free</functions>
     <source_code><![CDATA[
 #include "orn_llama_wrapper.h"
 #include "llama.h"
@@ -4697,6 +6233,13 @@ static int g_ready = 0;
 // Guarda as configurações para recriar o contexto
 static int g_saved_n_ctx = 512;
 static int g_saved_n_threads = 2;
+
+static void orn_silent_log_callback(enum ggml_log_level level, const char * text, void * user_data)
+{
+    (void)level;
+    (void)text;
+    (void)user_data;
+}
 
 static void orn_reset_state(void)
 {
@@ -4729,9 +6272,10 @@ int orn_init(const char* model_path, int n_ctx, int n_threads)
     if (!model_path || !model_path[0]) return -10;
     if (g_ready) orn_free();
     
-    llama_log_set(NULL, NULL);
+    llama_log_set(orn_silent_log_callback, NULL);
     llama_backend_init();
 
+    // Salva os parametros para usar na recriação
     g_saved_n_ctx = n_ctx;
     g_saved_n_threads = n_threads;
 
@@ -4750,6 +6294,7 @@ int orn_init(const char* model_path, int n_ctx, int n_threads)
     cparams.n_ubatch         = 64;
     cparams.n_threads        = (n_threads > 0) ? n_threads : 2;
     cparams.n_threads_batch  = cparams.n_threads; 
+    cparams.flash_attn_type  = true;
 
     g_ctx = llama_init_from_model(g_model, cparams);
     if (!g_ctx) { orn_free(); return -3; }
@@ -4769,23 +6314,10 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
     if (!g_ready || !g_model || !g_smpl || !g_vocab) return -1;
     if (!prompt || !output || output_size <= 1 || max_tokens <= 0) return -2;
 
-    // --- RECRIA O CONTEXTO PARA GARANTIR MEMÓRIA LIMPA (Custo: 0.001s) ---
-    if (g_ctx) {
-        llama_free(g_ctx);
-    }
-    struct llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx            = (g_saved_n_ctx > 0)     ? g_saved_n_ctx     : 512;
-    cparams.n_batch          = 64;
-    cparams.n_ubatch         = 64;
-    cparams.n_threads        = (g_saved_n_threads > 0) ? g_saved_n_threads : 2;
-    cparams.n_threads_batch  = cparams.n_threads; 
-    
-    g_ctx = llama_init_from_model(g_model, cparams);
-    if (!g_ctx) return -6;
-    // ---------------------------------------------------------------------
+    // APARECI AQUI E APAGUEI TODO AQUELE BLOCO "RECRIA O CONTEXTO..."
 
     output[0] = '\0';
-    orn_reset_state();
+    orn_reset_state(); // Apenas limpa a aleatoriedade (sampler)
 
     llama_token prompt_tokens[ORN_MAX_PROMPT_TOKENS];
     const int n_prompt_bytes = (int)strlen(prompt);
@@ -4795,8 +6327,9 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
     if (n_tokens == 0) return -4;
 
     const int N_BATCH = 64;
-    clock_t t_prefill_start = clock();
 
+    // O llama.cpp sobrescreve automaticamente a memória antiga
+    // porque estamos mandando batch.pos[j] = i + j (iniciando em zero)
     for (int i = 0; i < n_tokens; i += N_BATCH) {
         int chunk = (i + N_BATCH < n_tokens) ? N_BATCH : (n_tokens - i);
         struct llama_batch batch = llama_batch_init(chunk, 0, 1);
@@ -4813,8 +6346,7 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
         if (rc != 0) return -5;
     }
 
-    double prefill_s = (double)(clock() - t_prefill_start) / CLOCKS_PER_SEC;
-    fprintf(stderr, "[ORN] prefill: %d tokens em %.3fs\n", n_tokens, prefill_s);
+    // ... (o resto do código fica igualzinho até o return out_len) ...
 
     for (int i = 0; i < n_tokens; ++i)
         llama_sampler_accept(g_smpl, prompt_tokens[i]);
@@ -4822,8 +6354,6 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
     int out_len = 0;
     int pos = n_tokens;
     struct llama_batch step = llama_batch_init(1, 0, 1);
-    clock_t t_gen_start = clock();
-    int gen_tokens = 0;
 
     for (int i = 0; i < max_tokens; ++i) {
         llama_token next = llama_sampler_sample(g_smpl, g_ctx, -1);
@@ -4834,7 +6364,18 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
         if (piece_len < 0) break;
         if (out_len + piece_len >= output_size - 1) break;
 
-        memcpy(output + out_len, pie
+        memcpy(output + out_len, piece, (size_t)piece_len);
+        out_len += piece_len;
+        output[out_len] = '\0';
+
+        llama_sampler_accept(g_smpl, next);
+
+        step.n_tokens     = 1;
+        step.token[0]     = next;
+        step.pos[0]       = pos++;
+        step.n_seq_id[0]  = 1;
+        step.seq_id[0][0] = 0;
+        step.logits[0]
     ]]></source_code>
   </file>
 
@@ -4872,14 +6413,49 @@ ORN_API void orn_free(void);
     ]]></source_code>
   </file>
 
-  <file path="native/test.py" role="Dionísio" complexity="0" status="stable">
+  <file path="native/orn_varint.c" role="Dionísio" complexity="3" status="stable_c_cpp">
+    <functions>defined</functions>
+    <source_code><![CDATA[
+// native/orn_varint.c
+#include <stdint.h>
+#include <stddef.h>
+
+#if defined(_WIN32)
+#define ORN_API __declspec(dllexport)
+#else
+#define ORN_API
+#endif
+
+ORN_API size_t orn_encode_varint_u64(uint64_t value, uint8_t *out) {
+    size_t n = 0;
+    while (value >= 0x80) {
+        out[n++] = (uint8_t)((value & 0x7F) | 0x80);
+        value >>= 7;
+    }
+    out[n++] = (uint8_t)value;
+    return n;
+}
+    ]]></source_code>
+  </file>
+
+  <file path="native/test.py" role="Dionísio" complexity="2" status="stable">
     <source_code><![CDATA[
 import os
+import sys
 from ctypes import cdll, c_char_p, c_int, create_string_buffer
 
-os.add_dll_directory(os.path.dirname(__file__))
+HERE = os.path.dirname(__file__)
+os.add_dll_directory(HERE)
 
-lib = cdll.LoadLibrary(os.path.join(os.path.dirname(__file__), "orn.dll"))
+candidate_lib_dirs = [
+    os.path.join(os.path.dirname(HERE), "venv", "Lib", "site-packages", "llama_cpp", "lib"),
+    os.path.join(sys.prefix, "Lib", "site-packages", "llama_cpp", "lib"),
+]
+for path in candidate_lib_dirs:
+    if os.path.isdir(path):
+        os.add_dll_directory(path)
+
+lib = cdll.LoadLibrary(os.path.join(HERE, "orn.dll"))
 
 lib.orn_init.argtypes = [c_char_p, c_int, c_int]
 lib.orn_init.restype = c_int
@@ -4908,6 +6484,7 @@ print("orn_infer =", n)
 print(buf.value.decode("utf-8", errors="ignore"))
 
 lib.orn_free()
+
     ]]></source_code>
   </file>
 </codebase_map>

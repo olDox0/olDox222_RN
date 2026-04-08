@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import gc
 import threading
+
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -25,23 +27,21 @@ class InferQueue:
 
     def submit(self, prompt, max_tokens=None, token_hint=None, system_hint=None):
         """Submete uma requisição de forma segura (síncrona ou assíncrona)."""
-        
         def _task():
-            # A mágica da harmonia: O Lock impede que o modelo sofra concorrência.
-            # As threads aguardam aqui pacificamente a vez delas.
             with self._lock:
-                return self._bridge.ask(
-                    prompt=prompt,
-                    max_tokens=max_tokens,
-                    token_hint=token_hint,
-                    system_hint=system_hint,
-                )
+                try:
+                    return self._bridge.ask(
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                        token_hint=token_hint,
+                        system_hint=system_hint,
+                    )
+                finally:
+                    # FORÇA A LIMPEZA DE RAM NO FINAL DE CADA USO DO LLM
+                    gc.collect()
 
         if not self._async:
             return _task()
-
-        # No modo assíncrono, a thread principal é liberada instantaneamente.
-        # Isso permite que o `orn-server` continue respondendo a /status no HTTP.
         return self._executor.submit(_task)
 
     def shutdown(self, wait: bool = True) -> None:

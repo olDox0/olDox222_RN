@@ -31,26 +31,23 @@ God: Hermes — mensageiro, veloz e ético.
 
 from __future__ import annotations
 
-# [DOX-UNUSED] import json
 import time
 import urllib.parse
 import urllib.robotparser
 import xml.etree.ElementTree as ET
+import re
+import gc  # Adicionado para limpeza agressiva de RAM
 from dataclasses import dataclass
 from typing import Optional
-import re
 
 # ---------------------------------------------------------------------------
-# Importação lazy de dependências opcionais — carregadas UMA VEZ e cacheadas.
-# Antes: _get_requests() executava `import requests` a cada chamada (~7x/run),
-# re-carregando certifi + urllib3 no N2808 a cada vez (76 hits no profiler).
-# Agora: import acontece só no primeiro acesso; demais chamadas lêem a variável.
+# Importação lazy de dependências opcionais
 # ---------------------------------------------------------------------------
 
-_requests_cached:    object | None = None   # módulo requests ou None
-_http_adapter_cached: object | None = None   # HTTPAdapter ou None
-_retry_cached:        object | None = None   # Retry ou None
-_bs4_cached:          object | None = None   # BeautifulSoup ou None
+_requests_cached:    object | None = None
+_http_adapter_cached: object | None = None
+_retry_cached:        object | None = None
+_bs4_cached:          object | None = None
 _requests_loaded      = False
 _bs4_loaded           = False
 
@@ -95,12 +92,11 @@ def _get_local_index():
 
 @dataclass
 class CrawlerResult:
-    """Resultado unificado de qualquer fonte."""
-    source:  str               # "wikipedia", "stackoverflow", etc.
-    query:   str               # termo buscado
+    source:  str
+    query:   str
     title:   str = ""
     url:     str = ""
-    context: str = ""          # texto limpo, pronto para injeção no prompt
+    context: str = ""
     error:   Optional[str] = None
 
     @property
@@ -108,10 +104,6 @@ class CrawlerResult:
         return self.error is None and bool(self.context.strip())
 
     def to_prompt_block(self, max_chars: int = 2000) -> str:
-        """Formata para injeção no prompt do modelo.
-
-        Usa contrato [CTX-BEGIN]/[CTX-END] alinhado com executive.py e cli.py.
-        """
         if not self.ok:
             return ""
         return (
@@ -124,7 +116,7 @@ class CrawlerResult:
 
 
 # ---------------------------------------------------------------------------
-# Sessão HTTP resiliente (reciclado de OLINE BaseCollector v1.1)
+# Sessão HTTP resiliente
 # ---------------------------------------------------------------------------
 
 def _make_session(user_agent: str = "ORN-Crawler/1.0 (local, ethical, non-commercial)",
@@ -149,12 +141,10 @@ def _make_session(user_agent: str = "ORN-Crawler/1.0 (local, ethical, non-commer
 
 
 # ---------------------------------------------------------------------------
-# EthicalScraper — robots.txt (reciclado de OLINE generic_utils v1.2)
+# EthicalScraper — robots.txt
 # ---------------------------------------------------------------------------
 
 class _EthicalScraper:
-    """Verifica robots.txt antes de qualquer scraping genérico."""
-
     def __init__(self, user_agent: str = "ORN-Crawler/1.0"):
         self._cache: dict[str, urllib.robotparser.RobotFileParser] = {}
         self.user_agent = user_agent
@@ -172,91 +162,65 @@ class _EthicalScraper:
                 self._cache[domain] = rp
             return self._cache[domain].can_fetch(self.user_agent, url)
         except Exception:
-            return True   # dúvida = permite (fail-open para APIs públicas)
+            return True
 
-
-# ---------------------------------------------------------------------------
-# Cache de sessão (evita re-busca dentro da mesma sessão Python)
-# ---------------------------------------------------------------------------
 
 _session_cache: dict[str, CrawlerResult] = {}
-
-# Mapeamento apelido → source_id real (stem do .db em data/index/)
-# Adicione entradas ao baixar novos ZIMs.
-#LOCAL_SOURCES: dict[str, str] = {
-#    "wikipedia":     "wikipedia_pt_computer_maxi_2026_01",
-#    "stackexchange": "softwareengineering_stackexchange_com_en_all_2026_02",
-#}
-
-# Máximo de chars de contexto injetado no prompt.
-# N2808: ~0.25 token/char, ~0.75s/token → 400 chars ≈ 75 tokens ≈ 56s prompt eval.
-# Aumente para melhor qualidade; reduza para menor latência.
 CTX_MAX_CHARS: int = 400
 
 
 # ---------------------------------------------------------------------------
-# Wikipedia — API REST /summary (sem scraping, sem robots issues)
+# Fontes de Busca
 # ---------------------------------------------------------------------------
 
 def _clean_wiki_html(html: str) -> str:
-    """Reciclado de OLINE wikipedia_utils v1.0 — remove navboxes, tabelas."""
     BS4 = _get_bs4()
     if BS4 is None:
         return re.sub(r'<[^>]+>', ' ', html).strip()
-    soup = BS4(html, "html.parser")
+    
+    # Proteção de RAM
+    html_content = html[:100000]
+    soup = BS4(html_content, "html.parser")
     for unwanted in soup.find_all(["table", "style", "script", "sup"]):
         unwanted.decompose()
-    return soup.get_text(separator=" ", strip=True)
+    text = soup.get_text(separator=" ", strip=True)
+    
+    del soup
+    del html_content
+    gc.collect()
+    return text
 
 
-def search_wikipedia(query: str, lang: str = "pt",
-                     session=None, max_chars: int = 2000) -> CrawlerResult:
-    """
-    Wikipedia REST API /summary — retorna resumo limpo.
-    API oficial, sem scraping, sem robots.txt.
-    Tenta PT primeiro, fallback EN. Case-insensitive via slug variants.
-    """
+def search_wikipedia(query: str, lang: str = "pt", session=None, max_chars: int = 2000) -> CrawlerResult:
     cache_key = f"wiki:{lang}:{query}"
     if cache_key in _session_cache:
         return _session_cache[cache_key]
 
     requests, _, _ = _get_requests()
     if requests is None:
-        return CrawlerResult("wikipedia", query,
-                             error="requests nao instalado")
+        return CrawlerResult("wikipedia", query, error="requests nao instalado")
 
     sess = session or _make_session()
-
     base = query.replace(" ", "_")
     slug_variants = list(dict.fromkeys([
         base[0].upper() + base[1:],
         base.title().replace(" ", "_"),
         base,
-        base.split("_")[0][0].upper() +
-            base.split("_")[0][1:],
+        base.split("_")[0][0].upper() + base.split("_")[0][1:],
         base.upper(),
     ]))
 
     tried = []
     for try_lang in ([lang, "en"] if lang != "en" else ["en", "pt"]):
         for slug in slug_variants:
-            url = (f"https://{try_lang}.wikipedia.org"
-                   f"/api/rest_v1/page/summary/{urllib.parse.quote(slug)}")
+            url = f"https://{try_lang}.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(slug)}"
             tried.append(url)
             try:
                 r = sess.get(url, timeout=10)
                 if r.status_code == 404:
                     continue
                 r.raise_for_status()
-                ct = r.headers.get("Content-Type", "")
-                if "html" in ct.lower() or not r.text.strip():
-                    sess2 = _make_session(verify_ssl=False)
-                    r = sess2.get(url, timeout=10)
-                    r.raise_for_status()
-                try:
-                    data = r.json()
-                except Exception:
-                    continue
+                data = r.json()
                 extract = data.get("extract", "")
                 if not extract:
                     continue
@@ -264,8 +228,7 @@ def search_wikipedia(query: str, lang: str = "pt",
                     source  = f"wikipedia-{try_lang}",
                     query   = query,
                     title   = data.get("title", query),
-                    url     = data.get("content_urls", {})
-                                  .get("desktop", {}).get("page", url),
+                    url     = data.get("content_urls", {}).get("desktop", {}).get("page", url),
                     context = extract[:max_chars],
                 )
                 _session_cache[cache_key] = result
@@ -273,13 +236,10 @@ def search_wikipedia(query: str, lang: str = "pt",
             except Exception:
                 continue
 
-    return CrawlerResult("wikipedia", query,
-                         error=f"Nao encontrado: {query!r} (tentou {len(tried)} slugs)")
+    return CrawlerResult("wikipedia", query, error=f"Nao encontrado: {query!r} (tentou {len(tried)} slugs)")
 
 
-def search_stackoverflow(query: str, site: str = "stackoverflow",
-                         session=None, max_results: int = 1,
-                         max_chars: int = 2000) -> CrawlerResult:
+def search_stackoverflow(query: str, site: str = "stackoverflow", session=None, max_results: int = 1, max_chars: int = 2000) -> CrawlerResult:
     cache_key = f"so:{site}:{query}"
     if cache_key in _session_cache:
         return _session_cache[cache_key]
@@ -292,47 +252,28 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
     try:
         r = sess.get(
             "https://api.stackexchange.com/2.3/search/advanced",
-            params={
-                "order": "desc", "sort": "relevance",
-                "q": query, "site": site,
-                "filter": "withbody",
-                "pagesize": max_results,
-            },
+            params={"order": "desc", "sort": "relevance", "q": query, "site": site, "filter": "withbody", "pagesize": max_results},
             timeout=10,
         )
         r.raise_for_status()
         data  = r.json()
 
-        quota = data.get("quota_remaining", "?")
-        if isinstance(quota, int) and quota < 50:
-            print(f"[CRAWLER] StackExchange quota baixa: {quota}")
-
         items = data.get("items", [])
         if not items:
-            return CrawlerResult("stackoverflow", query,
-                                 error=f"Nenhum resultado SO para: {query!r}")
+            return CrawlerResult("stackoverflow", query, error=f"Nenhum resultado SO para: {query!r}")
 
         q_item  = items[0]
         q_id    = q_item.get("question_id")
-        q_title = q_item.get("title", query)
-        q_url   = q_item.get("link", "")
         q_body  = q_item.get("body", "") or q_item.get("excerpt", "")
 
-        # Usa o body da pergunta se suficientemente rico — evita 2ª request
         if len(q_body.strip()) > 100:
             context_html = q_body
         else:
-            # Só faz 2ª request se o body da pergunta for pobre
-            context_html = q_body  # fallback se a 2ª falhar
+            context_html = q_body
             try:
                 r2 = sess.get(
                     f"https://api.stackexchange.com/2.3/questions/{q_id}/answers",
-                    params={
-                        "order": "desc", "sort": "votes",
-                        "site": site,
-                        "filter": "withbody",
-                        "pagesize": 1,
-                    },
+                    params={"order": "desc", "sort": "votes", "site": site, "filter": "withbody", "pagesize": 1},
                     timeout=10,
                 )
                 r2.raise_for_status()
@@ -342,10 +283,15 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
             except Exception:
                 pass
 
-        # Processa HTML → texto plano (caminho único)
+        # Proteção de RAM: limita a string e deleta referências ao DOM
         BS4 = _get_bs4()
         if BS4 and context_html:
-            body_text = BS4(context_html, "html.parser").get_text(separator=" ", strip=True)
+            html_content = context_html[:100000]
+            soup = BS4(html_content, "html.parser")
+            body_text = soup.get_text(separator=" ", strip=True)
+            del soup
+            del html_content
+            gc.collect()
         elif context_html:
             body_text = re.sub(r'<[^>]+>', ' ', context_html).strip()
         else:
@@ -353,17 +299,21 @@ def search_stackoverflow(query: str, site: str = "stackoverflow",
 
         if not body_text.strip():
             return CrawlerResult("stackoverflow", query, error="Corpo vazio")
+            
+        result = CrawlerResult(
+            source  = "stackoverflow",
+            query   = query,
+            title   = q_item.get("title", query),
+            url     = q_item.get("link", ""),
+            context = body_text[:max_chars],
+        )
+        _session_cache[cache_key] = result
+        return result
     except Exception as e:
-        import traceback
-        print(f"\033[31m ■ Erro: {e}")
-        traceback.print_tb(e.__traceback__)
+        return CrawlerResult("stackoverflow", query, error=str(e))
 
-def search_arxiv(query: str, max_results: int = 1,
-                 session=None, max_chars: int = 2000) -> CrawlerResult:
-    """
-    ArXiv API pública — papers científicos.
-    Rate limit: 1 req / 3s (respeitado). Sem auth.
-    """
+
+def search_arxiv(query: str, max_results: int = 1, session=None, max_chars: int = 2000) -> CrawlerResult:
     cache_key = f"arxiv:{query}"
     if cache_key in _session_cache:
         return _session_cache[cache_key]
@@ -376,11 +326,7 @@ def search_arxiv(query: str, max_results: int = 1,
     try:
         r = sess.get(
             "http://export.arxiv.org/api/query",
-            params={
-                "search_query": f"all:{query}",
-                "start": 0,
-                "max_results": max_results,
-            },
+            params={"search_query": f"all:{query}", "start": 0, "max_results": max_results},
             timeout=15,
         )
         r.raise_for_status()
@@ -391,8 +337,7 @@ def search_arxiv(query: str, max_results: int = 1,
         entries = root.findall("atom:entry", ns)
 
         if not entries:
-            return CrawlerResult("arxiv", query,
-                                 error=f"Nenhum paper para: {query!r}")
+            return CrawlerResult("arxiv", query, error=f"Nenhum paper para: {query!r}")
 
         entry   = entries[0]
         title   = (entry.findtext("atom:title", "", ns) or "").strip()
@@ -402,29 +347,14 @@ def search_arxiv(query: str, max_results: int = 1,
             if link.get("type") == "text/html":
                 url = link.get("href", "")
 
-        result = CrawlerResult(
-            source  = "arxiv",
-            query   = query,
-            title   = title,
-            url     = url,
-            context = summary[:max_chars],
-        )
+        result = CrawlerResult("arxiv", query, title, url, summary[:max_chars])
         _session_cache[cache_key] = result
         return result
-
     except Exception as e:
         return CrawlerResult("arxiv", query, error=str(e))
 
 
-# ---------------------------------------------------------------------------
-# PyPI — API JSON (documentação de libs Python)
-# ---------------------------------------------------------------------------
-
 def search_pypi(package: str, session=None) -> CrawlerResult:
-    """
-    PyPI JSON API — metadados e descrição de pacotes Python.
-    API pública, sem auth, sem rate limit documentado.
-    """
     cache_key = f"pypi:{package}"
     if cache_key in _session_cache:
         return _session_cache[cache_key]
@@ -435,15 +365,11 @@ def search_pypi(package: str, session=None) -> CrawlerResult:
 
     sess = session or _make_session()
     try:
-        r = sess.get(
-            f"https://pypi.org/pypi/{urllib.parse.quote(package)}/json",
-            timeout=10,
-        )
+        r = sess.get(f"https://pypi.org/pypi/{urllib.parse.quote(package)}/json", timeout=10)
         r.raise_for_status()
         data  = r.json()
         info  = data.get("info", {})
         desc  = info.get("summary", "")
-        home  = info.get("home_page", "") or info.get("project_url", "")
         ver   = info.get("version", "")
         long_d = info.get("description", "")
 
@@ -453,30 +379,14 @@ def search_pypi(package: str, session=None) -> CrawlerResult:
             clean = re.sub(r'\n{3,}', '\n\n', clean)
             context += clean[:1500]
 
-        result = CrawlerResult(
-            source  = "pypi",
-            query   = package,
-            title   = f"{package} v{ver}",
-            url     = f"https://pypi.org/project/{package}/",
-            context = context[:2000],
-        )
+        result = CrawlerResult("pypi", package, f"{package} v{ver}", f"https://pypi.org/project/{package}/", context[:2000])
         _session_cache[cache_key] = result
         return result
-
     except Exception as e:
         return CrawlerResult("pypi", package, error=str(e))
 
 
-# ---------------------------------------------------------------------------
-# GitHub — API REST (token opcional)
-# ---------------------------------------------------------------------------
-
-def search_github(query: str, token: str | None = None,
-                  session=None, max_results: int = 2) -> CrawlerResult:
-    """
-    GitHub Search API — repositórios e código.
-    Sem token: 10 req/min. Com token: 30 req/min.
-    """
+def search_github(query: str, token: str | None = None, session=None, max_results: int = 2) -> CrawlerResult:
     cache_key = f"github:{query}"
     if cache_key in _session_cache:
         return _session_cache[cache_key]
@@ -488,113 +398,77 @@ def search_github(query: str, token: str | None = None,
     sess = session or _make_session()
     if token:
         sess.headers.update({"Authorization": f"Bearer {token}"})
-    sess.headers.update({"Accept": "application/vnd.github+json",
-                          "X-GitHub-Api-Version": "2022-11-28"})
+    sess.headers.update({"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
 
     try:
-        r = sess.get(
-            "https://api.github.com/search/repositories",
-            params={
-                "q": query,
-                "sort": "stars",
-                "order": "desc",
-                "per_page": max_results,
-            },
-            timeout=10,
-        )
-        remaining = int(r.headers.get("X-RateLimit-Remaining", 99))
-        if remaining < 5:
-            print(f"[CRAWLER] GitHub rate limit baixo: {remaining}")
-
+        r = sess.get("https://api.github.com/search/repositories", params={"q": query, "sort": "stars", "order": "desc", "per_page": max_results}, timeout=10)
         r.raise_for_status()
         items = r.json().get("items", [])
         if not items:
-            return CrawlerResult("github", query,
-                                 error=f"Nenhum repo para: {query!r}")
+            return CrawlerResult("github", query, error=f"Nenhum repo para: {query!r}")
 
         parts = []
         for repo in items[:max_results]:
-            name  = repo.get("full_name", "")
-            desc  = repo.get("description", "sem descrição")
-            stars = repo.get("stargazers_count", 0)
-            lang  = repo.get("language", "")
-            url   = repo.get("html_url", "")
-            parts.append(
-                f"Repositório: {name}\nDescrição: {desc}\n"
-                f"Linguagem: {lang}  Stars: {stars}\nURL: {url}"
-            )
+            parts.append(f"Repositório: {repo.get('full_name', '')}\nDescrição: {repo.get('description', 'sem descrição')}\n"
+                         f"Linguagem: {repo.get('language', '')}  Stars: {repo.get('stargazers_count', 0)}\nURL: {repo.get('html_url', '')}")
             time.sleep(0.2)
 
-        result = CrawlerResult(
-            source  = "github",
-            query   = query,
-            title   = items[0].get("full_name", query),
-            url     = items[0].get("html_url", ""),
-            context = "\n\n".join(parts)[:2000],
-        )
+        result = CrawlerResult("github", query, items[0].get("full_name", query), items[0].get("html_url", ""), "\n\n".join(parts)[:2000])
         _session_cache[cache_key] = result
         return result
-
     except Exception as e:
         return CrawlerResult("github", query, error=str(e))
 
 
 # ---------------------------------------------------------------------------
-# Generic — requests + robots.txt + BeautifulSoup (fallback)
+# Generic (Corrigido: Sintaxe Resolvida e RAM Protegida)
 # ---------------------------------------------------------------------------
 
-def search_generic(url: str, session=None,
-                   max_chars: int = 2000) -> CrawlerResult:
-    """
-    Scraping ético de URL arbitrária.
-    Verifica robots.txt antes. Remove script/style/nav.
-    Requer beautifulsoup4.
-    """
+def search_generic(url: str, session=None, max_chars: int = 2000) -> CrawlerResult:
     cache_key = f"generic:{url}"
     if cache_key in _session_cache:
         return _session_cache[cache_key]
 
     requests, _, _ = _get_requests()
-    BS4 = _get_bs4()
     if requests is None:
         return CrawlerResult("generic", url, error="requests não instalado")
 
     ethical = _EthicalScraper()
     if not ethical.can_fetch(url):
-        return CrawlerResult("generic", url,
-                             error=f"robots.txt proíbe acesso: {url}")
+        return CrawlerResult("generic", url, error=f"robots.txt proíbe acesso: {url}")
 
     sess = session or _make_session()
     try:
         r = sess.get(url, timeout=10)
         r.raise_for_status()
 
+        # Proteção de RAM: Limita a página para evitar que o BS4 destrua a memória
+        html_content = r.text[:150000]
+
+        BS4 = _get_bs4()
         if BS4 is None:
-            text = re.sub(r'<[^>]+>', ' ', r.text).strip()
+            text = re.sub(r'<[^>]+>', ' ', html_content).strip()
             title = url
         else:
-            soup  = BS4(r.text, "html.parser")
+            soup  = BS4(html_content, "html.parser")
             title = soup.title.string.strip() if soup.title else url
-            for tag in soup.find_all(
-                    ["script", "style", "nav", "header", "footer",
-                     "aside", "form", "svg", "button", "noscript"]):
+            
+            for tag in soup.find_all(["script", "style", "nav", "header", "footer", "aside", "form", "svg", "button", "noscript"]):
                 tag.decompose()
+                
             body = soup.find("main") or soup.find("article") or soup.find("body")
             if body:
-                lines = [l.strip() for l in
-                         body.get_text(separator="\n", strip=True).split("\n")
-                         if len(l.strip()) > 40]
+                lines = [l.strip() for l in body.get_text(separator="\n", strip=True).split("\n") if len(l.strip()) > 40]
                 text = "\n".join(lines)
             else:
                 text = soup.get_text(separator="\n", strip=True)
 
-        result = CrawlerResult(
-            source  = "generic",
-            query   = url,
-            title   = title,
-            url     = url,
-            context = text[:max_chars],
-        )
+            # Destrói a árvore DOM e força GC imediatamente
+            del soup
+            del html_content
+            gc.collect()
+
+        result = CrawlerResult("generic", url, title, url, text[:max_chars])
         _session_cache[cache_key] = result
         return result
 
@@ -603,55 +477,30 @@ def search_generic(url: str, session=None,
 
 
 # ---------------------------------------------------------------------------
-# OrnCrawler — interface unificada para o CLI/Executive
+# OrnCrawler
 # ---------------------------------------------------------------------------
 
 class OrnCrawler:
-    """
-    Interface principal do crawler para uso interno do ORN.
-
-    Uso no CLI (engine/cli.py):
-        crawler = OrnCrawler()
-        result  = crawler.search("asyncio python", source="auto")
-        prompt  = result.to_prompt_block() + "[TASK]\n" + user_question
-
-    Uso programático:
-        result = crawler.search("requests library", source="pypi")
-        if result.ok:
-            print(result.context)
-    """
-
-    _AUTO_ORDER = ["wikipedia", "stackoverflow", "pypi", "arxiv", "github"]
-
     _RATE_LIMITS: dict[str, float] = {
-        "arxiv.org":          3.0,
+        "arxiv.org":             3.0,
         "api.stackexchange.com": 0.5,
-        "api.github.com":     0.2,
-        "wikipedia.org":      0.1,
-        "pypi.org":           0.1,
+        "api.github.com":        0.2,
+        "wikipedia.org":         0.1,
+        "pypi.org":              0.1,
     }
     _last_request: dict[str, float] = {}
 
-    def __init__(self, github_token: str | None = None,
-                 verify_ssl: bool = True):
+    def __init__(self, github_token: str | None = None, verify_ssl: bool = True):
         self._session      = _make_session(verify_ssl=verify_ssl)
         self._ethical      = _EthicalScraper()
         self.github_token  = github_token
         self.verify_ssl    = verify_ssl
         self._context_limit = 2000
 
-
     @staticmethod
     def _is_code_query(query: str) -> bool:
         q = (query or "").lower()
-        return (
-            "." in q or
-            any(kw in q for kw in [
-                "python", "javascript", "typescript", "java", "c++", "c#", "ruby", "php",
-                "erro", "error", "exception", "stack", "algoritmo", "algorithm", "quicksort",
-                "funcao", "function", "class", "import", "async", "await", "api", "code",
-            ])
-        )
+        return ("." in q or any(kw in q for kw in ["python", "javascript", "typescript", "java", "c++", "c#", "ruby", "php", "erro", "error", "exception", "stack", "algoritmo", "algorithm", "quicksort", "funcao", "function", "class", "import", "async", "await", "api", "code"]))
 
     def _rank_local_source_ids(self, source_ids: list[str], query: str) -> list[str]:
         q = (query or "").lower()
@@ -666,64 +515,43 @@ class OrnCrawler:
             if not is_code and any(k in sid for k in ["chem", "biolog", "hist", "geo"]):
                 score += 4
             score += sum(1 for t in q_tokens if t in sid)
-            # desempate estável por nome
             return (-score, len(sid), sid)
 
         return sorted(source_ids, key=_score)
 
     def _rate_wait(self, domain: str) -> None:
         limit = self._RATE_LIMITS.get(domain, 0.0)
-        if limit <= 0:
-            return
+        if limit <= 0: return
         elapsed = time.time() - self._last_request.get(domain, 0)
-        if elapsed < limit:
-            time.sleep(limit - elapsed)
+        if elapsed < limit: time.sleep(limit - elapsed)
         self._last_request[domain] = time.time()
 
     @staticmethod
     def _cache_key(source: str, query: str, lang: str = "pt") -> str:
-        if source == "wikipedia":
-            return f"wiki:{lang}:{query}"
-        if source == "stackoverflow":
-            return f"so:stackoverflow:{query}"
-        if source == "pypi":
-            return f"pypi:{query}"
-        if source == "arxiv":
-            return f"arxiv:{query}"
-        if source == "github":
-            return f"github:{query}"
+        if source == "wikipedia":     return f"wiki:{lang}:{query}"
+        if source == "stackoverflow": return f"so:stackoverflow:{query}"
+        if source == "pypi":          return f"pypi:{query}"
+        if source == "arxiv":         return f"arxiv:{query}"
+        if source == "github":        return f"github:{query}"
         return ""
 
     def _cached(self, source: str, query: str, lang: str = "pt") -> CrawlerResult | None:
         key = self._cache_key(source, query, lang)
-        if not key:
-            return None
+        if not key: return None
         return _session_cache.get(key)
 
-    def search(self, query: str, source: str = "auto",
-               lang: str = "pt", code_only: bool = False) -> CrawlerResult:
-        """
-        Ponto de entrada principal.
-
-        source: "auto" | "wikipedia" | "stackoverflow" | "pypi" |
-                "arxiv" | "github" | "generic:<url>"
-        """
+    def search(self, query: str, source: str = "auto", lang: str = "pt", code_only: bool = False) -> CrawlerResult:
         query = query.strip()
-        if not query:
-            return CrawlerResult("none", query, error="query vazia")
+        if not query: return CrawlerResult("none", query, error="query vazia")
 
         deps = self.check_deps()
         if not deps["requests"]:
-            return CrawlerResult("none", query,
-                error="requests nao instalado. Execute: pip install requests beautifulsoup4")
+            return CrawlerResult("none", query, error="requests nao instalado. Execute: pip install requests beautifulsoup4")
 
-        # Nova verificação: Qualquer fonte que termine em "-local" ou seja apenas "local"
         if source == "local" or source.endswith("-local"):
             search_local, _ = _get_local_index()
-            if search_local is None:
-                return CrawlerResult(source, query, error="local_index não disponível")
+            if search_local is None: return CrawlerResult(source, query, error="local_index não disponível")
             
-            # Se ele digitou algo como "quimica-local", extraímos o "quimica"
             target_src = source.replace("-local", "") if source != "local" else None
             from pathlib import Path
             index_dir = Path("data/index")
@@ -732,196 +560,98 @@ class OrnCrawler:
                 src_ids = [db_file.stem for db_file in sorted(index_dir.glob("*.db"))]
                 ranked_ids = self._rank_local_source_ids(src_ids, query)
                 for src_id in ranked_ids:
-                    # Se o usuário pediu um específico, pula os outros
-                    if target_src and target_src not in src_id:
-                        continue
-
+                    if target_src and target_src not in src_id: continue
                     results = search_local(query, source_id=src_id, limit=1, code_only=code_only)
                     if results and results[0].ok:
                         ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
-                        return CrawlerResult(
-                            source  = f"{src_id}-local",
-                            query   = query,
-                            title   = results[0].title,
-                            context = ctx,
-                        )
+                        return CrawlerResult(f"{src_id}-local", query, results[0].title, "", ctx)
             
             return CrawlerResult(source, query, error=f"nada no índice local: {query!r}")
 
-
-        if source == "auto":
-            return self._auto_search(query, lang, code_only=code_only)
-
-        if source == "wikipedia":
-            cached = self._cached("wikipedia", query, lang)
-            if cached is not None:
-                return cached
-            self._rate_wait("wikipedia.org")
-            return search_wikipedia(query, lang=lang,
-                                    session=self._session,
-                                    max_chars=self._context_limit)
-
-        if source == "stackoverflow":
-            cached = self._cached("stackoverflow", query, lang)
-            if cached is not None:
-                return cached
-            self._rate_wait("api.stackexchange.com")
-            return search_stackoverflow(query,
-                                        session=self._session,
-                                        max_chars=self._context_limit)
-
-        if source == "pypi":
-            cached = self._cached("pypi", query, lang)
-            if cached is not None:
-                return cached
-            self._rate_wait("pypi.org")
-            return search_pypi(query, session=self._session)
-
-        if source == "arxiv":
-            cached = self._cached("arxiv", query, lang)
-            if cached is not None:
-                return cached
-            self._rate_wait("arxiv.org")
-            return search_arxiv(query, session=self._session,
-                                max_chars=self._context_limit)
-
-        if source == "github":
-            cached = self._cached("github", query, lang)
-            if cached is not None:
-                return cached
-            self._rate_wait("api.github.com")
-            return search_github(query, token=self.github_token,
-                                 session=self._session)
-
+        if source == "auto":          return self._auto_search(query, lang, code_only=code_only)
+        if source == "wikipedia":     
+            c = self._cached("wikipedia", query, lang)
+            if c: return c
+            self._rate_wait("wikipedia.org"); return search_wikipedia(query, lang=lang, session=self._session, max_chars=self._context_limit)
+        if source == "stackoverflow": 
+            c = self._cached("stackoverflow", query, lang)
+            if c: return c
+            self._rate_wait("api.stackexchange.com"); return search_stackoverflow(query, session=self._session, max_chars=self._context_limit)
+        if source == "pypi":          
+            c = self._cached("pypi", query, lang)
+            if c: return c
+            self._rate_wait("pypi.org"); return search_pypi(query, session=self._session)
+        if source == "arxiv":         
+            c = self._cached("arxiv", query, lang)
+            if c: return c
+            self._rate_wait("arxiv.org"); return search_arxiv(query, session=self._session, max_chars=self._context_limit)
+        if source == "github":        
+            c = self._cached("github", query, lang)
+            if c: return c
+            self._rate_wait("api.github.com"); return search_github(query, token=self.github_token, session=self._session)
         if source.startswith("generic:"):
-            url = source.split("generic:", 1)[1]
-            return search_generic(url, session=self._session,
-                                  max_chars=self._context_limit)
+            return search_generic(source.split("generic:", 1)[1], session=self._session, max_chars=self._context_limit)
 
-        if source in ("local", "wikipedia-local", "stackexchange-local",
-                      "stackoverflow-local"):
-            search_local, _ = _get_local_index()
-            if search_local is None:
-                return CrawlerResult(source, query,
-                                     error="local_index não disponível")
-            if "stack" in source:
-                src_id = LOCAL_SOURCES.get("stackexchange", "stackexchange")
-            else:
-                src_id = LOCAL_SOURCES.get("wikipedia", "wikipedia")
-            results = search_local(query, source_id=src_id, limit=1, code_only=code_only)
-            if results:
-                ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
-                return CrawlerResult(
-                    source  = f"{src_id}-local",
-                    query   = query,
-                    title   = results[0].title,
-                    context = ctx,
-                )
-            return CrawlerResult(source, query,
-                                 error=f"nada no índice local: {query!r}")
-
-
-        return CrawlerResult(source, query,
-                             error=f"fonte desconhecida: {source!r}")
+        return CrawlerResult(source, query, error=f"fonte desconhecida: {source!r}")
 
     def _auto_search(self, query: str, lang: str, code_only: bool = False) -> CrawlerResult:
-        """
-        Estratégia auto: tenta fontes por prioridade até encontrar resultado útil.
-        """
         q = query.lower()
 
-        # Busca local primeiro — sem rede, <5ms
         search_local, _ = _get_local_index()
         if search_local is not None:
             from pathlib import Path
             index_dir = Path("data/index")
             if index_dir.exists():
-                # Vasculha todos os bancos locais que existirem
                 src_ids = [db_file.stem for db_file in sorted(index_dir.glob("*.db"))]
                 for src_id in self._rank_local_source_ids(src_ids, query):
                     results = search_local(query, source_id=src_id, limit=1, code_only=code_only)
                     if results and results[0].ok:
-                        # Achou em algum ZIM! Retorna e para a busca.
                         ctx = results[0].to_prompt_block(max_chars=CTX_MAX_CHARS)
-                        cached = CrawlerResult(
-                            source  = f"{src_id}-local",
-                            query   = query,
-                            title   = results[0].title,
-                            context = ctx,
-                        )
+                        cached = CrawlerResult(f"{src_id}-local", query, results[0].title, "", ctx)
                         _session_cache[f"local:{src_id}:{query}"] = cached
                         return cached
 
-        # Fast path de cache remoto: evita rate-wait/rede quando já existe cache útil.
         for src in ("wikipedia", "stackoverflow", "pypi", "arxiv", "github"):
             cached = self._cached(src, query, lang)
-            if cached is not None and cached.ok:
-                return cached
+            if cached is not None and cached.ok: return cached
 
-        # Sem resultado local/cached: segue para internet.
         is_single = len(query.split()) == 1
-        is_lib = any(kw in q for kw in
-                     ["lib", "library", "package", "pip", "pypi", "module", "modulo"])
+        is_lib = any(kw in q for kw in ["lib", "library", "package", "pip", "pypi", "module", "modulo"])
         if is_single or is_lib:
             result = search_pypi(query.split()[0], session=self._session)
-            if result is not None and result.ok:
-                return result
+            if result is not None and result.ok: return result
 
-        is_code = (
-            "." in query or
-            any(kw in q for kw in [
-                "como", "how", "erro", "error", "exception", "python",
-                "funcao", "function", "async", "await", "class", "import",
-                "list", "dict", "loop", "thread", "c++", "batch", "script",
-            ])
-        )
+        is_code = ("." in query or any(kw in q for kw in ["como", "how", "erro", "error", "exception", "python", "funcao", "function", "async", "await", "class", "import", "list", "dict", "loop", "thread", "c++", "batch", "script"]))
         if is_code:
             self._rate_wait("api.stackexchange.com")
-            result = search_stackoverflow(query, session=self._session,
-                                          max_chars=self._context_limit)
-            if result is not None and result.ok:
-                return result
+            result = search_stackoverflow(query, session=self._session, max_chars=self._context_limit)
+            if result is not None and result.ok: return result
 
-        if any(kw in q for kw in
-               ["github", "repo", "open source", "framework", "tool"]):
+        if any(kw in q for kw in ["github", "repo", "open source", "framework", "tool"]):
             self._rate_wait("api.github.com")
-            result = search_github(query, token=self.github_token,
-                                   session=self._session)
-            if result is not None and result.ok:
-                return result
+            result = search_github(query, token=self.github_token, session=self._session)
+            if result is not None and result.ok: return result
 
-        if any(kw in q for kw in [
-            "paper", "research", "neural", "algorithm", "transformer",
-            "machine learning", "deep learning", "llm", "model",
-        ]):
+        if any(kw in q for kw in ["paper", "research", "neural", "algorithm", "transformer", "machine learning", "deep learning", "llm", "model"]):
             self._rate_wait("arxiv.org")
-            result = search_arxiv(query, session=self._session,
-                                  max_chars=self._context_limit)
-            if result is not None and result.ok:
-                return result
+            result = search_arxiv(query, session=self._session, max_chars=self._context_limit)
+            if result is not None and result.ok: return result
 
         self._rate_wait("wikipedia.org")
         result = search_wikipedia(query, lang=lang, session=self._session)
-        if result is not None and result.ok:
-            return result
+        if result is not None and result.ok: return result
 
         if not is_code:
             self._rate_wait("api.stackexchange.com")
-            result = search_stackoverflow(query, session=self._session,
-                                          max_chars=self._context_limit)
-            if result is not None and result.ok:
-                return result
+            result = search_stackoverflow(query, session=self._session, max_chars=self._context_limit)
+            if result is not None and result.ok: return result
 
-        return CrawlerResult("auto", query,
-                             error=f"Todas as fontes falharam para: {query!r}. "
-                                   f"Tente: --search 'stackoverflow:query' ou 'wikipedia:query'")
+        return CrawlerResult("auto", query, error=f"Todas as fontes falharam para: {query!r}.")
 
     def clear_cache(self) -> None:
-        """Limpa o cache de sessão."""
         _session_cache.clear()
 
     def check_deps(self) -> dict[str, bool]:
-        """Verifica dependências disponíveis."""
         requests, _, _  = _get_requests()
         BS4             = _get_bs4()
         search_local, _ = _get_local_index()

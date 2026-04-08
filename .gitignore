@@ -19,6 +19,7 @@ dist/
 *.spec
 
 # --- ARQUIVOS SENSÍVEIS E DE USUÁRIO (NUNCA COMPARTILHAR) ---
+chief_dossier_llm.xml
 graph.html
 *.jsonl
 chief_dossier.json

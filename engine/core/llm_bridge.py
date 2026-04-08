@@ -59,7 +59,7 @@ class BridgeConfig:
         #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
     )
     memory_profile:          str  = "default"  # default|low (env: ORN_MEMORY_PROFILE)
-    n_ctx:                   int  = 1024   # era 2048 — reduz KV-cache pela metade
+    n_ctx:                   int  = 512   # era 2048 — reduz KV-cache pela metade
     active_window:           int  = 256    # era 1024 — proporcional
     n_batch:                 int  = 64     # NOVO — era 512 (default llama.cpp)
                                  # 64 = menos pressão de memória no N2808
@@ -68,7 +68,7 @@ class BridgeConfig:
     n_threads_batch:         int = 2
     n_gpu_layers:            int = 0     # CPU-only (sem GPU no N2808)
     use_mmap: bool =         True        # mmap para pesos (carregamento preguiçoso)
-    use_mlock: bool =        True       # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
+    use_mlock: bool =        False       # Trava o modelo na RAM (impede o Windows de jogar pro swap/disco)
     no_alloc: bool =         True        # Evita alocação interna inicial quando suportado pelo backend
     pin_threads: bool =      False     # Fixa threads em núcleos quando suportado
     cont_batching: bool =    True   # Continuous batching quando suportado
@@ -76,7 +76,7 @@ class BridgeConfig:
     cpuset: str | None =     None
     # n_threads_batch=2 # (Disponível nas versões mais recentes do wrapper python)
     # TTL longo: load custa ~80s — manter em RAM; só descarregar por necessidade
-    ttl_seconds:   int  =    400   # 1 hora (era 300s — inadequado para N2808)
+    ttl_seconds:   int  =    400        # 1 hora (era 300s — inadequado para N2808)
     # max_tokens reduzido para testes — 679s foi causado por resposta gigante
     # Regra: 128 para testes rápidos, 512 para uso normal
     max_tokens:    int   =   512
@@ -84,10 +84,10 @@ class BridgeConfig:
     # Parâmetros de sampling (doc ORN_up — seção 3)
     # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
     temperature:    float =  0.40
-    top_p:          float =  0.80 #top_p:          float =  0.85
-    top_k:          int   =  20   #top_k:          int   =  35
+    top_p:          float =  0.80       #top_p:          float =  0.85
+    top_k:          int   =  20         #top_k:          int   =  35
     repeat_penalty: float =  1.05
-    min_p:          float =  0.01 #min_p:          float =  0.05 ou None
+    min_p:          float =  0.01       #min_p:          float =  0.05 ou None
     # Menemonização de repetições (com pruning LRU)
     repetition_memo_enabled: bool = True
     repetition_memo_size:    int  = 128
@@ -95,13 +95,13 @@ class BridgeConfig:
     context_rotation: bool = True
     context_compact_ratio:   float = 0.7
     # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
-    cache_type_k: q8_0 | None = None
-    cache_type_v: q8_0 | None = None
+    cache_type_k: str | None = None     # "q8_0", "q4_0", "f16"
+    cache_type_v: str | None = None 
     # Parâmetros RoPE para ajuste de extrapolação/contexto
     rope_freq_base:  float | None = 1_000_000.0 #rope_freq_base: float | None = None
     rope_freq_scale: float | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
-    flash_attn: True | None = None
+    flash_attn: bool = True             # flash_attn: True | None = None
     system_prompt: str = ("succinct. portuguese language") # system_prompt: str = "" 
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:

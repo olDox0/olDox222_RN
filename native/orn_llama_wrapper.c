@@ -59,6 +59,7 @@ int orn_init(const char* model_path, int n_ctx, int n_threads)
     llama_log_set(orn_silent_log_callback, NULL);
     llama_backend_init();
 
+    // Salva os parametros para usar na recriação
     g_saved_n_ctx = n_ctx;
     g_saved_n_threads = n_threads;
 
@@ -77,6 +78,7 @@ int orn_init(const char* model_path, int n_ctx, int n_threads)
     cparams.n_ubatch         = 64;
     cparams.n_threads        = (n_threads > 0) ? n_threads : 2;
     cparams.n_threads_batch  = cparams.n_threads; 
+    cparams.flash_attn_type  = true;
 
     g_ctx = llama_init_from_model(g_model, cparams);
     if (!g_ctx) { orn_free(); return -3; }
@@ -96,23 +98,10 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
     if (!g_ready || !g_model || !g_smpl || !g_vocab) return -1;
     if (!prompt || !output || output_size <= 1 || max_tokens <= 0) return -2;
 
-    // --- RECRIA O CONTEXTO PARA GARANTIR MEMÓRIA LIMPA (Custo: 0.001s) ---
-    if (g_ctx) {
-        llama_free(g_ctx);
-    }
-    struct llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx            = (g_saved_n_ctx > 0)     ? g_saved_n_ctx     : 512;
-    cparams.n_batch          = 64;
-    cparams.n_ubatch         = 64;
-    cparams.n_threads        = (g_saved_n_threads > 0) ? g_saved_n_threads : 2;
-    cparams.n_threads_batch  = cparams.n_threads; 
-    
-    g_ctx = llama_init_from_model(g_model, cparams);
-    if (!g_ctx) return -6;
-    // ---------------------------------------------------------------------
+    // APARECI AQUI E APAGUEI TODO AQUELE BLOCO "RECRIA O CONTEXTO..."
 
     output[0] = '\0';
-    orn_reset_state();
+    orn_reset_state(); // Apenas limpa a aleatoriedade (sampler)
 
     llama_token prompt_tokens[ORN_MAX_PROMPT_TOKENS];
     const int n_prompt_bytes = (int)strlen(prompt);
@@ -122,8 +111,9 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
     if (n_tokens == 0) return -4;
 
     const int N_BATCH = 64;
-    clock_t t_prefill_start = clock();
 
+    // O llama.cpp sobrescreve automaticamente a memória antiga
+    // porque estamos mandando batch.pos[j] = i + j (iniciando em zero)
     for (int i = 0; i < n_tokens; i += N_BATCH) {
         int chunk = (i + N_BATCH < n_tokens) ? N_BATCH : (n_tokens - i);
         struct llama_batch batch = llama_batch_init(chunk, 0, 1);
@@ -140,7 +130,7 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
         if (rc != 0) return -5;
     }
 
-    (void)t_prefill_start;
+    // ... (o resto do código fica igualzinho até o return out_len) ...
 
     for (int i = 0; i < n_tokens; ++i)
         llama_sampler_accept(g_smpl, prompt_tokens[i]);
@@ -148,8 +138,6 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
     int out_len = 0;
     int pos = n_tokens;
     struct llama_batch step = llama_batch_init(1, 0, 1);
-    clock_t t_gen_start = clock();
-    int gen_tokens = 0;
 
     for (int i = 0; i < max_tokens; ++i) {
         llama_token next = llama_sampler_sample(g_smpl, g_ctx, -1);
@@ -163,22 +151,18 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
         memcpy(output + out_len, piece, (size_t)piece_len);
         out_len += piece_len;
         output[out_len] = '\0';
-        gen_tokens++;
 
         llama_sampler_accept(g_smpl, next);
 
-        step.n_tokens    = 1;
-        step.token[0]    = next;
-        step.pos[0]      = pos++;
-        step.n_seq_id[0] = 1;
-        step.seq_id[0][0]= 0;
-        step.logits[0]   = true;
+        step.n_tokens     = 1;
+        step.token[0]     = next;
+        step.pos[0]       = pos++;
+        step.n_seq_id[0]  = 1;
+        step.seq_id[0][0] = 0;
+        step.logits[0]    = true;
         if (llama_decode(g_ctx, step) != 0) break;
     }
     llama_batch_free(step);
-
-    (void)t_gen_start;
-    (void)gen_tokens;
 
     output[out_len] = '\0';
     return out_len;
