@@ -77,7 +77,7 @@ Vers/
 
 # terceirizados
 opt/w64devkit/
-models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF
+models/sicdox/
 
 # Exceções (Auto-fixed pelo Doxoade)
 # permitir versionamento de testes automatizados

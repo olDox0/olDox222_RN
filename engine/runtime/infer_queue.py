@@ -29,16 +29,13 @@ class InferQueue:
         """Submete uma requisição de forma segura (síncrona ou assíncrona)."""
         def _task():
             with self._lock:
-                try:
-                    return self._bridge.ask(
-                        prompt=prompt,
-                        max_tokens=max_tokens,
-                        token_hint=token_hint,
-                        system_hint=system_hint,
-                    )
-                finally:
-                    # FORÇA A LIMPEZA DE RAM NO FINAL DE CADA USO DO LLM
-                    gc.collect()
+                # Retorna direto, sem forçar gc.collect()
+                return self._bridge.ask(
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    token_hint=token_hint,
+                    system_hint=system_hint,
+                )
 
         if not self._async:
             return _task()

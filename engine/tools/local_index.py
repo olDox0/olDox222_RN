@@ -22,6 +22,7 @@ from threading import Lock
 from typing import Iterator, List, Optional, Tuple
 
 from engine.tools.inverted_index import InvertedIndexBuilder, InvertedIndexSearcher
+from engine.telemetry.core import orn_span, GLOBAL_TELEMETRY
 
 # ---------------------------------------------------------------------------
 # Config / constantes
@@ -34,7 +35,8 @@ if not logging.getLogger().handlers:
 ZIM_DIR   = Path(os.environ.get("SICDOX_ZIM_DIR",   "data/zim"))
 INDEX_DIR = Path(os.environ.get("SICDOX_INDEX_DIR", "data/index"))
 
-_DEFAULT_GGUF  = r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto_OIA\olDox222RN\ORN\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+#_DEFAULT_GGUF  = r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto_OIA\olDox222RN\ORN\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+_DEFAULT_GGUF  = r"C:\Users\olDox222\Documents\A20251122\DOSSIER\Altonomo\Projetos_E_Programas\Projeto_OIA\olDox222RN\ORN\models\sicdox\qwen2.5-coder-0.5b-instruct-q2_k.gguf"
 _GGUF_PATH_ENV = "SICDOX_GGUF"
 
 # ---------------------------------------------------------------------------
@@ -464,19 +466,6 @@ class TokenizerBridge:
     _SERVER_HOST  = "127.0.0.1"
     _SERVER_PORT  = int(os.environ.get("ORN_SERVER_PORT", "8371"))
     _SERVER_RETRY_S: float = 30.0
-
-    def __init__(self, gguf_path: str):
-        import llama_cpp
-        
-        # Suprime warnings nativos do llama.cpp em C
-        llama_cpp.llama_log_set(lambda *args, **kwargs: None)
-        
-        self.llm = llama_cpp.Llama(
-            model_path=gguf_path,
-            vocab_only=True,
-            verbose=False,
-            n_ctx=1  # <--- FIX: Sobrescreve o 512 padrão, silenciando o 'context overflow'
-        )
 
     @classmethod
     def _server_available(cls) -> bool:
@@ -944,35 +933,32 @@ class _BuildAccumulator:
     last_scanned:    int   = 0
 
 
-def _drain_futures(
-    futures: list,
+def _accumulate_one(
+    res: Optional[_EntryResult],
     acc: _BuildAccumulator,
     inv_builder: Optional[InvertedIndexBuilder],
-    content_flush_batch: int,
 ) -> None:
-    for future in concurrent.futures.as_completed(futures):
-        res: Optional[_EntryResult] = future.result()
-        if res is None:
-            continue
-        acc.last_scanned = res.scanned_idx
-        if res.content_hash not in acc.seen_hashes:
-            acc.seen_hashes.add(res.content_hash)
-            acc.content_pending[res.content_hash] = res.compressed
-        else:
-            acc.deduplicated += 1
-        acc.count += 1
-        acc.buf_pages.append((acc.count, res.title, res.path, res.content_hash))
-        for tg in res.title_trigrams:
-            acc.title_trigrams.append((tg, acc.count))
-        if inv_builder is not None:
-            inv_builder.add_document(acc.count, res.combined_tokens)
+    """Incorpora um único _EntryResult no acumulador. Noop se res é None."""
+    if res is None:
+        return
+    acc.last_scanned = res.scanned_idx
+    if res.content_hash not in acc.seen_hashes:
+        acc.seen_hashes.add(res.content_hash)
+        acc.content_pending[res.content_hash] = res.compressed
+    else:
+        acc.deduplicated += 1
+    acc.count += 1
+    acc.buf_pages.append((acc.count, res.title, res.path, res.content_hash))
+    for tg in res.title_trigrams:
+        acc.title_trigrams.append((tg, acc.count))
+    if inv_builder is not None:
+        inv_builder.add_document(acc.count, res.combined_tokens)
 
 
 def _flush_content(con: sqlite3.Connection, acc: _BuildAccumulator) -> None:
     if not acc.content_pending:
         return
     items = list(acc.content_pending.items())
-    from engine.telemetry.core import orn_span
     with orn_span("build.sql_insert", category="index"):
         try:
             con.executemany("INSERT OR IGNORE INTO content_pool (hash, token_blob) VALUES (?, ?)", items)
@@ -1074,22 +1060,92 @@ def _cleanup_stale(db_path: str, inv_dir: Path) -> None:
             pass
 
 
+def _resolve_zim_path(zim_arg: str) -> str:
+    """Resolve o argumento ZIM para um caminho absoluto existente.
+
+    Estratégia (em ordem):
+      1. Caminho literal — usa direto se existir.
+      2. Nome de arquivo dentro de ZIM_DIR — resolve se existir.
+      3. Correspondência parcial (case-insensitive) dentro de ZIM_DIR.
+      4. Falha com mensagem útil listando os ZIMs disponíveis.
+    """
+    # 1. Caminho literal
+    p = Path(zim_arg)
+    if p.exists():
+        return str(p)
+
+    # 2. Nome dentro de ZIM_DIR (ex: "wikipedia_pt.zim" → "data/zim/wikipedia_pt.zim")
+    if ZIM_DIR.exists():
+        candidate = ZIM_DIR / zim_arg
+        if candidate.exists():
+            return str(candidate)
+
+        # 3. Correspondência parcial sem extensão ou case-insensitive
+        zim_lower = zim_arg.lower().removesuffix(".zim")
+        matches = [
+            z for z in ZIM_DIR.glob("*.zim")
+            if zim_lower in z.stem.lower()
+        ]
+        if len(matches) == 1:
+            logger.info("[BUILD] Resolvido '%s' → '%s'", zim_arg, matches[0])
+            return str(matches[0])
+        if len(matches) > 1:
+            names = ", ".join(m.name for m in matches)
+            raise FileNotFoundError(
+                f"Ambíguo: '{zim_arg}' corresponde a múltiplos ZIMs: {names}\n"
+                f"Use o nome completo."
+            )
+
+    # 4. Falha com lista de disponíveis
+    available = sorted(z.name for z in ZIM_DIR.glob("*.zim")) if ZIM_DIR.exists() else []
+    hint = ""
+    if available:
+        hint = "\n\nZIMs disponíveis em " + str(ZIM_DIR) + ":\n"
+        hint += "\n".join(f"  orn index build {n}" for n in available)
+    raise FileNotFoundError(f"ZIM não encontrado: '{zim_arg}'{hint}")
+
+
 def build_index(
     zim_path: str,
     source_id: Optional[str] = None,
-    batch_size: int = 1000,
+    batch_size: int = 200,
     verbose: bool = True,
 ) -> Path:
+    """Constrói (ou retoma) o índice SQLite a partir de um arquivo ZIM.
+
+    Estratégia de memória:
+      - Sliding window de futures com janela = workers × 2.
+        Nunca mais de N entradas HTML simultâneas na heap.
+      - Commit a cada `batch_size` artigos processados (checkpoint).
+        Interrupção → retomada de onde parou, sem perder progresso.
+      - gc.collect() após cada commit para liberar RAM imediatamente.
+      - workers = min(2, cpu_count): N2808 é dual-core; mais threads
+        só aumentam contenção de memória e GIL sem ganho real.
+
+    Variáveis de ambiente:
+      SICDOX_WORKERS        — número de threads (padrão: min(2, cpu_count))
+      SICDOX_MAX_CHARS      — chars máximos de HTML por artigo (padrão: 64000)
+      SICDOX_CONTENT_BATCH  — flush de content_pool a cada N itens (padrão: 64)
+      SICDOX_BUILD_INVERTED — "1" para construir índice invertido (padrão: off)
+      SICDOX_RESUME_BUILD   — "0" para forçar rebuild mesmo se DB existe
+
+    Args:
+        zim_path:   Caminho para o arquivo .zim.
+        source_id:  Identificador do índice (derivado do nome do ZIM se None).
+        batch_size: Artigos por checkpoint de commit (padrão: 200).
+        verbose:    Emite logs de progresso.
+
+    Returns:
+        Path para o arquivo .db gerado.
+    """
+    import gc
+
     try:
         import pyzim  # noqa: F401
     except ImportError:
         raise ImportError("pyzim não instalado. Execute: pip install pyzim")
 
-    zim_path = str(zim_path)
-    if not Path(zim_path).exists():
-        available = sorted(z.name for z in ZIM_DIR.glob("*.zim")) if ZIM_DIR.exists() else []
-        hint = "\nZIMs disponíveis: " + ", ".join(available[:5]) if available else ""
-        raise FileNotFoundError(f"ZIM não encontrado: {zim_path}{hint}")
+    zim_path = _resolve_zim_path(str(zim_path))
 
     vocab = TokenizerBridge.get_vocab()
 
@@ -1102,25 +1158,36 @@ def build_index(
     db_path = str(_source_id_to_db(source_id))
     inv_dir = INDEX_DIR / source_id
 
+    # Configuração via env — valores conservadores por padrão para N2808
+    cpu_count      = os.cpu_count() or 2
+    workers        = int(os.environ.get("SICDOX_WORKERS",        str(min(2, cpu_count))))
+    max_chars      = int(os.environ.get("SICDOX_MAX_CHARS",      "64000"))
+    content_batch  = int(os.environ.get("SICDOX_CONTENT_BATCH",  "64"))
     build_inverted = os.environ.get("SICDOX_BUILD_INVERTED", "0").strip().lower() not in ("0", "false", "no")
-    max_chars      = int(os.environ.get("SICDOX_MAX_CHARS",     "64000"))
-    content_batch  = int(os.environ.get("SICDOX_CONTENT_BATCH", "256"))
+
+    # Janela máxima de futures vivos simultaneamente — limita RAM
+    max_inflight = workers * 2
 
     resume = _check_resume(db_path)
     if Path(db_path).exists() and not resume.mode:
-        logger.info("[BUILD] DB existente encontrado, removendo para rebuild: %s", db_path)
+        logger.info("[BUILD] DB existente, removendo para rebuild: %s", db_path)
         _cleanup_stale(db_path, inv_dir)
 
     if verbose:
         if resume.mode:
-            logger.info("[BUILD] Retomando build... DB=%s start_scanned=%d", db_path, resume.start_scanned)
+            logger.info(
+                "[BUILD] Retomando build... DB=%s start_scanned=%d start_doc=%d",
+                db_path, resume.start_scanned, resume.start_doc_id,
+            )
         else:
-            logger.info("[BUILD] Construindo banco tokenizado... DB: %s", db_path)
+            logger.info(
+                "[BUILD] Iniciando build... DB=%s workers=%d max_inflight=%d batch=%d",
+                db_path, workers, max_inflight, batch_size,
+            )
 
     inv_builder: Optional[InvertedIndexBuilder] = InvertedIndexBuilder() if build_inverted else None
-    acc     = _BuildAccumulator(count=resume.start_doc_id, last_scanned=resume.start_scanned)
-    t0      = time.monotonic()
-    workers = (os.cpu_count() or 4) + 2
+    acc = _BuildAccumulator(count=resume.start_doc_id, last_scanned=resume.start_scanned)
+    t0  = time.monotonic()
 
     con = sqlite3.connect(db_path, isolation_level=None)
     try:
@@ -1130,31 +1197,55 @@ def build_index(
         con.execute("INSERT OR REPLACE INTO meta VALUES ('build_scanned_entries', ?)", (str(resume.start_scanned),))
         con.execute("INSERT OR REPLACE INTO meta VALUES ('build_docs_processed',  ?)", (str(resume.start_doc_id),))
 
+        # ── Sliding window de futures ─────────────────────────────────
+        # Invariante: len(inflight) <= max_inflight a qualquer momento.
+        # Cada future segura UMA entrada HTML na heap até ser drenado.
+        # Quando a janela está cheia, bloqueia no future mais antigo
+        # antes de submeter o próximo → pressão de memória constante.
+        from collections import deque
+        inflight: deque = deque()
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures: list = []
             for scanned_idx, title, path, html in _iter_zim_entries(
                 zim_path, verbose=verbose, start_scanned=resume.start_scanned
             ):
-                futures.append(pool.submit(_process_entry, scanned_idx, title, path, html, vocab, max_chars))
+                # Enfileira novo trabalho
+                inflight.append(
+                    pool.submit(_process_entry, scanned_idx, title, path, html, vocab, max_chars)
+                )
 
-                if len(futures) >= batch_size:
-                    _drain_futures(futures, acc, inv_builder, content_batch)
-                    futures.clear()
-                    if len(acc.content_pending) >= content_batch:
-                        _flush_content(con, acc)
-                    _commit_batch(con, acc, verbose)
+                # Drena o mais antigo quando a janela está cheia
+                while len(inflight) >= max_inflight:
+                    res = inflight.popleft().result()
+                    _accumulate_one(res, acc, inv_builder)
 
-            if futures:
-                _drain_futures(futures, acc, inv_builder, content_batch)
+                    # Checkpoint a cada batch_size artigos
+                    if acc.count > 0 and acc.count % batch_size == 0:
+                        if len(acc.content_pending) > 0:
+                            _flush_content(con, acc)
+                        _commit_batch(con, acc, verbose)
+                        gc.collect()
+
+            # Drena o restante da janela ao terminar o ZIM
+            while inflight:
+                res = inflight.popleft().result()
+                _accumulate_one(res, acc, inv_builder)
 
         if verbose:
             logger.info("[BUILD] ZIM extraído. Salvando registros finais...")
 
+        # Commit final
         if acc.buf_pages:
-            con.executemany("INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)", acc.buf_pages)
+            con.executemany(
+                "INSERT INTO pages (id, title, path, content_hash) VALUES (?,?,?,?)",
+                acc.buf_pages,
+            )
         _flush_content(con, acc)
         if acc.title_trigrams:
-            con.executemany("INSERT INTO title_trigrams (trigram, doc_id) VALUES (?, ?)", acc.title_trigrams)
+            con.executemany(
+                "INSERT INTO title_trigrams (trigram, doc_id) VALUES (?, ?)",
+                acc.title_trigrams,
+            )
 
         con.execute("INSERT OR REPLACE INTO meta VALUES ('build_scanned_entries', ?)", (str(acc.last_scanned),))
         con.execute("INSERT OR REPLACE INTO meta VALUES ('build_docs_processed',  ?)", (str(acc.count),))
@@ -1177,8 +1268,10 @@ def build_index(
         inv_builder.write(inv_dir)
 
     if verbose:
-        logger.info("[BUILD] ✅ CONCLUÍDO: %d artigos (dedup: %d) em %.1fs",
-            acc.count, acc.deduplicated, time.monotonic() - t0)
+        logger.info(
+            "[BUILD] ✅ CONCLUÍDO: %d artigos (dedup: %d) em %.1fs",
+            acc.count, acc.deduplicated, time.monotonic() - t0,
+        )
 
     return Path(db_path)
 
@@ -1614,8 +1707,7 @@ def _cli_main(argv: Optional[List[str]] = None) -> int:
 
     exit_code    = 0
     t_start      = time.perf_counter()
-    
-    from engine.telemetry.core import GLOBAL_TELEMETRY
+
     try:
         if args.cmd == "probe":
             probe_zim(args.zim)

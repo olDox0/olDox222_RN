@@ -537,7 +537,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="empty-state" id="emptyState">
     <div class="big">⬡</div>
     <h2>ORN pronto</h2>
-    <p>Qwen2.5-Coder · Q4_K_M · SSE4.2 · N2808</p>
+    <p>Qwen2.5-Coder · SSE4.2 · N2808</p>
     <div class="suggestions">
       <button class="sug-btn" onclick="usePrompt('bubble sort em C')">bubble sort em C</button>
       <button class="sug-btn" onclick="usePrompt('função recursiva em Python')">função recursiva Python</button>

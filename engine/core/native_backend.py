@@ -20,13 +20,14 @@ class NativeBackend:
     _OUTPUT_SIZE = 8192
 
     def __init__(self, dll_path: str | Path, model_path: str | Path,
-                 n_ctx: int = 512, n_threads: int = 2) -> None:
+                     n_ctx: int = 512, n_threads: int = 2) -> None:
         self._dll_path   = Path(dll_path)
         self._model_path = str(model_path)
         self._n_ctx      = n_ctx
         self._n_threads  = n_threads
         self._lib        = None
         self._ready      = False
+        self._buf        = create_string_buffer(self._OUTPUT_SIZE)
 
     # ------------------------------------------------------------------
     # Ciclo de vida
@@ -92,13 +93,14 @@ class NativeBackend:
         if not self._ready:
             raise RuntimeError("NativeBackend não inicializado.")
 
-        buf = create_string_buffer(self._OUTPUT_SIZE)
+        # Limpamos o primeiro byte do buffer reciclado
+        self._buf[0] = b'\0'
         t0  = time.perf_counter()
 
         n = self._lib.orn_infer(
             prompt.encode("utf-8"),
             max_tokens,
-            buf,
+            self._buf,
             self._OUTPUT_SIZE,
         )
 
@@ -107,15 +109,11 @@ class NativeBackend:
         if n < 0:
             raise RuntimeError(f"orn_infer falhou: {n}")
 
-        text = buf.value.decode("utf-8", errors="ignore")
+        # Lemos do nosso buffer reciclado
+        text = self._buf.value.decode("utf-8", errors="ignore")
         real_token_count = len(text.split())  # estimativa rápida
 
-        # --- ADICIONE ESTE BLOCO AQUI ---
-        # Limpeza agressiva da RAM (OSL-18)
-        del buf
-        import gc
-        gc.collect()
-        # -------------------------------
+        # GC.COLLECT FOI REMOVIDO DAQUI! Deixe o Python respirar.
 
         return {
             "text":       text,

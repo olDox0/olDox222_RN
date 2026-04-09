@@ -93,9 +93,8 @@ def _check_model(issues: list[str]) -> None:
     if not cfg.model_path.exists():
         issues.append(
             f"Modelo não encontrado: {cfg.model_path}\n"
-            "     Baixar em: https://huggingface.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF\n"
-            "     Arquivo: qwen2.5-coder-0.5b-instruct-q4_k_m.gguf\n"
-            "     Colocar em: models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF/"
+            "     Baixar versão Q2_K para ultra-performance (N2808)\n"
+            "     Arquivo: qwen2.5-coder-0.5b-instruct-q2_k.gguf\n"
         )
     else:
         size_mb = cfg.model_path.stat().st_size / (1024 * 1024)
