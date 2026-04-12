@@ -17,11 +17,10 @@ from __future__ import annotations
 import json
 import os
 import socket
-# [DOX-UNUSED] import sys
-import threading
-import webbrowser
+
 from typing import Any
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+
 from pathlib import Path
 
 WEB_PORT   = 8372
@@ -31,7 +30,7 @@ HOST       = "127.0.0.1"
 PID_FILE   = Path("web_server.pid")
 
 
-def ask(prompt: str, max_tokens: int = 256) -> str | None:
+def ask(prompt: str, max_tokens: int = 4096) -> str | None:
     resp = query(prompt, max_tokens=max_tokens)
     if resp is None:
         return None
@@ -46,7 +45,7 @@ def ask(prompt: str, max_tokens: int = 256) -> str | None:
         
         # Criamos uma "Ponte Falsa" que redireciona as tentativas de conserto de volta pro Servidor TCP!
         class ServerBridge:
-            def ask(self, p: str, max_tokens: int = 256, **kwargs) -> str:
+            def ask(self, p: str, max_tokens: int = 4096, **kwargs) -> str:
                 r = query(p, max_tokens=max_tokens)
                 return r.get("output", "") if r else ""
 
@@ -84,7 +83,7 @@ def status() -> dict[str, Any] | None:
     return _raw_query(b"STATUS\n")
 
 
-def query(prompt: str, max_tokens: int = 256) -> dict[str, Any] | None:
+def query(prompt: str, max_tokens: int = 4096) -> dict[str, Any] | None:
     payload = (json.dumps({"prompt": prompt, "max_tokens": max_tokens}) + "\n").encode("utf-8")
     return _raw_query(payload)
 
@@ -817,7 +816,7 @@ class ORNHandler(BaseHTTPRequestHandler):
                 req = {}
 
             prompt     = str(req.get("prompt", "")).strip()
-            max_tokens = max(1, min(int(req.get("max_tokens", 128)), 2048))
+            max_tokens = max(1, min(int(req.get("max_tokens", 4096)), 2048))
 
             if not prompt:
                 resp = {"output": "", "elapsed_s": 0, "error": "prompt vazio"}
@@ -874,6 +873,8 @@ class WebCLI:
             print("orn-web stop")
 
     def _start(self, open_browser: bool = True) -> None:
+        from http.server import HTTPServer
+        
         url = f"http://{HOST}:{WEB_PORT}"
         srv = HTTPServer((HOST, WEB_PORT), ORNHandler)
         # Timeout de 1s: Ctrl+C responde rapido (sem isso fica preso)
@@ -884,6 +885,9 @@ class WebCLI:
         print(f"[WEB] PID={os.getpid()}  Ctrl+C para parar", flush=True)
 
         if open_browser:
+            import webbrowser
+            import threading
+            
             threading.Timer(0.8, lambda: webbrowser.open(url)).start()
 
         try:

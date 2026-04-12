@@ -6,9 +6,14 @@ Chama orn.dll diretamente via ctypes — sem overhead do llama-cpp-python.
 import os
 import sys
 import time
-from ctypes import cdll, c_char_p, c_int, create_string_buffer
+
+from ctypes import CFUNCTYPE, cdll, c_char_p, c_int, c_void_p, create_string_buffer
 from pathlib import Path
 
+import queue as _queue
+
+
+_OrnTokenCb = CFUNCTYPE(c_int, c_char_p, c_int, c_void_p)
 
 class NativeBackend:
     """Interface ctypes para orn.dll.
@@ -17,10 +22,10 @@ class NativeBackend:
         {'text': str, 'usage': dict, 'llm_call_ms': float}
     """
 
-    _OUTPUT_SIZE = 8192
+    _OUTPUT_SIZE = 1000000
 
     def __init__(self, dll_path: str | Path, model_path: str | Path,
-                     n_ctx: int = 512, n_threads: int = 2) -> None:
+                     n_ctx: int = 1024, n_threads: int = 2) -> None:
         self._dll_path   = Path(dll_path)
         self._model_path = str(model_path)
         self._n_ctx      = n_ctx
@@ -93,9 +98,8 @@ class NativeBackend:
         if not self._ready:
             raise RuntimeError("NativeBackend não inicializado.")
 
-        # Limpamos o primeiro byte do buffer reciclado
         self._buf[0] = b'\0'
-        t0  = time.perf_counter()
+        t0 = time.perf_counter()
 
         n = self._lib.orn_infer(
             prompt.encode("utf-8"),
@@ -104,23 +108,108 @@ class NativeBackend:
             self._OUTPUT_SIZE,
         )
 
+        # -5 = llama_decode falhou (KV cache cheio ou histórico corrompido).
+        # orn_free() + orn_init() zera g_history_len e limpa o KV cache.
+        # Com use_mmap=True os pesos já estão no page-cache do SO — reinit é rápido.
+        if n == -5:
+            print("[NATIVE] KV cache cheio — resetando contexto e tentando novamente.", flush=True)
+            try:
+                self._lib.orn_free()
+                rc = self._lib.orn_init(
+                    self._model_path.encode("utf-8"),
+                    self._n_ctx,
+                    self._n_threads,
+                )
+                if rc == 0:
+                    self._buf[0] = b'\0'
+                    n = self._lib.orn_infer(
+                        prompt.encode("utf-8"),
+                        max_tokens,
+                        self._buf,
+                        self._OUTPUT_SIZE,
+                    )
+                else:
+                    raise RuntimeError(f"orn_init falhou após reset: {rc}")
+            except Exception as exc:
+                raise RuntimeError(f"orn_infer falhou: -5 (reset também falhou: {exc})")
+
         llm_ms = (time.perf_counter() - t0) * 1000.0
 
         if n < 0:
             raise RuntimeError(f"orn_infer falhou: {n}")
 
-        # Lemos do nosso buffer reciclado
         text = self._buf.value.decode("utf-8", errors="ignore")
-        real_token_count = len(text.split())  # estimativa rápida
-
-        # GC.COLLECT FOI REMOVIDO DAQUI! Deixe o Python respirar.
+        real_token_count = len(text.split())
 
         return {
-            "text":       text,
-            "usage":      {
+            "text":  text,
+            "usage": {
                 "prompt_tokens":     0,
-                "completion_tokens": real_token_count, 
+                "completion_tokens": real_token_count,
                 "total_tokens":      real_token_count,
             },
             "llm_call_ms": round(llm_ms, 3),
         }
+        
+    def stream(self, prompt: str, max_tokens: int):
+        """Gerador que yield cada peça de token conforme é produzida pela DLL."""
+        if not self._ready:
+            raise RuntimeError("NativeBackend não inicializado.")
+
+        # Tenta registrar orn_infer_stream — se a DLL antiga não tiver, faz fallback
+        fn = getattr(self._lib, "orn_infer_stream", None)
+        if fn is None:
+            # DLL antiga sem streaming — emite tudo de uma vez
+            result = self.call(prompt, max_tokens)
+            yield result["text"]
+            return
+
+        fn.argtypes = [c_char_p, c_int, _OrnTokenCb, c_void_p]
+        fn.restype  = c_int
+
+        # Fila thread-safe entre o callback C e o gerador Python
+        q: _queue.Queue = _queue.Queue()
+        _DONE    = object()
+        _ERRCODE = []
+
+        @_OrnTokenCb
+        def _cb(piece_ptr, n_bytes, _ud):
+            try:
+                text = piece_ptr[:n_bytes].decode("utf-8", errors="replace")
+                q.put(text)
+            except Exception:
+                pass
+            return 0  # 0 = continuar
+
+        import threading
+
+        def _run():
+            rc = fn(prompt.encode("utf-8"), max_tokens, _cb, None)
+            _ERRCODE.append(rc)
+            q.put(_DONE)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+
+        while True:
+            item = q.get()
+            if item is _DONE:
+                break
+            yield item
+
+        t.join()
+        rc = _ERRCODE[0] if _ERRCODE else -99
+
+        # KV cache cheio → reset e tenta não-stream como fallback
+        if rc == -5:
+            print("[NATIVE] KV cache cheio no stream — resetando contexto.", flush=True)
+            self._lib.orn_free()
+            init_rc = self._lib.orn_init(
+                self._model_path.encode("utf-8"), self._n_ctx, self._n_threads
+            )
+            if init_rc != 0:
+                raise RuntimeError(f"orn_init falhou após reset: {init_rc}")
+            result = self.call(prompt, max_tokens)
+            yield result["text"]
+        elif rc not in (0, None):
+            raise RuntimeError(f"orn_infer_stream falhou: {rc}")

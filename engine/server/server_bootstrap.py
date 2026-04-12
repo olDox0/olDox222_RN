@@ -20,14 +20,44 @@ def looks_like_doxoade_root(path_str: str | None) -> bool:
 
 
 def discover_doxoade_root() -> str | None:
+    # 1. Env var explícita tem prioridade
     env_root = os.environ.get("DOXOADE_ROOT")
     if looks_like_doxoade_root(env_root):
         return str(Path(env_root).resolve())
 
+    # 2. Sobe a árvore de diretórios a partir deste arquivo
     here = Path(__file__).resolve()
     for parent in [here.parent, *here.parents]:
-        if (parent / "doxoade" / "__init__.py").exists():
+        if looks_like_doxoade_root(str(parent)):
             return str(parent)
+
+    # 3. doxoade instalado no venv atual (site-packages)
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("doxoade")
+        if spec and spec.origin:
+            pkg_root = Path(spec.origin).parent.parent
+            if looks_like_doxoade_root(str(pkg_root)):
+                return str(pkg_root)
+    except Exception:
+        pass
+
+    # 4. Varre o PATH — detecta projeto doxoade via venv/Scripts no PATH
+    #    Ex: C:\...\doxoade\venv\Scripts → sobe até encontrar doxoade/__init__.py
+    path_env = os.environ.get("PATH", "")
+    sep = ";" if os.name == "nt" else ":"
+    for entry in path_env.split(sep):
+        entry = entry.strip().strip('"')
+        if not entry:
+            continue
+        try:
+            p = Path(entry).resolve()
+        except Exception:
+            continue
+        # sobe até 4 níveis procurando a raiz do projeto doxoade
+        for candidate in [p, *p.parents][:5]:
+            if looks_like_doxoade_root(str(candidate)):
+                return str(candidate)
 
     return None
 

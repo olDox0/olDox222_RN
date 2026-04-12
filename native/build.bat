@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 
 set CC=gcc
 set LLAMA_PATH=..\llama.cpp
@@ -11,17 +11,29 @@ echo Compilando...
     -I%LLAMA_PATH%\include ^
     -I%LLAMA_PATH%\ggml\include ^
     -I. ^
-    -c orn_llama_wrapper.c -o orn.o
+    -c orn_llama_wrapper.c -o orn_llama_wrapper.o
 
 if errorlevel 1 (
-    echo [ERRO] compilacao
+    echo [ERRO] compilacao orn_llama_wrapper.c
     pause
     exit /b 1
 )
 
-%CC% -shared -o orn.dll orn.o ^
+%CC% -O3 -msse4.2 ^
+    -I%LLAMA_PATH%\include ^
+    -I%LLAMA_PATH%\ggml\include ^
+    -I. ^
+    -c orn_optimizer.c -o orn_optimizer.o
+
+if errorlevel 1 (
+    echo [ERRO] compilacao orn_optimizer.c
+    pause
+    exit /b 1
+)
+
+%CC% -shared -o orn.dll orn_llama_wrapper.o orn_optimizer.o ^
     -L%LLAMA_LIB_PATH% ^
-    -l:libllama.dll
+    -lllama
 
 if errorlevel 1 (
     echo [ERRO] link

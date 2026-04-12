@@ -1000,7 +1000,7 @@ def graph(target: str, rebuild: bool) -> None:
 @cli.command()
 @click.option("--prompt", default="qual é o kernel?", show_default=True, help="Prompt usado no benchmark.")
 @click.option("--runs", type=int, default=2, show_default=True, help="Execuções por configuração (após warm-up).")
-@click.option("--tokens", type=int, default=96, show_default=True, help="Max tokens por execução.")
+@click.option("--tokens", type=int, default=192, show_default=True, help="Max tokens por execução.")
 def bench(prompt: str, runs: int, tokens: int) -> None:
     """Auto-tuning: varre configurações e escolhe menor tempo médio."""
     from engine.tools.benchmark_tuner import autotune  # noqa: PLC0415

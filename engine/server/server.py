@@ -36,6 +36,7 @@ from engine.core.cpu_affinity import apply_process_affinity
 from engine.server import server_bootstrap, server_utils
 from engine.telemetry import GLOBAL_TELEMETRY, orn_probe
 
+_shutdown_event = threading.Event()
 
 HOST = "127.0.0.1"
 PORT = 8371
@@ -153,10 +154,17 @@ def _load_model() -> None:
         print(f"[ERRO] Modelo nao encontrado: {_cfg.model_path}", flush=True)
         sys.exit(1)
 
-    if os.environ.get("ORN_NATIVE_BACKEND", "").lower() in {"1", "true", "on"}:
+    # ── Auto-detecta orn.dll — sem precisar de ORN_NATIVE_BACKEND ──────────
+    dll = Path(__file__).parent.parent.parent / "native" / "orn.dll"
+    _use_native = dll.exists()
+
+    if not _use_native:
+        # Fallback: env var explícita ainda funciona
+        _use_native = os.environ.get("ORN_NATIVE_BACKEND", "").lower() in {"1", "true", "on"}
+
+    if _use_native:
         from engine.core.native_backend import NativeBackend
 
-        dll = Path(__file__).parent.parent.parent / "native" / "orn.dll"
         _native = NativeBackend(
             dll_path=dll,
             model_path=_cfg.model_path,
@@ -171,13 +179,21 @@ def _load_model() -> None:
         _stats["start"] = time.monotonic()
         print(f"[BOOT] orn.dll ativo [{dll}]", flush=True)
         print(
-            "[BOOT] nativo cfg "
-            f"n_ctx={_cfg.n_ctx} n_threads={_cfg.n_threads} "
-            f"temperature={_cfg.temperature} top_p={_cfg.top_p} top_k={_cfg.top_k} min_p={_cfg.min_p}",
+            f"[BOOT] nativo cfg n_ctx={_cfg.n_ctx} n_threads={_cfg.n_threads}",
             flush=True,
         )
-        print(f"[BOOT] Pronto em {round(elapsed_ms / 1000.0, 1)}s — {HOST}:{PORT}", flush=True)
         return
+
+    # ── Fallback: llama-cpp-python (bridge Python) ─────────────────────────
+    from engine.core.llm_bridge import SiCDoxBridge
+    t0 = time.monotonic()
+    _llm = SiCDoxBridge(_cfg)
+    _llm._ensure_loaded()
+    elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
+    _boot_perf["model_load_ms"] = elapsed_ms
+    _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
+    _stats["start"] = time.monotonic()
+    print(f"[BOOT] llama-cpp-python ativo (fallback — orn.dll nao encontrado)", flush=True)
 
     from llama_cpp import Llama
 
@@ -256,11 +272,25 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
 
     if _native is not None:
         t0 = time.monotonic()
+
+        system_block = f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
+        asst_block   = "<|im_start|>assistant\n"
+
+        # Estimativa conservadora: 3 chars ≈ 1 token (pt-BR + código)
+        # Reserva espaço para os tokens de output + margem de segurança (128)
+        max_user_chars = (_cfg.n_ctx - max_tokens - 128) * 3 - len(system_block) - len(asst_block)
+
+        user_prompt = prompt
+        if max_user_chars > 0 and len(prompt) > max_user_chars:
+            user_prompt = prompt[:max_user_chars - 30] + "\n[contexto truncado]"
+            print(f"[NATIVE] Prompt truncado: {len(prompt)} → {len(user_prompt)} chars", flush=True)
+
         native_prompt = (
-            f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
-            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-            f"<|im_start|>assistant\n"
+            system_block
+            + f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+            + asst_block
         )
+
         out = _native.call(native_prompt, max_tokens)
         elapsed = round(time.monotonic() - t0, 3)
         llm_call_ms = float(out.get("llm_call_ms", elapsed * 1000.0))
@@ -268,8 +298,8 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
         _observe_telemetry("server.infer.llm_call", llm_call_ms)
         with _lock:
             _stats["last_lock_wait_ms"] = 0.0
-            _stats["last_llm_call_ms"] = round(llm_call_ms, 4)
-            _stats["sum_llm_call_ms"] += llm_call_ms
+            _stats["last_llm_call_ms"]  = round(llm_call_ms, 4)
+            _stats["sum_llm_call_ms"]  += llm_call_ms
         return str(out.get("text", "")).strip(), elapsed
 
     global _system_tokens
@@ -348,16 +378,38 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
 
 
 def _infer_stream(prompt: str, max_tokens: int):
-    """Prepara caminho de streaming para reduzir latência percebida.
-
-    No backend nativo atual, ainda emite chunk único (pronto para evolução no wrapper C).
-    """
     if (_llm is None and _native is None) or _cfg is None:
         raise RuntimeError("Modelo nao carregado.")
 
     if _native is not None:
-        text, elapsed = _infer(prompt, max_tokens)
-        yield {"delta": text, "done": True, "elapsed_s": elapsed}
+        # Monta o prompt formatado (igual ao _infer)
+        system_block = f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
+        asst_block   = "<|im_start|>assistant\n"
+        max_user_chars = (_cfg.n_ctx - max_tokens - 128) * 3 \
+                         - len(system_block) - len(asst_block)
+        user_prompt = prompt
+        if max_user_chars > 0 and len(prompt) > max_user_chars:
+            user_prompt = prompt[:max_user_chars - 30] + "\n[contexto truncado]"
+
+        native_prompt = (
+            system_block
+            + f"<|im_start|>user\n{user_prompt}<|im_end|>\n"
+            + asst_block
+        )
+
+        t0      = time.monotonic()
+        pieces  = []
+        try:
+            for piece in _native.stream(native_prompt, max_tokens):
+                pieces.append(piece)
+                yield {"delta": piece, "done": False}
+        except Exception as exc:
+            yield {"delta": "", "done": True, "elapsed_s": 0,
+                   "error": str(exc)}
+            return
+
+        elapsed = round(time.monotonic() - t0, 3)
+        yield {"delta": "".join(pieces), "done": True, "elapsed_s": elapsed}
         return
 
     prompt_input = (
@@ -636,36 +688,28 @@ def _shutdown() -> None:
 
 
 def _sigterm_handler(signum, frame):
-    print("[SRV] Sinal recebido — iniciando shutdown ordenado.", flush=True)
-    try:
-        _shutdown()
-    except Exception:
-        pass
-    sys.exit(0)
+    """Sinaliza shutdown limpo."""
+    _shutdown_event.set()
 
 
-def _serve() -> None:
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind((HOST, PORT))
-    srv.listen(BACKLOG)
-    srv.settimeout(1.0)
-    PID_FILE.write_text(str(os.getpid()))
-    print(f"[SRV] PID={os.getpid()}  Porta={PORT}", flush=True)
+def _serve(host: str, port: int) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind((host, port))
+        srv.listen(BACKLOG)
+        srv.settimeout(1.0)          # ← ESSENCIAL: desbloqueia a cada 1s
+        print(f"[SERVER] Ouvindo em {host}:{port}", flush=True)
 
-    while True:
-        try:
-            conn, _ = srv.accept()
+        while not _shutdown_event.is_set():
+            try:
+                conn, addr = srv.accept()
+            except socket.timeout:
+                continue              # ← verifica _shutdown_event e volta
+            except OSError:
+                break
             threading.Thread(target=_handle, args=(conn,), daemon=True).start()
-        except socket.timeout:
-            continue
-        except KeyboardInterrupt:
-            print("\n[SRV] Encerrando...", flush=True)
-            _shutdown()
-            break
-        except Exception as e:
-            print(f"[SRV] accept error: {e}", flush=True)
-            traceback.print_exc()
+
+    print("[SERVER] Loop encerrado.", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -825,58 +869,48 @@ class ServerCLI:
             cpuset,
         )
         _load_model()
-        _serve()
+
+        # Grava PID para que _stop() consiga matar o processo
+        try:
+            PID_FILE.write_text(str(os.getpid()))
+        except Exception as e:
+            print(f"[WARN] Nao foi possivel gravar server.pid: {e}", flush=True)
+
+        try:
+            _serve(HOST, PORT)          # ← passa os argumentos
+        except KeyboardInterrupt:
+            print("\n[SRV] Interrompido pelo usuario (Ctrl+C).", flush=True)
+        finally:
+            _shutdown()
 
     def _stop(self) -> None:
         if not PID_FILE.exists():
-            print("[SRV] Nenhum servidor ativo (server.pid nao encontrado).")
+            print("[STOP] server.pid nao encontrado — servidor ja parou?")
             return
-
         try:
             pid = int(PID_FILE.read_text().strip())
-        except Exception:
-            print("[SRV] PID file corrupto.")
-            PID_FILE.unlink(missing_ok=True)
+        except (ValueError, OSError) as e:
+            print(f"[STOP] Erro ao ler server.pid: {e}")
             return
 
         try:
             if os.name == "nt":
+                # Windows: SIGTERM nao existe — usa taskkill
+                import subprocess
                 subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    ["taskkill", "/PID", str(pid), "/F"],
                     check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    capture_output=True,
                 )
             else:
-                os.kill(pid, signal.SIGTERM)
+                import signal as _signal
+                os.kill(pid, _signal.SIGTERM)
 
-            wait_timeout = 5.0
-            waited = 0.0
-            interval = 0.1
-            while waited < wait_timeout:
-                try:
-                    if os.name != "nt":
-                        os.kill(pid, 0)
-                    else:
-                        proc = None
-                    time.sleep(interval)
-                    waited += interval
-                except OSError:
-                    break
-            else:
-                if os.name != "nt":
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except Exception:
-                        pass
-
+            print(f"[STOP] Sinal enviado para PID {pid}.")
+        except (ProcessLookupError, PermissionError) as e:
+            print(f"[STOP] Processo {pid} nao encontrado ou sem permissao: {e}")
+        finally:
             PID_FILE.unlink(missing_ok=True)
-            print(f"[SRV] Encerrado (PID {pid}).")
-        except ProcessLookupError:
-            PID_FILE.unlink(missing_ok=True)
-            print(f"[SRV] Processo {pid} ja encerrado.")
-        except Exception as e:
-            print(f"[SRV] Erro ao parar: {e}")
 
     def _status(self) -> None:
         resp = self._query_status()

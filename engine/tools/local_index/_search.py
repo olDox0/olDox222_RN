@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from engine.tools.local_index._text_utils import decompress
+
 logger = logging.getLogger("engine.tools.local_index.search")
 
 # ---------------------------------------------------------------------------
@@ -487,7 +489,7 @@ def _assemble_result(
     title: str,
     path: str,
     body_text: str,
-    code_only: bool,
+    code_only: bool, 
 ) -> LocalResult:
     from engine.tools.local_index._text_utils import format_code_only_body
 
@@ -500,7 +502,13 @@ def _assemble_result(
     body = re.sub(r"\n\s*\n", "\n\n", body).strip()
     body = re.sub(rf"^\s*{re.escape(title)}\s*[:\-\|]?\s*(\r?\n)+", "", body, flags=re.IGNORECASE)
     body = re.sub(r"\n{3,}", "\n\n", body).lstrip()
-    return LocalResult(label, title, body, path)
+    
+    return LocalResult(
+        source=label,
+        title=title,
+        body=body,
+        path=path,
+    )
 
 
 # ===========================================================================

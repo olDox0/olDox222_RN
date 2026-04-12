@@ -350,46 +350,21 @@ def like_escape(s: str) -> str:
 # § Compressão (pyzstd opcional)
 # ===========================================================================
 
-def compress(data: bytes) -> bytes:
-    """Comprime com pyzstd (flag=0x01) ou armazena raw (flag=0x00)."""
-    try:
-        import pyzstd
-        return b"\x01" + pyzstd.compress(data)
-    except Exception:
-        logger.debug("pyzstd indisponível; armazenando payload raw (flag=0x00)")
-        return b"\x00" + data
+def compress(text: str) -> bytes:
+    """Comprime string para bytes usando zlib."""
+    if not text:
+        return b""
+    # level=6 é o padrão: ótimo balanço entre velocidade de escrita e tamanho final.
+    return zlib.compress(text.encode("utf-8"), level=6)
 
-
-def decompress(data: bytes) -> bytes:
-    """Descomprime payload gerado por compress().
-
-    Raises:
-        RuntimeError: flag desconhecida ou pyzstd ausente para payload comprimido.
-    """
+def decompress(data: bytes) -> str:
+    """Descomprime bytes de volta para string."""
     if not data:
-        return data
-    flag    = data[0:1]
-    payload = data[1:]
-
-    if flag == b"\x00":
-        return payload
-
-    if flag == b"\x01":
-        try:
-            import pyzstd
-            return pyzstd.decompress(payload)
-        except Exception:
-            raise RuntimeError("Falha ao descomprimir payload zstd: pyzstd ausente ou corrompido")
-
-    # Compatibilidade: blobs antigos sem flag mas com magic zstd
-    if len(data) >= 5 and data[1:5] == b"\x28\xb5\x2f\xfd":
-        try:
-            import pyzstd
-            return pyzstd.decompress(payload)
-        except Exception:
-            raise RuntimeError("Formato desconhecido e pyzstd indisponível")
-
-    return payload  # fallback: assume raw
+        return ""
+    try:
+        return zlib.decompress(data).decode("utf-8")
+    except Exception:
+        return ""
 
 
 # ===========================================================================

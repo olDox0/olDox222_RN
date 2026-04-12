@@ -29,10 +29,13 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import TYPE_CHECKING, Iterator, List, Optional
 
 from engine.telemetry.core import orn_span
 from engine.tools.inverted_index import InvertedIndexBuilder
+
+if TYPE_CHECKING:
+    from engine.tools.local_index._tokenizer import TokenizerBridge
 
 # ---------------------------------------------------------------------------
 # Config herdada do pacote pai (injetada por __init__.py ou definida aqui
@@ -47,10 +50,124 @@ except ImportError:
 
 logger = logging.getLogger("engine.tools.local_index.build")
 
+# ── Configuração do pitstop ──────────────────────────────────────────────────
+_PITSTOP_EVERY: int = 5000   # a cada N entradas processadas, faz pitstop
+_PITSTOP_GC_EVERY: int = 8   # a cada N pitstops, força gc.collect()
 
 # ---------------------------------------------------------------------------
 # Helpers de path (sem lógica de negócio)
 # ---------------------------------------------------------------------------
+
+def _simple_hash_tokens(text: str) -> list[int]:
+    """Fallback de tokenização sem TokenizerBridge (OSL-15)."""
+    import hashlib
+    import struct
+    tokens: list[int] = []
+    for word in text.lower().split():
+        h = struct.unpack(">I", hashlib.md5(word.encode("utf-8", errors="ignore")).digest()[:4])[0]
+        tokens.append(h % (2**30))
+    return tokens
+
+
+def _process_entry_with_pitstop(
+    idx: int,
+    title: str,
+    path: str,
+    html: str,
+    tok: "TokenizerBridge | None" = None,
+) -> "tuple[int, str, str, list[int], str] | None":
+    """Versão de _process_entry com pitstop do tokenizador.
+
+    Retorna (doc_id, title, path, tokens, body_clean) ou None se inválido.
+
+    O doc_id é derivado do idx para manter compatibilidade com o DB.
+    Os tokens são os IDs reais do vocabulário Qwen (via TokenizerBridge).
+    """
+    try:
+        # ── Limpeza HTML → texto (mesmo pipeline de antes) ──────────────
+        from engine.tools.local_index._text_utils import (   # lazy OSL-3
+            extract_code_blocks,
+            restore_code_placeholders,
+            clean_body,
+            strip_html,
+        )
+
+        html_no_code, code_blocks = extract_code_blocks(html)
+        raw_text = strip_html(html_no_code)
+        body = restore_code_placeholders(raw_text, code_blocks)
+        body = clean_body(body)
+
+        if not body or not body.strip():
+            return None
+
+        doc_id = idx  # 1-to-1 com o índice de entrada do ZIM
+
+        # ── PITSTOP: tokenização real ────────────────────────────────────
+        if tok is not None:
+            tokens = tok.tokenize(body)
+        else:
+            tokens = _simple_hash_tokens(body)
+        # ─────────────────────────────────────────────────────────────────
+
+        if not tokens:
+            return None
+
+        return doc_id, title, path, tokens, body
+
+    except Exception as exc:
+        logger.debug("[PROCESS_ENTRY] idx=%d erro=%s", idx, exc)
+        return None
+
+
+# ─── TRECHO DO build_index() COM PITSTOP (para substituição direta) ──────────
+
+def _build_index_pitstop_block(
+    zim_path: str | Path,
+    use_tokenizer_pitstop: bool = True,
+) -> "TokenizerBridge | None":
+    """Executa o pitstop e retorna o tokenizer pronto (ou None).
+
+    Chamar ANTES do loop de entradas em build_index():
+
+        tok = _build_index_pitstop_block(zim_path, use_tokenizer_pitstop)
+        try:
+            for idx, title, path, html in _iter_zim_entries(...):
+                result = _process_entry_with_pitstop(idx, title, path, html, tok)
+                ...
+        finally:
+            _build_index_pitstop_teardown(tok)
+    """
+    if not use_tokenizer_pitstop:
+        return None
+
+    from engine.tools.local_index._tokenizer import TokenizerBridge  # lazy
+
+    tok = TokenizerBridge()
+    mode = tok.pitstop()
+
+    _MODE_LABELS = {
+        "server": "servidor ORN (porta 8371) — zero overhead de carregamento",
+        "vocab":  "vocab_only GGUF — carregado localmente sem pesos",
+        "hash":   "FALLBACK hash deterministico — inicie o orn-server para qualidade maxima",
+    }
+    logger.info("[BUILD] Pitstop tokenizador: %s", _MODE_LABELS.get(mode, mode))
+
+    return tok
+
+
+def _build_index_pitstop_teardown(tok: "TokenizerBridge | None") -> None:
+    """Loga estatísticas e fecha o tokenizador no finally do build_index()."""
+    if tok is None:
+        return
+    stats = tok.stats()
+    logger.info(
+        "[BUILD] Pitstop finalizado — tokenizados=%d fallback=%d erros=%d modo=%s",
+        stats.get("tokenized", 0),
+        stats.get("fallback", 0),
+        stats.get("errors", 0),
+        stats.get("mode", "?"),
+    )
+    tok.close()
 
 def zim_to_source_id(zim_path: str | Path) -> str:
     """Deriva um source_id estável a partir do stem do arquivo ZIM."""
@@ -267,6 +384,18 @@ def _init_db(con: sqlite3.Connection) -> None:
     except Exception:
         pass
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS documents (
+            doc_id INTEGER PRIMARY KEY,
+            title TEXT,
+            path TEXT,
+            tokens BLOB,   -- MUDOU PARA BLOB
+            body BLOB,     -- MUDOU PARA BLOB
+            body_hash TEXT
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_documents_title ON documents(title)")
+    con.commit()
     con.execute("""
         CREATE TABLE IF NOT EXISTS pages (
             id            INTEGER PRIMARY KEY,

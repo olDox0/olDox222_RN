@@ -25,8 +25,8 @@ lib.orn_free.argtypes = []
 lib.orn_free.restype = None
 
 rc = lib.orn_init(
-    br"..\models\sicdox\Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF\qwen2.5-coder-0.5b-instruct-q4_k_m.gguf",
-    256,
+    br"..\models\sicdox\qwen2.5-coder-0.5b-instruct-q2_k.gguf",
+    2048,
     2,
 )
 print("orn_init =", rc)
@@ -34,7 +34,7 @@ print("orn_init =", rc)
 buf = create_string_buffer(8192)
 n = lib.orn_infer(
     b"Explique recursao em C em 3 linhas.",
-    64,
+    512,
     buf,
     len(buf),
 )

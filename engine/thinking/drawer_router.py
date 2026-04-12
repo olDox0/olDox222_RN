@@ -218,7 +218,7 @@ class DrawerRouter:
         return RouteResult(
             hit=True,
             code=snippet.code,
-            max_tokens_hint=128
+            max_tokens_hint=8192
         )
 
     # ------------------------------------------------------------------

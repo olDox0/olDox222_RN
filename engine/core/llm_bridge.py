@@ -40,7 +40,8 @@ from pathlib                  import Path
 from dataclasses              import dataclass
 from engine.core.cpu_affinity import apply_process_affinity
 from engine.telemetry.runtime import record_direct  # noqa: PLC0415
-from engine.core.prompt_utils import pitstop        # noqa: PLC0415
+#from engine.core.prompt_utils import pitstop        # noqa: PLC0415
+from engine.core.prompt_utils import clean_prompt, enforce_hard_limit  # noqa: PLC0415
 # ---------------------------------------------------------------------------
 # Configuração de memória
 # ---------------------------------------------------------------------------
@@ -80,13 +81,13 @@ class BridgeConfig:
     ttl_seconds:   int  =    400        # 1 hora (era 300s — inadequado para N2808)
     # max_tokens reduzido para testes — 679s foi causado por resposta gigante
     # Regra: 128 para testes rápidos, 512 para uso normal
-    max_tokens:    int   =   1024
-    response_hard_limit: int = 2048
+    max_tokens:    int   =   1000000 #1024, 2048, 4086
+    response_hard_limit: int = 1000000
     # Parâmetros de sampling (doc ORN_up — seção 3)
     # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
     temperature:    float =  0.40
     top_p:          float =  0.80       #top_p:          float =  0.85
-    top_k:          int   =  20         #top_k:          int   =  35
+    top_k:          int   =  25         #top_k:          int   =  35
     repeat_penalty: float =  1.05
     min_p:          float =  0.01       #min_p:          float =  0.05 ou None
     # Menemonização de repetições (com pruning LRU)
@@ -94,7 +95,7 @@ class BridgeConfig:
     repetition_memo_size:    int  = 128
     # Context rotation + compactação para conversas longas
     context_rotation: bool = True
-    context_compact_ratio:   float = 0.7
+    context_compact_ratio:   float = 0.6
     # Quantização do KV-cache (llama.cpp): ex. f16, q8_0, q4_0
     cache_type_k: str | None = None     # "q8_0", "q4_0", "f16"
     cache_type_v: str | None = None 
@@ -103,8 +104,7 @@ class BridgeConfig:
     rope_freq_scale: float | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
     flash_attn: bool = True             # flash_attn: True | None = None
-    #system_prompt: str = ("succinct. portuguese language") # system_prompt: str = "" 
-    system_prompt: str = ("Assistente Sucinto. Resposta breve. portugues")
+    system_prompt: str = ("succinct response. portuguese language") # system_prompt: str = "" 
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
         if value is None:
@@ -337,7 +337,7 @@ class ContextWindow:
     OSL-3: Sem alocação dinâmica além da lista inicial.
     OSL-6: get_turns() retorna cópia — não expõe referência interna.
     """
-    def __init__(self, max_tokens: int = 1024, rotation: bool = True, compact_ratio: float = 0.5) -> None:
+    def __init__(self, max_tokens: int, rotation: bool = True, compact_ratio: float = 0.5) -> None:
         if max_tokens <= 0:
             raise ValueError("max_tokens deve ser positivo.")
         self._max    = max_tokens
@@ -488,7 +488,7 @@ class SiCDoxBridge:
         if not prompt:
             raise ValueError("prompt não pode ser vazio.")
 
-        MAX_PROMPT_CHARS = 1200  # HARD LIMIT REAL
+        MAX_PROMPT_CHARS = 1000000  # HARD LIMIT REAL - 1200, 2400, 4800
 
         if len(prompt) > MAX_PROMPT_CHARS:
             prompt = prompt[-MAX_PROMPT_CHARS:]  # mantém parte mais recente
@@ -502,7 +502,10 @@ class SiCDoxBridge:
 
         # llm_bridge.py — linha ~414, após o pitstop
         #prompt, max_tokens = pitstop(prompt, max_tokens, active_window=self._cfg.active_window)
-        prompt, _ = pitstop(prompt, max_tokens, active_window=self._cfg.active_window)
+        prompt = clean_prompt(prompt)
+        if max_tokens is None or max_tokens < 1000:
+            max_tokens = 8192  #4096 
+            
         print(f"[DEBUG] após pitstop: max_tokens={max_tokens}", flush=True)  # ← temporário
 
         # ── Profiler: inicia sessão de medição ─────────────────────────
@@ -573,6 +576,7 @@ class SiCDoxBridge:
         # ── text_parse ─────────────────────────────────────────────────
         with _span("text_parse"):
             text  = resp["text"]
+            text = enforce_hard_limit(text, self._cfg.response_hard_limit)
             usage = resp.get("usage", {})
 
         if text is None or not text.strip():

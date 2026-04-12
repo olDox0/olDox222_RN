@@ -88,7 +88,7 @@ class DoxoBoard:
         max_drafts: Limite de drafts por sessão (evita crescimento sem controle).
     """
 
-    _MAX_CONTENT: int = 160   # chars máximos por draft no bloco final
+    _MAX_CONTENT: int = 320   # chars máximos por draft no bloco final
     _SECTION_SEP: str = "\n"
 
     def __init__(self, max_drafts: int = 16) -> None:
@@ -250,7 +250,7 @@ class DoxoBoard:
             "counter":    "C",   # Counter
             "format":     "F",   # Formato
         }
-        _MAX_COMPACT = 60
+        _MAX_COMPACT = 50
         parts: list[str] = []
         for role in role_order:
             items = sorted(grouped[role], key=lambda d: d.weight, reverse=True)
@@ -310,7 +310,7 @@ class CognitiveReducer:
     """
 
     @staticmethod
-    def reduce_file(filename: str, content: str, max_chars: int = 600) -> str:
+    def reduce_file(filename: str, content: str, max_chars: int = 2048) -> str:
         """Roteia o arquivo para o mastigador correto com base na extensão."""
         if not content or len(content) < max_chars:
             return content # Se for pequeno, deixa passar

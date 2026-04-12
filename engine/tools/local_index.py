@@ -1161,7 +1161,7 @@ def build_index(
     # Configuração via env — valores conservadores por padrão para N2808
     cpu_count      = os.cpu_count() or 2
     workers        = int(os.environ.get("SICDOX_WORKERS",        str(min(2, cpu_count))))
-    max_chars      = int(os.environ.get("SICDOX_MAX_CHARS",      "64000"))
+    max_chars      = int(os.environ.get("SICDOX_MAX_CHARS",      "1000000"))
     content_batch  = int(os.environ.get("SICDOX_CONTENT_BATCH",  "64"))
     build_inverted = os.environ.get("SICDOX_BUILD_INVERTED", "0").strip().lower() not in ("0", "false", "no")
 

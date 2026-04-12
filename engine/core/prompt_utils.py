@@ -3,22 +3,32 @@
 ORN — PromptUtils
 Pré-processamento de prompts antes da inferência.
 
-Dois objetivos:
-  1. Remove Redundant Terms  — elimina termos de cortesia e frases
-     redundantes que inflatam o token count sem ajudar o modelo.
-  2. Compression             — trunca o prompt para caber dentro da
-     active_window configurada, preservando a parte mais informativa.
+Responsabilidades (revisão pós-remoção do pitstop):
+
+  1. clean_prompt()       — Remove filler words em pt-BR.
+                            NÃO comprime, NÃO altera max_tokens.
+                            Substitui o papel ④ do antigo pitstop().
+
+  2. enforce_hard_limit() — Trunca o OUTPUT gerado pela IA se ultrapassar
+                            response_hard_limit (BridgeConfig).
+                            Aplicado PÓS-inferência, nunca antes.
+                            NÃO toca em max_tokens.
+
+  3. remove_redundant_terms() — preservada (usada por clean_prompt e testes).
+  4. compress_prompt()        — preservada mas NÃO chamada no pipeline principal.
+                                Disponível para uso pontual (ex: context_file).
+  5. pitstop()               — mantida por compatibilidade, mas REMOVIDA do ask().
+                                Não chamá-la no bridge evita truncagem do prompt.
 
 OSL-4:  Cada função faz uma coisa.
 OSL-15: Nunca levanta exceção — retorna texto original em caso de erro.
-OSL-18: stdlib only (re, unicodedata).
+OSL-18: stdlib only (re).
 God: Hephaestus — forja o prompt bruto em forma limpa antes de enviar.
 """
 
 from __future__ import annotations
 
 import re
-# [DOX-UNUSED] import unicodedata
 
 # ---------------------------------------------------------------------------
 # ④ Remove Redundant Terms
@@ -64,7 +74,7 @@ def remove_redundant_terms(text: str) -> str:
     Returns:
         Prompt limpo. Nunca mais curto que 4 caracteres (proteção de conteúdo).
     """
-    if not text or len(text) < 8:
+    if not text or len(text) < 4:
         return text
 
     try:
@@ -81,11 +91,91 @@ def remove_redundant_terms(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# ② Compression — truncagem por orçamento de tokens
+# Nova API pública — clean_prompt (substitui pitstop no bridge.ask())
+# ---------------------------------------------------------------------------
+
+def clean_prompt(prompt: str) -> str:
+    """Limpa o prompt removendo filler words. Não comprime, não toca max_tokens.
+
+    Chamado dentro de ask() ANTES de push no ContextWindow.
+    Substituiu pitstop() após a remoção da compressão destrutiva.
+
+    Args:
+        prompt: Texto original do usuário.
+
+    Returns:
+        Prompt limpo. Idêntico ao original se não houver filler words.
+    """
+    return remove_redundant_terms(prompt)
+
+
+# ---------------------------------------------------------------------------
+# Mecanismo de parada — enforce_hard_limit (aplicado PÓS-inferência)
+# ---------------------------------------------------------------------------
+
+# Marcador adicionado quando o output é cortado pelo hard limit.
+_HARD_LIMIT_MARKER = "\n\n[ORN] Resposta cortada pelo hard limit de tokens."
+
+
+def enforce_hard_limit(output: str, response_hard_limit: int) -> str:
+    """Trunca o OUTPUT gerado pela IA se ultrapassar response_hard_limit.
+
+    Não usa max_tokens — opera exclusivamente sobre o texto já gerado.
+    Corta no limite de palavra mais próximo para não quebrar tokens no meio.
+
+    Posição no pipeline:
+        bridge.ask() → _call_engine() → enforce_hard_limit(output) → retorno
+
+    Args:
+        output:               Texto gerado pelo LLM.
+        response_hard_limit:  Limite máximo de palavras (BridgeConfig).
+                              Palavras são usadas como proxy de tokens (≈1:1
+                              para código; conservador para prosa).
+
+    Returns:
+        Output original se dentro do limite, ou output truncado com marcador.
+    """
+    if not output or response_hard_limit <= 0:
+        return output
+
+    # Estimativa rápida: split por whitespace
+    words = output.split()
+    if len(words) <= response_hard_limit:
+        return output  # dentro do limite — sem tocar
+
+    try:
+        # Reconstrói até o limite de palavras preservando espaçamento original
+        # Estratégia: encontra a posição do char onde a palavra N termina
+        pos = 0
+        count = 0
+        for i, ch in enumerate(output):
+            if ch in (" ", "\t", "\n", "\r"):
+                if count >= response_hard_limit:
+                    pos = i
+                    break
+            else:
+                # início de uma nova palavra (transição de espaço para char)
+                if i == 0 or output[i - 1] in (" ", "\t", "\n", "\r"):
+                    count += 1
+        else:
+            pos = len(output)  # não encontrou limite (nunca deveria chegar aqui)
+
+        truncated = output[:pos].rstrip()
+        return truncated + _HARD_LIMIT_MARKER
+
+    except Exception:
+        return output  # OSL-15: falha silenciosa — preserva output original
+
+
+# ---------------------------------------------------------------------------
+# ② Compression — truncagem por orçamento de tokens (uso pontual)
 # ---------------------------------------------------------------------------
 
 def compress_prompt(text: str, max_chars: int) -> str:
     """Trunca o prompt para caber em max_chars.
+
+    NÃO usada no pipeline principal (ask()). Disponível para uso pontual
+    como injeção de context_file ou snippets longos do gaveteiro.
 
     Estratégia (em ordem de preferência):
       1. Se cabe, retorna sem modificação.
@@ -103,7 +193,7 @@ def compress_prompt(text: str, max_chars: int) -> str:
     if not text or len(text) <= max_chars:
         return text
 
-    max_chars = max(16, max_chars)
+    max_chars = max(100000, max_chars)
     budget = max_chars - 5  # reserva espaço para " […]"
 
     # Tenta cortar em limite de frase (para trás)
@@ -122,51 +212,11 @@ def compress_prompt(text: str, max_chars: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Pitstop — combina ④ + ② + ajuste de max_tokens
+# pitstop — mantida por compatibilidade (NÃO chamar no bridge.ask())
 # ---------------------------------------------------------------------------
 
 def pitstop(
     prompt: str,
-    max_tokens: int,
     active_window: int = 256,
 ) -> tuple[str, int]:
-    """Pit stop pré-inferência: limpa e comprime o prompt, ajusta max_tokens.
-
-    Combina Remove Redundant Terms e Compression numa única passada.
-    Chamado dentro de ask() antes de push no ContextWindow.
-
-    Args:
-        prompt:        Texto original do usuário.
-        max_tokens:    Limite de tokens de saída solicitado.
-        active_window: Tamanho da janela ativa em tokens (BridgeConfig).
-
-    Returns:
-        (prompt_limpo, max_tokens_ajustado)
-    """
-    if not prompt:
-        return prompt, max_tokens
-
-    # ④ Remove redundâncias antes de comprimir (reduz tamanho antes do corte)
-    cleaned = remove_redundant_terms(prompt)
-
-    # ② Comprime para caber no orçamento
-    # Estima: 1 token ≈ 3 chars. Reserva max_tokens para a resposta + 32 de overhead.
-    overhead = max_tokens + 32
-    prompt_budget_tokens = max(32, active_window - overhead)
-    max_chars = prompt_budget_tokens * 3
-    cleaned = compress_prompt(cleaned, max_chars)
-
-    # Ajuste de max_tokens: se o prompt ficou muito curto após limpeza,
-    # provavelmente é uma pergunta simples — limita a resposta para economizar tempo.
-    # Regra: prompts < 40 chars raramente precisam de 192 tokens de saída.
-    _KW_CODE = re.compile(
-        r"\b(faça|crie|escreva|gere|implemente|make|write|create|"
-        r"quicksort|mergesort|fibonacci|buffer|classe|class|def|função)\b",
-        re.IGNORECASE,
-    )
-
-#    if len(cleaned) < 40 and max_tokens > 64 and not _KW_CODE.search(cleaned):
-#        max_tokens = 64
-    cleaned = compress_prompt(cleaned, max_chars)
-    
-    return cleaned, max_tokens
+    return clean_prompt(prompt)

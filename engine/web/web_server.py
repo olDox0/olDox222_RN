@@ -70,13 +70,8 @@ def _run_crawler(query: str) -> tuple[str, str, str]:
 
 
 def _suggest_max_tokens(prompt: str) -> int:
-    """Escolhe max_tokens automaticamente para manter paridade com `orn think`."""
-    try:
-        from engine.core.executive import _adaptive_max_tokens  # noqa: PLC0415
-
-        return max(64, min(int(_adaptive_max_tokens(prompt)), 2048))
-    except Exception:
-        return 384
+    # Remove a limitação adaptativa e libera a IA para pensar até o fim.
+    return 8192 # 4096
 
 
 def _apply_code_hook_with_server_bridge(output: str, task: str, max_tokens: int) -> str:

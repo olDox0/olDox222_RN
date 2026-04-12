@@ -281,6 +281,28 @@
     transition: width 0.18s ease;
   }
 
+  /* cursor piscando — aparece enquanto tokens chegam */
+  .cursor {
+    display: inline-block;
+    width: 7px; height: 14px;
+    background: var(--accent);
+    margin-left: 2px;
+    vertical-align: middle;
+    animation: blink .7s step-end infinite;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+  }
+  
+  /* dot no header muda de cor conforme estado */
+  .status-dot.streaming { background: var(--success); animation: pulse .4s ease-in-out infinite; }
+  .status-dot.thinking  { background: var(--warn);    animation: pulse .8s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: .4; }
+    50%       { opacity: 1;  }
+  }
+
   /* ── EMPTY STATE ── */
   .empty-state {
     flex: 1;
@@ -428,29 +450,20 @@ const dot       = document.getElementById('dot');
 const statusTxt = document.getElementById('statusText');
 
 let busy = false;
-const streamReuseCache = new Map();
-const STREAM_REUSE_MAX_ITEMS = 20;
-const STREAM_REUSE_MAX_CHUNKS = 256;
-const STREAM_REUSE_MAX_OUTPUT_CHARS = 120000;
 
-function cacheStreamResult(requestId, output, chunks) {
-  if (!requestId) return;
-  let safeOutput = output || '';
-  if (safeOutput.length > STREAM_REUSE_MAX_OUTPUT_CHARS) {
-    safeOutput = safeOutput.slice(-STREAM_REUSE_MAX_OUTPUT_CHARS);
-  }
-  const safeChunks = Array.isArray(chunks) ? chunks.slice(-STREAM_REUSE_MAX_CHUNKS) : [];
-  streamReuseCache.set(requestId, {
-    request_id: requestId,
-    output: safeOutput,
-    chunks: safeChunks,
-    updated_at: Date.now(),
-  });
-  // Mantém cache local pequeno para reuso futuro.
-  if (streamReuseCache.size > STREAM_REUSE_MAX_ITEMS) {
-    const firstKey = streamReuseCache.keys().next().value;
-    if (firstKey) streamReuseCache.delete(firstKey);
-  }
+// ── Helpers ───────────────────────────────────────────────────
+function scrollBottom() { chat.scrollTop = chat.scrollHeight; }
+
+function setStatus(state) {
+  dot.className = 'status-dot ' + state;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function escCode(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 // ── Auto-resize textarea ──────────────────────────────────────
@@ -460,7 +473,6 @@ function resizeInput() {
 }
 input.addEventListener('input', resizeInput);
 input.addEventListener('keyup', resizeInput);
-
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -480,205 +492,111 @@ async function checkStatus() {
   try {
     const r = await fetch('/status', { signal: AbortSignal.timeout(2000) });
     const s = await r.json();
-    dot.className = 'status-dot online';
+    if (!busy) setStatus('online');
     const up = s.uptime_s || 0;
-    const h  = String(Math.floor(up / 3600)).padStart(2, '0');
-    const m  = String(Math.floor((up % 3600) / 60)).padStart(2, '0');
-    const sc = String(Math.floor(up % 60)).padStart(2, '0');
-    statusTxt.textContent = `online · ${h}:${m}:${sc} · ${s.requests || 0} req`;
+    const h  = String(Math.floor(up / 3600)).padStart(2,'0');
+    const m  = String(Math.floor((up % 3600) / 60)).padStart(2,'0');
+    const sc = String(Math.floor(up % 60)).padStart(2,'0');
+    statusTxt.textContent = `online · ${h}:${m}:${sc} · ${s.requests||0} req`;
   } catch {
-    dot.className = 'status-dot offline';
+    setStatus('offline');
     statusTxt.textContent = 'servidor offline';
   }
 }
 checkStatus();
 setInterval(checkStatus, 10000);
 
-// ── Markdown / code highlight ─────────────────────────────────
-function escCode(s) {
-  // Preserva indentação: substitui apenas caracteres HTML especiais,
-  // mantendo tabs (\t), espaços e quebras de linha intactos.
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function escHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
+// ── Markdown render ───────────────────────────────────────────
 function renderMarkdown(text) {
   const blocks = [];
+  if ((text.match(/```/g)||[]).length % 2 === 1) text += '\n```';
 
-  // Se vier bloco de código aberto (sem fechamento), fecha para renderizar corretamente
-  if ((text.match(/```/g) || []).length % 2 === 1) {
-    text += '\n```';
-  }
-
-  // 1. Extrai blocos de código ``` ... ```
-  // CRÍTICO: não aplica trim() no conteúdo — preserva indentação original
   text = text.replace(/```(\w*)[ \t]*\r?\n([\s\S]*?)```/g, (_, lang, code) => {
-    // Remove apenas a última quebra de linha (se houver), sem tocar na indentação
     const codeClean = code.replace(/\n$/, '');
     const tag = lang ? `<span class="lang-tag">${escHtml(lang)}</span>` : '';
+    const btn = `<button class="copy-btn" type="button">copiar</button>`;
     const idx = blocks.length;
-    const btn = `<button class="copy-btn" type="button" data-copy-code="1">copiar</button>`;
     blocks.push(`<pre>${btn}${tag}<code>${escCode(codeClean)}</code></pre>`);
     return `\x00BLOCK${idx}\x00`;
   });
 
-  // 2. Escapa HTML do texto restante (fora dos blocos)
-  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  // 3. Headers markdown
-  text = text.replace(/^#{6}\s+(.+)$/gm, '<h6>$1</h6>');
-  text = text.replace(/^#{5}\s+(.+)$/gm, '<h5>$1</h5>');
-  text = text.replace(/^#{4}\s+(.+)$/gm, '<h4>$1</h4>');
-  text = text.replace(/^#{3}\s+(.+)$/gm, '<h3>$1</h3>');
-  text = text.replace(/^#{2}\s+(.+)$/gm, '<h2>$1</h2>');
-  text = text.replace(/^#\s+(.+)$/gm,    '<h1>$1</h1>');
-
-  // 4. Negrito e itálico
-  text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  text = text.replace(/\*([^*\n]+)\*/g,     '<em>$1</em>');
-
-  // 5. Código inline
-  text = text.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-
-  // 6. Listas
-  text = text.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
+  text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  text = text.replace(/^#{3}\s+(.+)$/gm,'<h3>$1</h3>');
+  text = text.replace(/^#{2}\s+(.+)$/gm,'<h2>$1</h2>');
+  text = text.replace(/^#\s+(.+)$/gm,  '<h1>$1</h1>');
+  text = text.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');
+  text = text.replace(/\*([^*\n]+)\*/g,    '<em>$1</em>');
+  text = text.replace(/`([^`\n]+)`/g,'<code>$1</code>');
+  text = text.replace(/^[-*]\s+(.+)$/gm,'<li>$1</li>');
   text = text.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
 
-  // 7. Parágrafos (não envolve headers/ul/pre em <p>)
   const lines = text.split('\n');
   let html = '', inPara = false;
   for (const line of lines) {
-    const trimmed = line.trim();
-    const isBlock = /^<(h[1-6]|ul|li|pre|\x00BLOCK)/.test(trimmed) || trimmed === '';
+    const t = line.trim();
+    const isBlock = /^<(h[1-6]|ul|li|pre|\x00BLOCK)/.test(t) || t === '';
     if (isBlock) {
       if (inPara) { html += '</p>'; inPara = false; }
-      if (trimmed !== '') html += trimmed + '\n';
+      if (t) html += t + '\n';
     } else {
       if (!inPara) { html += '<p>'; inPara = true; }
       else html += '<br>';
-      html += trimmed;
+      html += t;
     }
   }
   if (inPara) html += '</p>';
-
-  // 8. Restaura blocos de código
   html = html.replace(/\x00BLOCK(\d+)\x00/g, (_, i) => blocks[+i]);
-
   return html;
 }
 
+// ── Copy button ───────────────────────────────────────────────
 async function copyCodeText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch {
     const ta = document.createElement('textarea');
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand('copy');
-    ta.remove();
-    return !!ok;
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy'); ta.remove(); return !!ok;
   }
 }
 
 chat.addEventListener('click', async (ev) => {
   const btn = ev.target.closest('.copy-btn');
   if (!btn) return;
-  const pre = btn.closest('pre');
-  const codeEl = pre ? pre.querySelector('code') : null;
-  if (!codeEl) return;
-  const ok = await copyCodeText(codeEl.innerText || codeEl.textContent || '');
+  const code = btn.closest('pre')?.querySelector('code');
+  if (!code) return;
+  const ok = await copyCodeText(code.innerText || code.textContent || '');
   if (!ok) return;
   const old = btn.textContent;
-  btn.textContent = 'copiado!';
-  btn.classList.add('copied');
-  setTimeout(() => {
-    btn.textContent = old || 'copiar';
-    btn.classList.remove('copied');
-  }, 1200);
+  btn.textContent = 'copiado!'; btn.classList.add('copied');
+  setTimeout(() => { btn.textContent = old; btn.classList.remove('copied'); }, 1200);
 });
 
-function updateModelMsg(msgEl, html, meta) {
-  if (!msgEl) return;
-  const bubble = msgEl.querySelector('.bubble');
-  if (!bubble) return;
-  bubble.innerHTML = html;
-  if (meta) {
-    const m = document.createElement('div');
-    m.className = 'meta';
-    const t = document.createElement('span');
-    t.textContent = meta;
-    m.appendChild(t);
-    bubble.appendChild(m);
-  }
-  chat.scrollTop = chat.scrollHeight;
-}
-
-// ── Append message ────────────────────────────────────────────
+// ── Append user message ───────────────────────────────────────
 function appendMsg(role, html, meta, source, sourceUrl) {
   if (empty.style.display !== 'none') empty.style.display = 'none';
-
   const div = document.createElement('div');
   div.className = `msg ${role}`;
-
   const av = document.createElement('div');
   av.className = 'avatar';
   av.textContent = role === 'user' ? 'EU' : 'ORN';
-
   const bub = document.createElement('div');
   bub.className = 'bubble';
   bub.innerHTML = html;
-
   if (meta || source) {
     const m = document.createElement('div');
     m.className = 'meta';
-    if (meta) {
-      const t = document.createElement('span');
-      t.textContent = meta;
-      m.appendChild(t);
-    }
-    // Badge de fonte — aparece quando source está presente
+    if (meta) { const t = document.createElement('span'); t.textContent = meta; m.appendChild(t); }
     if (source) {
       const badge = document.createElement('a');
       badge.className = 'source-badge';
       badge.textContent = source;
-      badge.title = sourceUrl || source;
-      if (sourceUrl) {
-        badge.href   = sourceUrl;
-        badge.target = '_blank';
-        badge.rel    = 'noopener noreferrer';
-      }
+      if (sourceUrl) { badge.href = sourceUrl; badge.target = '_blank'; badge.rel = 'noopener noreferrer'; }
       m.appendChild(badge);
     }
     bub.appendChild(m);
   }
-
-  div.appendChild(av);
-  div.appendChild(bub);
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
-  return div;
-}
-
-function appendThinking() {
-  const div = document.createElement('div');
-  div.className = 'msg model thinking-msg';
-  div.innerHTML = `
-    <div class="avatar">ORN</div>
-    <div class="bubble">
-      <div class="dots"><span></span><span></span><span></span></div>
-      <span>processando...</span>
-      <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
-    </div>`;
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
+  div.appendChild(av); div.appendChild(bub);
+  chat.appendChild(div); scrollBottom();
   return div;
 }
 
@@ -690,125 +608,112 @@ async function sendPrompt() {
   busy = true;
   sendBtn.disabled = true;
   input.value = '';
-  input.style.height = 'auto';
+  input.style.height = '48px';
 
+  // Mensagem do usuário
   appendMsg('user', escHtml(prompt));
 
-  const thinking = appendThinking();
-  const progressBar = thinking.querySelector('#progressBar');
-  let progressPulse = null;
-  if (progressBar) {
-    let pseudo = 8;
-    progressPulse = setInterval(() => {
-      pseudo = Math.min(92, pseudo + 2);
-      progressBar.style.width = `${pseudo}%`;
-    }, 180);
-  }
+  // Bubble do modelo — aparece IMEDIATAMENTE, vazia, com cursor
+  if (empty.style.display !== 'none') empty.style.display = 'none';
+  const modelDiv = document.createElement('div');
+  modelDiv.className = 'msg model';
+  modelDiv.innerHTML = `
+    <div class="avatar">ORN</div>
+    <div class="bubble" id="active-bubble">
+      <span id="stream-text"></span><span class="cursor" id="stream-cursor"></span>
+    </div>`;
+  chat.appendChild(modelDiv);
+  scrollBottom();
+
+  const streamText   = document.getElementById('stream-text');
+  const streamCursor = document.getElementById('stream-cursor');
+  const bubble       = document.getElementById('active-bubble');
+
+  setStatus('streaming');
+  statusTxt.textContent = 'gerando...';
+
+  const t0 = Date.now();
+  let full = '';
 
   try {
     const res = await fetch('/ask_stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt }),
     });
-    if (!res.body) {
-      throw new Error('stream indisponível');
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let output = '';
-    let elapsed = 0;
-    let chunks = 0;
-    const tokenChunks = [];
-    let liveMsg = null;
-    let requestId = null;
 
-    while (true) {
+    if (!res.body) throw new Error('stream indisponível');
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    outer: while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      while (buffer.includes('\n')) {
-        const idx = buffer.indexOf('\n');
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
-        if (!line) continue;
-        let event;
-        try { event = JSON.parse(line); } catch { continue; }
+      buf += decoder.decode(value, { stream: true });
 
-        if (event.event === 'start') {
-          requestId = event.request_id || requestId;
-        } else if (event.event === 'chunk') {
-          requestId = event.request_id || requestId;
-          const delta = event.delta || '';
-          output += delta;
-          tokenChunks.push(delta);
-          chunks += 1;
-          if (!liveMsg && output.trim()) {
-            if (progressPulse) clearInterval(progressPulse);
-            thinking.remove();
-            liveMsg = appendMsg('model', renderMarkdown(output), 'streaming…');
-          } else if (liveMsg) {
-            updateModelMsg(liveMsg, renderMarkdown(output), 'streaming…');
-          }
-          if (progressBar) {
-            const pct = Math.min(96, 10 + chunks * 3);
-            progressBar.style.width = `${pct}%`;
-          }
-        } else if (event.event === 'done') {
-          requestId = event.request_id || requestId;
-          output = event.output || output;
-          elapsed = event.elapsed_s || elapsed;
-          if (progressBar) progressBar.style.width = '100%';
-        } else if (event.event === 'error') {
-          throw new Error(event.error || 'erro no stream');
+      while (buf.includes('\n')) {
+        const idx  = buf.indexOf('\n');
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; }
+
+        if (ev.event === 'chunk' && ev.delta) {
+          full += ev.delta;
+          // Durante streaming: texto puro (rápido, sem parse de MD)
+          streamText.textContent = full;
+          scrollBottom();
+        }
+
+        if (ev.event === 'done') {
+          full = ev.output || full;
+          break outer;
+        }
+
+        if (ev.event === 'error') {
+          throw new Error(ev.error || 'erro no stream');
         }
       }
     }
 
-    if (progressPulse) clearInterval(progressPulse);
-    if (thinking.parentNode) thinking.remove();
-    if (!output || !output.trim()) {
-      const fallback = await fetch('/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
-      });
-      const data = await fallback.json();
-      if (data.error) throw new Error(data.error);
-      output = data.output || '';
-      elapsed = data.elapsed_s || elapsed;
-    }
-    const meta = `${elapsed || 0}s · streaming`;
-    cacheStreamResult(requestId, output, tokenChunks);
-    if (liveMsg) updateModelMsg(liveMsg, renderMarkdown(output), meta);
-    else appendMsg('model', renderMarkdown(output), meta);
-  } catch (e) {
-    if (progressPulse) clearInterval(progressPulse);
-    if (thinking.parentNode) thinking.remove();
-    // Fallback resiliente: tenta /ask quando stream falha (timeout/restart/etc).
+    // Fim do stream: renderiza markdown completo
+    streamCursor.remove();
+    streamText.innerHTML = renderMarkdown(full);
+
+  } catch (err) {
+    // Fallback: chama /ask síncrono
+    streamCursor.remove();
     try {
-      const fallback = await fetch('/ask', {
+      const fb   = await fetch('/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ prompt }),
       });
-      const data = await fallback.json();
-      if (data && data.output && data.output.trim()) {
-        const meta = `${data.elapsed_s || 0}s · fallback`;
-        appendMsg('model', renderMarkdown(data.output), meta);
-      } else {
-        const err = (data && data.error) ? data.error : (e && e.message ? e.message : 'erro desconhecido');
-        appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão/stream: ${err}</span>`);
-      }
-    } catch (fallbackErr) {
-      const msg = fallbackErr?.message || e?.message || 'erro desconhecido';
-      appendMsg('model', `<span style="color:#ef4444">⚠ Erro de conexão/stream: ${msg}</span>`);
+      const data = await fb.json();
+      if (data.error) throw new Error(data.error);
+      full = data.output || '';
+      streamText.innerHTML = renderMarkdown(full);
+    } catch (fb_err) {
+      streamText.innerHTML = `<span style="color:#ef4444">⚠ ${escHtml(fb_err.message || err.message)}</span>`;
     }
   }
 
+  // Meta linha (tempo)
+  const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.textContent = `${elapsed}s · streaming`;
+  bubble.appendChild(meta);
+
   busy = false;
   sendBtn.disabled = false;
+  setStatus('online');
+  checkStatus();
+  scrollBottom();
   input.focus();
 }
 </script>
