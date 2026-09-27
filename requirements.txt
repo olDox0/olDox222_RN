@@ -1,0 +1,25 @@
+#
+#
+#
+#       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+#   pip install llama-cpp-python \
+#   python -c "import llama_cpp; print(llama_cpp.__version__)"
+# --- Instalação manual do llama-cpp-python no Windows ---
+# --- Obrigatórias ---
+# --- Removidas ---
+# NÃO instalar via pip build — requer compilador C++ (MSVC/nmake).
+# ORN — Dependências
+# OSL-13: pins de versão para reprodutibilidade
+# OSL-18: preferir stdlib; externas somente quando necessário
+# Ou, se o doxoade w64toolkit já instalou, verificar com:
+# Referência: https://github.com/abetlen/llama-cpp-python/releases
+# Usar wheel pré-compilada:
+# colorama  → substituído por doxcolors (engine/ui/colors.py + colors.conf)
+# rich      → substituído por Display + ColorManager (zero deps)
+beautifulsoup4==4.15.0
+click==8.5.0
+cmake==4.4.3
+ninja==1.13.2
+numpy==2.5.3
+psutil==7.2.2
+toml==0.10.2

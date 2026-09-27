@@ -1,0 +1,55 @@
+# ============================================================
+# ORN Native Build Configuration (Metalcraft)
+# Hardware Alvo: Celeron N2808 (SSE4.2, No-AVX)
+# ============================================================
+
+[project]
+name = "orn_native"
+version = "1.0.0"
+type = "library"
+
+[compiler]
+engine = "gcc"
+std = "c11"
+opt = "O2"
+shield = true
+incremental = true
+
+[paths]
+sources = [
+    "native/*.c",
+    "engine/native/*.c"
+]
+headers = [
+    "native/",
+    "engine/native/"
+]
+output = "native/"
+
+# ============================================================
+# TARGETS DE COMPILAÇÃO
+# ============================================================
+
+# 1. ORN Backend Principal (Wrapper do Llama.cpp + Otimizações)
+# Inclui o otimizador de reuso de tokens (SIMD) e o wrapper de inferência.
+[[targets]]
+name = "orn_backend"
+sources = [
+    "native/orn_llama_wrapper.c",
+    "native/orn_optimizer.c",
+    "native/orn_varint.c"
+]
+output = "native/orn.dll"
+# CRÍTICO: -msse4.2 para o N2808. -DGGML_USE_CPU para forçar backend CPU.
+flags = ["-shared", "-msse4.2", "-mfpmath=sse", "-DGGML_USE_CPU"]
+opt = "O2"
+soteria = false
+
+# 2. HTML Stripper Nativo (Acelerador de limpeza de texto para o Crawler/Index)
+[[targets]]
+name = "orn_html_stripper"
+sources = ["engine/native/orn_html.c"]
+output = "engine/native/orn_html.dll"
+flags = ["-shared"]
+opt = "O2"
+soteria = false

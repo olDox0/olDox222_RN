@@ -1,0 +1,10 @@
+{
+    "self-diagnose": {
+        "description": "Usage: atlas_gen [OPTIONS]",
+        "options": []
+    },
+    "directory-diagnose": {
+        "description": "Usage: atlas_gen [OPTIONS]",
+        "options": []
+    }
+}

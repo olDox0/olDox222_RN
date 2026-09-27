@@ -1,0 +1,79 @@
+{
+  "meta": {
+    "total_prompts": 13,
+    "total_events": 183
+  },
+  "candidates": [
+    {
+      "rank": 1,
+      "name": "re.search() múltiplos sobre prompt.lower()",
+      "total_operations": 117,
+      "calls_per_prompt": 9.0,
+      "avg_ms": 0.344,
+      "source_functions": [
+        "_decompose_query (6 patterns)",
+        "_adaptive_max_tokens (3 patterns)"
+      ],
+      "cache_strategy": "dict { hash(prompt.lower()): (lang, task_type, max_tokens) }",
+      "savings": "Elimina 8 de 9 varreduras regex por call"
+    },
+    {
+      "rank": 2,
+      "name": "len(content) >> 2  (estimativa de tokens)",
+      "total_operations": 30,
+      "calls_per_prompt": 2.31,
+      "avg_ms": 0.0081,
+      "source_functions": [
+        "ContextWindow.push()",
+        "ContextWindow._compact_old_turns()"
+      ],
+      "breakdown": {
+        "push_ops": 30,
+        "eviction_ops": 0,
+        "compact_recalcs": 0
+      },
+      "cache_strategy": "Cache { turn_id: est } — invalida só no push; sum incremental",
+      "savings": "Elimina 0 recálculos desnecessários em evicções"
+    },
+    {
+      "rank": 3,
+      "name": "llm.tokenize() por turn (reconstrói inteiro a cada ask)",
+      "total_operations": 19,
+      "calls_per_prompt": 1.46,
+      "avg_ms": 3.9743,
+      "source_functions": [
+        "SiCDoxBridge._build_prompt_tokens()"
+      ],
+      "breakdown": {
+        "prompt_token_builds": 13,
+        "avg_turns_per_build": 1.5
+      },
+      "cache_strategy": "Token cache incremental: { sha256(role+content): token_ids } — appenda só turns novos",
+      "savings": "Elimina re-tokenização de turns imutáveis do histórico"
+    },
+    {
+      "rank": 4,
+      "name": "pitstop() chamado 2× por call (BUG)",
+      "total_operations": 16,
+      "calls_per_prompt": 1.23,
+      "avg_ms": 0.4518,
+      "source_functions": [
+        "SiCDoxBridge.ask() linhas ~410-415"
+      ],
+      "cache_strategy": "N/A — é um bug. Remover segunda chamada.",
+      "savings": "Elimina 100% de um pitstop() por call"
+    },
+    {
+      "rank": 5,
+      "name": "_memo cache (já ativo) — hit rate",
+      "total_operations": 2,
+      "calls_per_prompt": 0.15,
+      "avg_ms": 0.0151,
+      "source_functions": [
+        "SiCDoxBridge._memo_get()"
+      ],
+      "cache_strategy": "Já implementado. Aumentar repetition_memo_size para > 128.",
+      "savings": "Hit rate atual: 13.3% — 2 inferências completas evitadas"
+    }
+  ]
+}

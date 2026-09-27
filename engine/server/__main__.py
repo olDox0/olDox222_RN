@@ -1,0 +1,200 @@
+# --- DOXOADE_VULCAN_BOOTSTRAP:START ---
+from pathlib import Path as _doxo_path
+import importlib.util as _doxo_importlib_util
+import sys as _doxo_sys
+import time as _doxo_time
+
+_doxo_activate_vulcan = None
+_doxo_install_meta_finder = None
+_doxo_probe_embedded = None
+_doxo_project_root = None
+_doxo_boot_t0 = _doxo_time.monotonic()
+
+# --- Lazy-loader --- 
+_doxo_lazy_mod = None
+try:
+    if _doxo_project_root:
+        _doxo_lazy_policy_f = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_policy.json"
+        _doxo_lazy_src_f    = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "lazy_loader.py"
+        if _doxo_lazy_policy_f.exists() and _doxo_lazy_src_f.exists():
+            _doxo_lazy_spec = _doxo_importlib_util.spec_from_file_location(
+                "_doxoade_vulcan_lazy", str(_doxo_lazy_src_f)
+            )
+            if _doxo_lazy_spec and _doxo_lazy_spec.loader:
+                _doxo_lazy_mod = _doxo_importlib_util.module_from_spec(_doxo_lazy_spec)
+                _doxo_sys.modules["_doxoade_vulcan_lazy"] = _doxo_lazy_mod
+                _doxo_lazy_spec.loader.exec_module(_doxo_lazy_mod)
+                _doxo_lazy_mod.install(
+                    _doxo_lazy_mod.load_policy(_doxo_lazy_policy_f)
+                )
+except Exception:
+    pass
+
+_doxo_install_ms = 0
+_doxo_embedded_ms = 0
+_doxo_fallback_ms = 0
+
+for _doxo_base in[_doxo_path(__file__).resolve(), *_doxo_path(__file__).resolve().parents]:
+    _doxo_runtime_file = _doxo_base / ".doxoade" / "vulcan" / "runtime.py"
+    if not _doxo_runtime_file.exists():
+        continue
+    _doxo_spec = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_runtime", str(_doxo_runtime_file))
+    if not (_doxo_spec and _doxo_spec.loader):
+        continue
+    _doxo_mod = _doxo_importlib_util.module_from_spec(_doxo_spec)
+    _doxo_sys.modules["_doxoade_vulcan_runtime"] = _doxo_mod
+    _doxo_spec.loader.exec_module(_doxo_mod)
+    _doxo_activate_vulcan = getattr(_doxo_mod, "activate_vulcan", None)
+    _doxo_install_meta_finder = getattr(_doxo_mod, "install_meta_finder", None)
+    _doxo_probe_embedded = getattr(_doxo_mod, "probe_embedded", None)
+    _doxo_project_root = str(_doxo_base)
+    break
+
+# 1. Instala MetaFinder primeiro
+if callable(_doxo_install_meta_finder) and _doxo_project_root:
+    _doxo_t = _doxo_time.monotonic()
+    try:
+        _doxo_install_meta_finder(_doxo_project_root)
+    except Exception:
+        pass
+    finally:
+        _doxo_install_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
+
+# 2. Tenta usar o loader "embedded"
+try:
+    _doxo_t = _doxo_time.monotonic()
+    if _doxo_project_root:
+        _embedded_path = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "vulcan_embedded.py"
+        if _embedded_path.exists():
+            _doxo_spec2 = _doxo_importlib_util.spec_from_file_location("_doxoade_vulcan_embedded", str(_embedded_path))
+            if _doxo_spec2 and _doxo_spec2.loader:
+                _doxo_mod2 = _doxo_importlib_util.module_from_spec(_doxo_spec2)
+                _doxo_sys.modules["_doxoade_vulcan_embedded"] = _doxo_mod2
+                _doxo_spec2.loader.exec_module(_doxo_mod2)
+                _doxo_activate_embedded = getattr(_doxo_mod2, "activate_embedded", None)
+                _doxo_safe_call = getattr(_doxo_mod2, "safe_call", None)
+                if callable(_doxo_activate_embedded):
+                    try:
+                        _doxo_activate_embedded(globals(), __file__, _doxo_project_root)
+                    except Exception:
+                        pass
+                if callable(_doxo_safe_call):
+                    try:
+                        import sys as _d_sys
+                        _bin_dir = _doxo_path(_doxo_project_root) / ".doxoade" / "vulcan" / "bin"
+                        _vulcan_suffix = _d_sys.intern("_vulcan_optimized")
+                        _suffix_len    = len(_vulcan_suffix)
+                        for mname, mod in list(_d_sys.modules.items()):
+                            try:
+                                mfile = getattr(mod, "__file__", None)
+                                if not mfile:
+                                    continue
+                                mpath = _doxo_path(mfile)
+                                if _bin_dir not in mpath.parents:
+                                    continue
+                                for attr in dir(mod):
+                                    if not attr.endswith(_vulcan_suffix):
+                                        continue
+                                    native_obj = getattr(mod, attr, None)
+                                    if not callable(native_obj):
+                                        continue
+                                    base = attr[: -_suffix_len]
+                                    try:
+                                        setattr(mod, base, _doxo_safe_call(native_obj, getattr(mod, base, None)))
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+except Exception:
+    pass
+finally:
+    _doxo_embedded_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
+
+# 3. Fallback: runtime.activate_vulcan
+if callable(_doxo_activate_vulcan):
+    _doxo_t = _doxo_time.monotonic()
+    try:
+        _doxo_activate_vulcan(globals(), __file__)
+    except Exception:
+        pass
+    finally:
+        _doxo_fallback_ms = int((_doxo_time.monotonic() - _doxo_t) * 1000)
+
+# 4. Diagnóstico opcional
+if callable(_doxo_probe_embedded):
+    try:
+        __doxoade_vulcan_probe__ = _doxo_probe_embedded(_doxo_project_root)
+        __doxoade_vulcan_probe__["install_meta_ms"] = _doxo_install_ms
+        __doxoade_vulcan_probe__["embedded_load_ms"] = _doxo_embedded_ms
+        __doxoade_vulcan_probe__["fallback_ms"] = _doxo_fallback_ms
+        __doxoade_vulcan_probe__["boot_ms"] = int((_doxo_time.monotonic() - _doxo_boot_t0) * 1000)
+        if _doxo_sys.environ.get("VULCAN_DIAG", "").strip() == "1":
+            _doxo_sys.stderr.write(
+                "[VULCAN:DIAG] "
+                + "finder_count=" + str(__doxoade_vulcan_probe__.get("finder_count", 0)) + " "
+                + "bin=" + str(__doxoade_vulcan_probe__.get("bin_count", 0)) + " "
+                + "lib_bin=" + str(__doxoade_vulcan_probe__.get("lib_bin_count", 0)) + " "
+                + "boot_ms=" + str(__doxoade_vulcan_probe__.get("boot_ms", 0)) + " "
+                + "install_ms=" + str(__doxoade_vulcan_probe__.get("install_meta_ms", 0)) + " "
+                + "embedded_ms=" + str(__doxoade_vulcan_probe__.get("embedded_load_ms", 0)) + " "
+                + "fallback_ms=" + str(__doxoade_vulcan_probe__.get("fallback_ms", 0)) + "\n"
+            )
+    except Exception:
+        pass
+# --- DOXOADE_VULCAN_BOOTSTRAP:END ---
+
+
+# -*- coding: utf-8 -*-
+# engine/server/__main__.py
+from pathlib import Path
+import importlib.util
+import sys
+
+from engine.server.server import ServerCLI
+
+#from engine.core.import_hook import install_lazy_imports
+#install_lazy_imports([
+#    "engine",
+#    "doxoade",
+#])
+
+def _load_python_server_cli_fallback():
+    server_file = Path(__file__).resolve().parent / "server.py"
+    spec = importlib.util.spec_from_file_location("_orn_server_cli_fallback", str(server_file))
+    if not spec or not spec.loader:
+        raise RuntimeError("Falha ao criar spec para fallback de engine.server.server")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.ServerCLI
+
+
+def _is_wrapper_signature_type_error(exc: TypeError) -> bool:
+    msg = str(exc)
+    signature_tokens = (
+        "positional argument",
+        "required positional argument",
+        "unexpected keyword argument",
+    )
+    wrapper_tokens = (
+        "ServerCLI",
+        "_vulcan_optimized",
+        "v_",
+        "optimized",
+    )
+    return any(token in msg for token in signature_tokens) and any(token in msg for token in wrapper_tokens)
+
+
+def main():
+    try:
+        ServerCLI().run(sys.argv[1:])
+    except TypeError as exc:
+        if not _is_wrapper_signature_type_error(exc):
+            raise
+        fallback = _load_python_server_cli_fallback()
+        fallback().run(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,1 @@
+echo set PATH=%%~dp0;%%PATH%% >> .\venv\Scripts\activate.bat
