@@ -46,7 +46,7 @@ class NativeBackend:
         if not self._dll_path.exists():
             raise FileNotFoundError(f"orn.dll não encontrado em: {self._dll_path}")
         
-        # --- CORREÇÃO AQUI: Adicionar o winlibs ao path de DLLs ---
+        # --- CORREÇÃO: Adicionar o winlibs ao path de DLLs ---
         dll_dirs = [
             self._dll_path.parent,
             Path(r"C:\winlibs\mingw64\bin"),  # <-- ADICIONADO
@@ -62,24 +62,19 @@ class NativeBackend:
             seen.add(key)
             if hasattr(os, "add_dll_directory"):
                 os.add_dll_directory(str(d))
-
+        
         lib = cdll.LoadLibrary(str(self._dll_path))
-
         lib.orn_init.argtypes  = [c_char_p, c_int, c_int]
         lib.orn_init.restype   = c_int
         lib.orn_infer.argtypes = [c_char_p, c_int, c_char_p, c_int]
         lib.orn_infer.restype  = c_int
         lib.orn_free.argtypes  = []
         lib.orn_free.restype   = None
-
-        rc = lib.orn_init(
-            self._model_path.encode("utf-8"),
-            self._n_ctx,
-            self._n_threads,
-        )
+        
+        rc = lib.orn_init(self._model_path.encode("utf-8"), self._n_ctx, self._n_threads)
         if rc != 0:
             raise RuntimeError(f"orn_init falhou: {rc}")
-
+        
         self._lib   = lib
         self._ready = True
 
@@ -213,3 +208,4 @@ class NativeBackend:
             yield result["text"]
         elif rc not in (0, None):
             raise RuntimeError(f"orn_infer_stream falhou: {rc}")
+

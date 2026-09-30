@@ -16,10 +16,17 @@
 # Usar wheel pré-compilada:
 # colorama  → substituído por doxcolors (engine/ui/colors.py + colors.conf)
 # rich      → substituído por Display + ColorManager (zero deps)
+<<<<<<< HEAD
 beautifulsoup4==4.15.0
 click==8.5.0
 cmake==4.4.3
 ninja==1.13.2
 numpy==2.5.3
 psutil==7.2.2
+=======
+beautifulsoup4==4.14.2
+click==8.3.1
+numpy>=1.26.0             # VectorDB coseno (Osíris) — já instalado
+psutil==7.1.3
+>>>>>>> origin/main
 toml==0.10.2

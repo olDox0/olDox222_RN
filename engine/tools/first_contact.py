@@ -162,3 +162,4 @@ def hardware_profile() -> dict[str, str]:
         profile["llama_cpp"] = "não verificado"
 
     return profile
+

@@ -137,6 +137,7 @@ chief_dossier.json (sessao atual):
 
 ---
 
+<<<<<<< HEAD
 ---
 ## 2026.09.21 — Migração para winlibs e Resolução do I-007
 ### [INFRA] Migração da Toolchain: w64devkit → winlibs
@@ -162,6 +163,8 @@ chief_dossier.json (sessao atual):
 
 ---
 
+=======
+>>>>>>> origin/main
 ## Resultados de Performance Confirmados
 
   Primeira carga (cache frio): ~80s
@@ -246,4 +249,8 @@ Referencia: REP.INFRA.20260209.GOLD + relatorio de memoria (KV-cache)
 
 ---
 
+<<<<<<< HEAD
 *Proximo volume: vol3_atualizacoes_0300.md (Fase 2: audit + graph)*
+=======
+*Proximo volume: vol3_atualizacoes_0300.md (Fase 2: audit + graph)*
+>>>>>>> origin/main

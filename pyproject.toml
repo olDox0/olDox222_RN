@@ -35,3 +35,8 @@ max_file_lines       = 500
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts   = "-v --tb=short"
+[tool.doxoade.lan_git]
+enabled = true
+silo_name = "ORN_proj"
+default_port = 9418
+smart_http_port = 8080

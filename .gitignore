@@ -1,4 +1,5 @@
 # Arquivos de Cache do Python
+tests/
 __pycache__/
 *.py[cod]
 *.pyc
@@ -13,6 +14,7 @@ env/
 
 # Arquivos de Build e Distribuição (para PyInstaller)
 thirdparty/
+llama.cpp/
 build/
 dist/
 *.egg-info/
@@ -88,7 +90,6 @@ models/sicdox/
 !tests/
 !tests/**
 
-
 # ====== C/C++ (Metalcraft & Native) ======
 *.o
 *.obj
@@ -107,3 +108,4 @@ obj/
 
 # --- Auto-Quarentena Doxoade Guardian ---
 ./models/sicdox/qwen2.5-coder-0.5b-instruct-q2_k.gguf
+

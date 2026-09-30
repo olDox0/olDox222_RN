@@ -47,4 +47,8 @@ if exist "%LLAMA_LIB_PATH%\libllama.dll" (
 
 echo.
 echo [OK] orn.dll gerado.
+<<<<<<< HEAD
 pause
+=======
+pause
+>>>>>>> origin/main

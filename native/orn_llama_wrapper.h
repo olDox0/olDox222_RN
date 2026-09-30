@@ -31,9 +31,6 @@ ORN_API int orn_infer_stream(
 
 ORN_API void orn_free(void);
 
-/* NOVA: Trunca o KV-cache para reutilização de prefixo */
-ORN_API void orn_kv_truncate(int keep_tokens);
-
 #ifdef __cplusplus
 }
 #endif
