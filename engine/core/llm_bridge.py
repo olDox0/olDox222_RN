@@ -105,6 +105,34 @@ class BridgeConfig:
     # Flash Attention (quando suportado pelo backend/llama.cpp)
     flash_attn: bool = True             # flash_attn: True | None = None
     system_prompt: str = ("succinct response. portuguese language") # system_prompt: str = "" 
+    @classmethod
+    def smol_profile(cls) -> "BridgeConfig":
+        """Perfil otimizado para SmolLM2-135M no PC-B Bluebaby."""
+        return cls(
+            model_path=Path("models/smol_sys/SmolLM2-135M-Instruct-Q4_K_M.gguf"),
+            memory_profile="default",
+            n_ctx=2048,
+            active_window=1024,
+            n_batch=512,
+            n_threads=8,
+            n_threads_batch=8,
+            n_gpu_layers=0,
+            use_mmap=True,
+            use_mlock=False,
+            no_alloc=True,
+            pin_threads=True,
+            cont_batching=True,
+            ttl_seconds=1800,
+            max_tokens=1024,
+            temperature=0.5,
+            top_p=0.9,
+            top_k=40,
+            repeat_penalty=1.1,
+            min_p=0.05,
+            flash_attn=True,
+            # Ajustar após teste de template
+            system_prompt="Você é um assistente útil. Responda sempre em português brasileiro."
+        )
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
         if value is None:
