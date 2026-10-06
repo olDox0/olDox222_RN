@@ -105,6 +105,45 @@ class BridgeConfig:
     # Flash Attention (quando suportado pelo backend/llama.cpp)
     flash_attn: bool = True             # flash_attn: True | None = None
     system_prompt: str = ("succinct response. portuguese language") # system_prompt: str = "" 
+
+    @classmethod
+    def brunnr_profile(cls) -> "BridgeConfig":
+        """Perfil dedicado para Brunnr v0.1 (SmolLM2-135M + LoRA bilíngue PT/EN).
+        
+        Brunnr é um assistente bilíngue focado em código Python.
+        System prompt instrui o modelo a responder na mesma língua do usuário.
+        """
+        return cls(
+            model_path=Path("models/smol_sys/SmolLM2-135M-Instruct-Q4_K_M.gguf"),
+            memory_profile="default",
+            n_ctx=2048,
+            active_window=1024,
+            n_batch=512,
+            n_threads=8,
+            n_threads_batch=8,
+            n_gpu_layers=0,
+            use_mmap=True,
+            use_mlock=False,
+            no_alloc=True,
+            pin_threads=True,
+            cont_batching=True,
+            ttl_seconds=1800,
+            max_tokens=1024,
+            temperature=0.5,
+            top_p=0.9,
+            top_k=40,
+            repeat_penalty=1.1,
+            min_p=0.05,
+            flash_attn=True,
+            system_prompt=(
+                "Você é Brunnr, uma IA assistente de programação bilíngue (PT/EN).\n"
+                "Responda sempre na mesma língua do usuário.\n"
+                "Seja conciso, técnico e direto.\n"
+                "Quando gerar código, inclua docstrings na língua do usuário.\n"
+                "Nunca invente APIs ou funções que não existem."
+            )
+        )
+
     @classmethod
     def smol_profile(cls) -> "BridgeConfig":
         """Perfil otimizado para SmolLM2-135M no PC-B Bluebaby."""

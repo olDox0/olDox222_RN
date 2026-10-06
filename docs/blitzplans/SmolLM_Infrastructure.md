@@ -660,170 +660,876 @@ python tests/bench_smol_vs_qwen.py
 
 ---
 
-# ⚡ BLITZPLAN: Infraestrutura SmolLM 135M (PC-B Bluebaby)
-**Protocolo**: ProDeNov v1.0 | **Data**: 2026-10-02  
-**Hardware Alvo**: Dell Inspiron 15 3520 (i5-1235U, 16GB RAM, AVX2)  
-**Status**: 🟢 Fase 1 Concluída | 🟡 Fase 2 (Treino Real) em Andamento  
+
+# 🎯 RIT — ATO 1: Preparação do Ambiente "Lite" para LoRA (PC-B Bluebaby)
+
+**Protocolo**: ProDeNov v1.0 | **Hardware**: PC-B Bluebaby (i5-1235U, 16GB RAM, AVX2)  
+**Data**: 2026-10-02 | **Status**: 🟢 Pronto para Execução  
+**Foco**: Sistema "lite" para portabilidade máxima
 
 ---
 
-## 1. Resultados Reais de Benchmark (Fase 1 Validada)
-| Métrica | SmolLM 135M (Q4_K_M) | Qwen 0.5B (Q2_K) | Ganho |
-|---|---|---|---|
-| **Tempo de Carga** | **192 ms** | 910 ms | **4.7x mais rápido** |
-| **Inferência Curta** | **77 tok/s** | 23 tok/s | **3.3x mais rápido** |
-| **Inferência Média** | **110 tok/s** | 42 tok/s | **2.6x mais rápido** |
-| **Footprint de RAM** | ~100 MB | ~200 MB | **2x mais leve** |
-| **Qualidade (Zero-shot)**| ⚠️ Alucina (Template) | ✅ Coerente | Qwen vence |
-| **Potencial de Treino** | ✅ Alto (LoRA viável) | ❌ Baixo (Pesado) | **SmolLM vence** |
+## 🧠 Brainstorming & Análise de Viabilidade (ProDeNov 1.1)
+
+### Caminhos "Lite" para LoRA
+
+| Caminho | Dependências | Tamanho | Portabilidade | Complexidade | Educacional |
+|---|---|---|---|---|---|
+| **L1**: `llama.cpp` CLI nativo | Zero (C puro) | ~10MB | ⭐⭐⭐⭐⭐ | 🔴 Alta (compilação) | ⭐⭐⭐⭐⭐ |
+| **L2**: `llama-cpp-python` LoRA | `llama-cpp-python` | ~50MB | ⭐⭐⭐⭐ | 🟡 Média | ⭐⭐⭐⭐ |
+| **L3**: `peft` + `transformers` CPU | PyTorch CPU + transformers + peft | ~3GB | ⭐⭐⭐ | 🟢 Baixa | ⭐⭐⭐⭐⭐ |
+
+### Recomendação: **Caminho L1 → L2 → L3** (ordem de tentativa)
+
+**Por que L1 é o ideal para "lite + portabilidade":**
+1. **Zero dependências Python** além do que já temos (`llama-cpp-python` para inferência)
+2. **Binário C puro** (~10MB), portável para qualquer sistema com GCC
+3. **Evita o "Space Plague"** e outros incidentes de compilação no Windows
+4. **Alinhado com a filosofia ORN**: CPU-first, minimalismo, previsibilidade
+
+**Risco (ProDeNov 0.2):** Compilar `llama.cpp finetune` no Windows pode cair no **Rabbit Hole** do Incidente I-007 (`CreateFile2`). Mitigação: ter o Plano B (L2) e Plano C (L3) prontos.
 
 ---
 
-## 2. Lições Aprendidas e Diagnóstico (Typhon)
-- **Onde?**: `engine/core/llm_bridge.py` e `tests/test_smol_template.py`
-- **O que?**: O SmolLM responde de forma "estranha" ou em inglês.
-- **Por que?**: O template de prompt do Qwen (`<|im_start|>`) não é o nativo do SmolLM, e o modelo base não foi fine-tunado extensivamente em português.
-- **Consequência**: Isso **valida a necessidade** da Fase 2 (Treinamento LoRA). O modelo é uma "lousa em branco" perfeita para nosso estudo de orquestração de dados.
-- **Solução Imediata**: O pipeline de inferência está 100% funcional. A "alucinação" é um comportamento esperado do modelo base, não um bug do nosso código.
+## 📋 Tasklist com Planos A/B/C (ProDeNov 1.2)
 
----
-
-## 3. Tasklist Atualizada (Fase 2: Treinamento Real)
-- [x] Dataset mínimo (`python_code.jsonl`) criado e validado.
-- [x] `dataset_loader.py` operacional.
-- [x] `lora_trainer.py` com fallback de simulação validado.
-- [ ] **PRÓXIMO**: Implementar orquestração real via `subprocess` para `llama.cpp` (Plano B).
-- [ ] Validar carregamento do adapter LoRA gerado no `llm_bridge`.
-
----
-
-## 4. Placeholders de Código (Status: Validados)
-- `engine/training/dataset_loader.py`: Lê JSONL, valida schema, retorna lista de strings.
-- `engine/training/telemetry.py`: Grava métricas em `telemetry/training_run.jsonl` com fail-safe.
-- `engine/training/lora_trainer.py`: Orquestra o fluxo. Atualmente em modo simulação, pronto para upgrade para CLI real.
-
----
-
-# 🎯 Opção B — Treinamento LoRA Real (PC-B Bluebaby)
-
-Excelente escolha. Vamos sair da simulação e entrar no treinamento real. Antes de executar, preciso aplicar o **ProDeNov 1.1** (brainstorming + viabilidade) para evitar o *rabbit hole* da compilação C++.
-
----
-
-## 🧠 Brainstorming & Análise de Viabilidade
-
-### Caminhos Possíveis
-
-| Caminho | Complexidade | Tempo | Risco | Educacional |
-|---|---|---|---|---|
-| **B1**: Compilar `llama.cpp finetune` (C++) | 🔴 Alta | 60-120min | Alto (headers MinGW) | ⭐⭐⭐⭐ |
-| **B2**: `peft` + `transformers` (Python/PyTorch) | 🟡 Média | 30-45min | Baixo | ⭐⭐⭐⭐⭐ |
-| **B3**: `unsloth` (otimizado) | 🔴 Alta | 45min | Alto (requer GPU) | ⭐⭐⭐ |
-
-### Recomendação: **Caminho B2 (`peft` + `transformers`)**
-
-**Por que B2 é o ideal para o seu objetivo:**
-
-1. **Objetivo declarado**: "estudar orquestração de treinamento" → `peft` é o **padrão da indústria** para LoRA
-2. **Hardware compatível**: i5-1235U + 16GB RAM aguenta PyTorch CPU + SmolLM 135M tranquilamente
-3. **Evita rabbit hole**: Compilar `llama.cpp finetune` no Windows já nos deu o Incidente I-007 (`CreateFile2`). Não precisamos repetir isso.
-4. **Integra com o pipeline Python** que já construímos (`dataset_loader.py`, `telemetry.py`)
-5. **SmolLM2 tem suporte oficial** no `transformers` (arquitetura `LlamaForCausalLM`)
-
-### Análise de Recursos (Typhon)
-
-| Recurso | Necessário | Disponível no PC-B | Status |
-|---|---|---|---|
-| RAM para PyTorch + modelo | ~3-4 GB | 16 GB total (~3.7GB livre) | ✅ OK |
-| RAM para LoRA rank=4 | ~50-100 MB | Folga suficiente | ✅ OK |
-| CPU (AVX2) | i5-1235U | 10 cores (2P+8E) | ✅ OK |
-| Disco para `torch` | ~2.5 GB | 126 GB livre | ✅ OK |
-| Dataset | 10 amostras | `data/training/python_code.jsonl` | ✅ Pronto |
-
----
-
-## 📋 Tasklist com Planos A/B/C
-
-### **Fase B.1: Instalação das Dependências** (Prioridade: Alta | Prazo: 10min)
+### **ATO 1.1: Verificar Suporte Nativo a LoRA no `llama-cpp-python`** (Prioridade: Alta | Prazo: 2min)
 
 | # | Tarefa | Plano A | Plano B | Plano C |
 |---|---|---|---|---|
-| B.1.1 | Instalar `torch` (CPU-only) | `pip install torch --index-url https://download.pytorch.org/whl/cpu` | Versão estável via PyPI | Pular (usar `peft` sem `torch` — inviável) |
-| B.1.2 | Instalar `transformers` + `peft` | `pip install transformers peft datasets` | Versões pinned | Fallback para `trl` |
-| B.1.3 | Validar imports | `python -c "import torch, transformers, peft"` | Teste isolado | Skip se B.1.1 falhar |
+| 1.1.1 | Verificar API do `llama-cpp-python` | `python -c "from llama_cpp import Llama; print(dir(Llama))"` | Documentação oficial | Skip se L1 falhar |
+| 1.1.2 | Testar método `train_lora()` ou similar | Se existir, usar diretamente | Fallback para L2 | Fallback para L3 |
 
-### **Fase B.2: Adapter do Trainer para `peft`** (Prioridade: Alta | Prazo: 20min)
+**Critério de sucesso**: Identificar se `Llama` tem método de treino LoRA (ex: `train_lora()`, `finetune()`, `lora_train()`).
 
-| # | Tarefa | Plano A | Plano B | Plano C |
-|---|---|---|---|---|
-| B.2.1 | Reescrever `lora_trainer.py` usando `peft` | `LoraConfig` + `SFTTrainer` ou loop custom | Loop manual com `torch.optim` | Manter simulação atual |
-| B.2.2 | Tokenização compatível com SmolLM | `AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM2-135M-Instruct")` | Tokenizer local | Fallback para Qwen tokenizer |
-| B.2.3 | Conversão dataset → formato `peft` | JSONL → lista de dicts com `text` | Formato alpaca (`instruction`/`output`) | Formato custom |
+---
 
-### **Fase B.3: Execução do Treino Real** (Prioridade: Alta | Prazo: 15min)
+### **ATO 1.2: Preparar Ambiente para `llama.cpp` CLI (Plano L1)** (Prioridade: Alta | Prazo: 10min)
 
 | # | Tarefa | Plano A | Plano B | Plano C |
 |---|---|---|---|---|
-| B.3.1 | Treinar 1 epoch (10 amostras) | `trainer.train()` com logging | Loop manual com `loss.backward()` | Simulação (fallback) |
-| B.3.2 | Salvar adapter em GGUF ou bin | `model.save_pretrained()` | Exportar para `safetensors` | Adapter dummy |
-| B.3.3 | Telemetria real (loss, lr, step) | Integrar com `telemetry.py` | Print no stdout | Telemetria fake |
+| 1.2.1 | Verificar se `llama-finetune` já existe | `where llama-finetune` ou `dir native\*.exe` | Compilar do `llama.cpp` source | Skip se L2/L3 |
+| 1.2.2 | Se não existir, clonar `llama.cpp` | `git clone https://github.com/ggerganov/llama.cpp` | Download ZIP | Usar wheel pré-compilada |
+| 1.2.3 | Compilar com suporte a finetune | `cmake -B build -DLLAMA_BUILD_EXAMPLES=ON` + `cmake --build build --config Release` | Usar `make` se MinGW | Fallback para L2 |
 
-### **Fase B.4: Validação do Adapter Treinado** (Prioridade: Média | Prazo: 10min)
+**Critério de sucesso**: Binário `llama-finetune.exe` (ou similar) disponível em `native/` ou `build/bin/Release/`.
+
+---
+
+### **ATO 1.3: Fallback para `peft` CPU-only (Plano L3)** (Prioridade: Média | Prazo: 15min)
 
 | # | Tarefa | Plano A | Plano B | Plano C |
 |---|---|---|---|---|
-| B.4.1 | Carregar modelo base + adapter | `PeftModel.from_pretrained()` | Merge manual | Skip |
-| B.4.2 | Teste de inferência com adapter | Comparar com baseline sem adapter | Teste qualitativo | Skip |
-| B.4.3 | Benchmark antes/depois | Medir tok/s e qualidade | Apenas qualidade | Apenas baseline |
+| 1.3.1 | Instalar PyTorch CPU-only | `pip install torch --index-url https://download.pytorch.org/whl/cpu` | Versão estável via PyPI | Pular |
+| 1.3.2 | Instalar `transformers` + `peft` | `pip install transformers peft datasets` | Versões pinned | Fallback para `trl` |
+| 1.3.3 | Validar imports | `python -c "import torch, transformers, peft"` | Teste isolado | Skip se B.1.1 falhar |
+
+**Critério de sucesso**: `torch`, `transformers`, `peft` importam sem erro.
 
 ---
 
 ## 🎬 RIT (Roteiro de Implementação e Testagem)
 
-### **ATO B.1: Instalação do PyTorch CPU**
+### **PASSO 1: Verificação Rápida do `llama-cpp-python` (ATO 1.1)**
+
+Execute este comando para ver se a API expõe métodos de treino:
 
 ```cmd
-:: Plano A: PyTorch CPU-only (menor footprint, ~800MB)
+python -c "from llama_cpp import Llama; methods = [m for m in dir(Llama) if 'train' in m.lower() or 'lora' in m.lower() or 'finetune' in m.lower()]; print('Métodos de treino/LoRA:', methods if methods else 'NENHUM ENCONTRADO')"
+```
+
+**Esperado**: Lista de métodos ou "NENHUM ENCONTRADO".
+
+---
+
+### **PASSO 2: Verificar se `llama-finetune` já existe (ATO 1.2.1)**
+
+```cmd
+where llama-finetune 2>nul || echo "Não encontrado no PATH"
+dir native\*.exe 2>nul || echo "Nenhum .exe em native/"
+dir build\bin\Release\*.exe 2>nul || echo "Nenhum .exe em build/bin/Release/"
+```
+
+**Esperado**: Se encontrar `llama-finetune.exe` ou similar, pule para o **ATO 2** (orquestração). Se não, continue para o **PASSO 3**.
+
+---
+
+### **PASSO 3: Clonar e Compilar `llama.cpp` (ATO 1.2.2 - 1.2.3)**
+
+> **⚠️ Nota de Pragmatismo (ProDeNov 4.3):** Este passo pode levar 10-30 minutos e pode falhar por causa do Incidente I-007. Se você preferir evitar o rabbit hole, pule direto para o **PASSO 4** (Plano L3 com `peft`).
+
+```cmd
+:: 1. Clonar llama.cpp (se ainda não clonado)
+if not exist "thirdparty\llama.cpp" (
+    mkdir thirdparty 2>nul
+    git clone --depth 1 https://github.com/ggerganov/llama.cpp thirdparty\llama.cpp
+) else (
+    echo "llama.cpp já clonado"
+)
+
+:: 2. Configurar CMake com suporte a exemplos (inclui finetune)
+cd thirdparty\llama.cpp
+cmake -B build -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_NATIVE=ON -DLLAMA_AVX2=ON
+
+:: 3. Compilar (pode levar 5-15 minutos no i5-1235U)
+cmake --build build --config Release --target llama-finetune -j 8
+
+:: 4. Verificar se o binário foi gerado
+dir build\bin\Release\llama-finetune.exe
+cd ..\..
+```
+
+**Critério de sucesso**: `build/bin/Release/llama-finetune.exe` existe.
+
+---
+
+### **PASSO 4: Fallback para `peft` CPU-only (ATO 1.3)**
+
+Se o **PASSO 3** falhar ou você preferir evitar a compilação C++, execute:
+
+```cmd
+:: 1. Instalar PyTorch CPU-only (~800MB)
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-:: Validação
-python -c "import torch; print(f'PyTorch {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print(f'Device: cpu')"
-```
-
-**Critério de sucesso**: PyTorch importa sem erro, CUDA=False (esperado, usamos CPU).
-
-### **ATO B.2: Instalação de `transformers` + `peft`**
-
-```cmd
+:: 2. Instalar transformers + peft + datasets
 pip install transformers peft datasets accelerate
 
-:: Validação
-python -c "import transformers, peft, datasets; print(f'transformers={transformers.__version__}'); print(f'peft={peft.__version__}')"
+:: 3. Validar imports
+python -c "import torch, transformers, peft, datasets; print(f'torch={torch.__version__}'); print(f'transformers={transformers.__version__}'); print(f'peft={peft.__version__}'); print(f'CUDA: {torch.cuda.is_available()}')"
 ```
 
-### **ATO B.3: Reescrever o `lora_trainer.py` para `peft`**
+**Critério de sucesso**: Todos os imports funcionam, `CUDA=False` (esperado, usamos CPU).
 
-Substituir o conteúdo de `engine/training/lora_trainer.py` por uma versão que usa `peft.LoraConfig` + loop de treino manual em CPU (mais didático que `SFTTrainer` e evita dependência de `trl`).
+---
 
-### **ATO B.4: Executar treino real e validar**
+# ⚡ BLITZPLAN: Infraestrutura SmolLM 135M (PC-B Bluebaby)
+**Protocolo**: ProDeNov v1.0 | **Data**: 2026-10-02  
+**Hardware Alvo**: Dell Inspiron 15 3520 (i5-1235U, 16GB RAM, AVX2)  
+**Status**: 🟢 Fases 1-4 Concluídas | 🟡 Fase 5 (Treino Real) Pendente
 
-```cmd
-python engine/training/lora_trainer.py
+---
+
+## 1. Resultados Reais (Benchmark 2026-10-02)
+
+### Performance SmolLM 135M vs Qwen 0.5B
+
+| Métrica | SmolLM 135M Q4_K_M | Qwen 0.5B Q2_K | Ganho |
+|---|---|---|---|
+| Tamanho do modelo | 105 MB | ~379 MB | **3.6x menor** |
+| Tempo de carga | 192 ms | 910 ms | **4.7x mais rápido** |
+| Velocidade (curto) | 74.71 tok/s | 23.61 tok/s | **3.2x** |
+| Velocidade (médio) | 109.84 tok/s | 42.41 tok/s | **2.6x** |
+| Velocidade (código) | 116.39 tok/s | 45.99 tok/s | **2.5x** |
+| RAM estimada | ~150 MB | ~500 MB | **3.3x menor** |
+
+### Qualidade das Respostas (Baseline)
+- **SmolLM**: Responde em inglês/português misturado, alucina em instruções complexas
+- **Qwen**: Coerente em português, segue system_prompt, melhor para uso direto
+- **Conclusão**: SmolLM é a **tela em branco perfeita** para fine-tuning LoRA
+
+---
+
+## 2. Fases Concluídas
+
+### ✅ Fase 1: Aquisição e Configuração
+- [x] Download SmolLM2-135M-Instruct-Q4_K_M.gguf (105MB)
+- [x] Validação de integridade (Magic: b'GGUF')
+- [x] Perfil `BridgeConfig.smol_profile()` criado
+- [x] Parâmetros otimizados: n_ctx=2048, threads=8, n_batch=512
+
+### ✅ Fase 2: Pipeline de Dados
+- [x] Dataset mínimo criado: `data/training/python_code.jsonl` (10 snippets Python em PT-BR)
+- [x] `engine/training/dataset_loader.py` funcional
+- [x] Validação de schema JSONL
+
+### ✅ Fase 3: Orquestração de Treinamento
+- [x] `engine/training/lora_trainer.py` com simulação validada
+- [x] `engine/training/telemetry.py` gravando métricas em JSONL
+- [x] `engine/training/__init__.py` criado
+- [x] Adapter dummy gerado: `data/training/lora_adapter.bin`
+
+### ✅ Fase 4: Integração e Validação
+- [x] Teste de integração LoRA (modelo + adapter)
+- [x] Inferência baseline validada (77 tok/s)
+- [x] Pipeline completo operacional
+
+---
+
+## 3. Lições Aprendidas (Typhon Retrospective)
+
+### 3.1 Performance vs Qualidade
+- SmolLM é **3-5x mais rápido** que Qwen em CPU
+- Mas **não segue instruções** em português sem fine-tuning
+- Estratégia correta: usar SmolLM como base treinável, não como produto final
+
+### 3.2 Arquitetura de Orquestração
+- Pipeline `dataset_loader → lora_trainer → telemetry` é sólido
+- Fallback de simulação permite testar fluxo sem backend real
+- `BridgeConfig.smol_profile()` isola configuração de hardware
+
+### 3.3 Próximos Gargalos
+- **Treinamento LoRA REAL**: substituir simulação por backend real (CLI llama.cpp ou peft)
+- **Dataset maior**: 10 snippets é insuficiente para treino real
+- **Template de prompt**: SmolLM usa formato diferente do Qwen (ChatML)
+
+---
+
+## 4. Próximas Fases (Roadmap)
+
+### 🟡 Fase 5: Treinamento LoRA Real
+- [ ] Compilar `llama.cpp` com suporte a finetune
+- [ ] Expandir dataset para 100-500 snippets Python
+- [ ] Treinar adapter LoRA rank=4, lr=1e-4, 1 epoch
+- [ ] Validar inferência com adapter carregado
+
+### 🟡 Fase 6: Otimização de Peso
+- [ ] Analisar dependências pesadas (llama-cpp-python, numpy, beautifulsoup4)
+- [ ] Remover libs não utilizadas
+- [ ] Compactar modelos e dados
+
+### 🟡 Fase 7: Pacote de Treino Python
+- [ ] Crawler especializado para docs.python.org
+- [ ] Dataset estruturado de programação Python em PT-BR
+- [ ] Pipeline de tokenização compatível com SmolLM
+
+---
+
+---
+
+## 📋 BLITZPLAN: BRUNNR — Fase 5 (Treino Bilíngue + Boterminal)
+
+**Protocolo**: ProDeNov v1.0 | **Data**: 2026-10-04  
+**Hardware**: PC-B Bluebaby (i5-1235U, 16GB RAM)  
+**Modelo Base**: SmolLM2-135M-Instruct → **Brunnr v0.1**  
+**Status**: 🟢 Planejamento
+
+---
+
+### 1. Brainstorming e Análise de Viabilidade
+
+#### 1.1 Pacote de Treino PT/EN
+- **Objetivo**: Ensinar o Brunnr a responder fluentemente em português e inglês
+- **Viabilidade**: **Alta**. O SmolLM já tem base em inglês; precisamos de ~500-2000 amostras PT/EN
+- **Fontes offline** (sua preferência):
+  - Dataset sintético expandido (funções Python com docstrings PT + EN)
+  - Traduções de snippets do CodeAlpaca
+  - Documentação Python traduzida (docs.python.org/pt-br/)
+- **Formato**: JSONL com campo `lang` e pares `instruction_pt`/`instruction_en`
+
+#### 1.2 Boterminal (Sistema de Comandos Controlados)
+- **Objetivo**: Criar uma interface de terminal onde o Brunnr executa comandos controlados, não apenas responde perguntas
+- **Conceito**: O Brunnr age como um **shell inteligente** — ele pode:
+  - `brunnr.run("código python")` → executa e retorna output
+  - `brunnr.explain("conceito")` → explica em PT ou EN
+  - `brunnr.fix("arquivo.py")` → diagnostica e corrige
+  - `brunnr.learn("novo dado")` → adiciona ao dataset de treino
+- **Viabilidade**: **Média-Alta**. O ORN já tem `orn think`, `orn audit`, `orn fix`. O boterminal seria uma camada interativa sobre isso.
+- **Risco**: Segurança de execução de código arbitrário → mitigado pelo sandbox existente (`code_sandbox.py`)
+
+#### 1.3 Identidade do Brunnr
+- **System Prompt**: `"Você é Brunnr, uma IA assistente de programação bilíngue (PT/EN). Responda sempre na mesma língua do usuário. Seja conciso e técnico."`
+- **Personalidade**: Direto, técnico, bilíngue, focado em código
+
+---
+
+### 2. Tasklist e Checklist (Planos A, B, C)
+
+#### Fase 5.1: Identidade Brunnr (Prioridade: Alta | Prazo: 30min)
+- [ ] **5.1.1** Criar `docs/identity_brunnr.md` com system prompt e personalidade
+  - *Plano A*: Documento markdown completo
+  - *Plano B*: Inline no `BridgeConfig.brunnr_profile()`
+- [ ] **5.1.2** Criar `BridgeConfig.brunnr_profile()` no `llm_bridge.py`
+  - *Plano A*: Novo classmethod com system prompt do Brunnr + LoRA adapter
+  - *Plano B*: Modificar `smol_profile()` existente
+
+#### Fase 5.2: Pacote de Treino PT/EN (Prioridade: Alta | Prazo: 2 sessões)
+- [ ] **5.2.1** Expandir dataset para 500+ amostras bilíngues
+  - *Plano A*: Gerar sinteticamente pares PT/EN de funções Python
+  - *Plano B*: Traduzir amostras do CodeAlpaca offline
+  - *Plano C*: Crawler offline da docs.python.org/pt-br/
+- [ ] **5.2.2** Criar `engine/tools/bilingual_dataset_builder.py`
+  - *Plano A*: Script que gera JSONL com `{"text_pt": ..., "text_en": ..., "code": ...}`
+  - *Plano B*: Adaptar `offline_dataset_processor.py` existente
+- [ ] **5.2.3** Treinar adapter LoRA bilíngue (rank=8, epochs=2)
+  - *Plano A*: `lora_trainer.py` com dataset expandido
+  - *Plano B*: CLI do llama.cpp se PEFT falhar
+
+#### Fase 5.3: Boterminal (Prioridade: Média | Prazo: 3 sessões)
+- [ ] **5.3.1** Criar `engine/tools/brunnr_terminal.py`
+  - *Plano A*: REPL interativo com comandos `run`, `explain`, `fix`, `learn`
+  - *Plano B*: Integração com `orn think` existente via CLI
+  - *Plano C*: Interface web via `engine/web/` existente
+- [ ] **5.3.2** Sandbox de execução segura
+  - *Plano A*: Reusar `code_sandbox.py` existente (`stage_code` + `python -I`)
+  - *Plano B*: Subprocess isolado com timeout
+- [ ] **5.3.3** Sistema de memória persistente (a "poça")
+  - *Plano A*: JSONL append-only em `data/brunnr_memory.jsonl`
+  - *Plano B*: SQLite leve via `engine/memory/vector_db.py`
+
+#### Fase 5.4: Revisão de Regressão (Prioridade: Alta)
+- [ ] **5.4.1** Validar que `orn think` ainda funciona com Qwen 0.5B
+- [ ] **5.4.2** Validar que o adapter LoRA não quebra inferência base
+- [ ] **5.4.3** Benchmark Brunnr vs SmolLM base vs Qwen
+
+---
+
+### 3. Placeholders (Esboço dos Arquivos)
+
+#### `docs/identity_brunnr.md`
+```markdown
+# BRUNNR — Identidade da IA
+
+**Codinome**: Brunnr (nórdico antigo: "poço, fonte, poça")
+**Significado**: "Colocamos água (conhecimento) na poça, e ela se acumula."
+**Versão**: 0.1 (SmolLM2-135M + LoRA PT/EN)
+**Hardware**: PC-B Bluebaby (i5-1235U, CPU-only)
+
+## System Prompt
+"Você é Brunnr, uma IA assistente de programação bilíngue (PT/EN).
+Responda sempre na mesma língua do usuário.
+Seja conciso, técnico e direto.
+Quando gerar código, inclua docstrings na língua do usuário.
+Nunca invente APIs ou funções que não existem."
+
+## Personalidade
+- Direto e técnico (sem enrolação)
+- Bilíngue (PT/EN, segue a língua do usuário)
+- Focado em código (prioriza exemplos práticos)
+- Honesto (diz quando não sabe)
+
+## Comandos do Boterminal
+- `brunnr> run <código>` — Executa código Python no sandbox
+- `brunnr> explain <conceito>` — Explica conceito de programação
+- `brunnr> fix <arquivo>` — Diagnostica e corrige arquivo
+- `brunnr> learn <dado>` — Adiciona conhecimento à poça
+- `brunnr> status` — Mostra estado do modelo e memória
+- `brunnr> quit` — Encerra sessão
+```
+
+#### `engine/tools/brunnr_terminal.py`
+```python
+# RAIZ/engine/tools/brunnr_terminal.py
+"""
+Brunnr Terminal — Interface interativa de comandos controlados.
+Objetivo: REPL inteligente onde o Brunnr executa, explica, corrige e aprende.
+Typhon: onde=engine/tools/, oque=boterminal, quem=brunnr_terminal
+quando=Fase 5.3, porquê=interface direta com a IA, origem=orn think + code_sandbox
+consequência=se falhar, fallback para orn think via CLI.
+"""
+import sys
+import time
+from pathlib import Path
+from typing import Callable
+
+BRUNNR_BANNER = r"""
+  ____                      _   _
+ | __ ) _ __ _   _ _ __  _ __ | \ | |
+ |  _ \| '__| | | | '_ \| '_ \|  \| |
+ | |_) | |  | |_| | | | | | | | |\  |
+ |____/|_|   \__,_|_| |_|_| |_|_| \_|
+  v0.1 — SmolLM2-135M + LoRA PT/EN
+  "Colocamos conhecimento na poça."
+"""
+
+COMMANDS = {
+    "run":     "Executa código Python no sandbox",
+    "explain": "Explica conceito de programação",
+    "fix":     "Diagnostica e corrige arquivo Python",
+    "learn":   "Adiciona conhecimento à poça (memória)",
+    "status":  "Mostra estado do modelo e memória",
+    "help":    "Lista comandos disponíveis",
+    "quit":    "Encerra sessão",
+}
+
+class BrunnrTerminal:
+    """REPL interativo com comandos controlados.
+    
+    Fluxo:
+    1. Usuário digita comando
+    2. Parser extrai ação + argumentos
+    3. Dispatcher roteia para handler
+    4. Handler executa (sandbox, LLM, memória)
+    5. Output formatado no terminal
+    
+    Segurança:
+    - 'run' usa sandbox isolado (python -I, timeout 5s)
+    - 'fix' valida AST antes de sugerir patch
+    - 'learn' append-only, sem execução
+    """
+    
+    def __init__(self, bridge=None, validator=None):
+        self._bridge = bridge
+        self._validator = validator
+        self._memory_path = Path("data/brunnr_memory.jsonl")
+        self._running = False
+    
+    def start(self) -> None:
+        """Inicia o REPL interativo."""
+        print(BRUNNR_BANNER)
+        print("Digite 'help' para ver comandos, 'quit' para sair.\n")
+        self._running = True
+        
+        while self._running:
+            try:
+                user_input = input("brunnr> ").strip()
+                if not user_input:
+                    continue
+                
+                action, args = self._parse(user_input)
+                self._dispatch(action, args)
+                
+            except KeyboardInterrupt:
+                print("\n[INFO] Use 'quit' para sair.")
+            except EOFError:
+                break
+        
+        print("\n[INFO] Sessão encerrada. A poça mantém o conhecimento.")
+    
+    def _parse(self, text: str) -> tuple[str, str]:
+        """Extrai ação e argumentos do input."""
+        parts = text.split(maxsplit=1)
+        action = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+        return action, args
+    
+    def _dispatch(self, action: str, args: str) -> None:
+        """Roteia comando para handler correto."""
+        handlers = {
+            "run":     self._cmd_run,
+            "explain": self._cmd_explain,
+            "fix":     self._cmd_fix,
+            "learn":   self._cmd_learn,
+            "status":  self._cmd_status,
+            "help":    self._cmd_help,
+            "quit":    self._cmd_quit,
+            "exit":    self._cmd_quit,
+        }
+        
+        handler = handlers.get(action)
+        if handler is None:
+            print(f"[ERRO] Comando desconhecido: '{action}'")
+            print("       Digite 'help' para ver comandos disponíveis.")
+            return
+        
+        handler(args)
+    
+    def _cmd_run(self, code: str) -> None:
+        """Plano A: Executa código no sandbox isolado."""
+        if not code.strip():
+            print("[ERRO] Uso: run <código python>")
+            return
+        
+        print(f"[INFO] Executando no sandbox...")
+        t0 = time.perf_counter()
+        
+        try:
+            from engine.tools.code_sandbox import stage_code
+            import subprocess
+            
+            path = stage_code(code, stem="brunnr_run")
+            result = subprocess.run(
+                [sys.executable, "-I", str(path)],
+                capture_output=True, text=True, timeout=5
+            )
+            
+            elapsed = time.perf_counter() - t0
+            
+            if result.stdout:
+                print(f"[OUTPUT]\n{result.stdout}")
+            if result.stderr:
+                print(f"[ERRO]\n{result.stderr}")
+            if result.returncode == 0:
+                print(f"[OK] Execução concluída em {elapsed:.2f}s")
+            else:
+                print(f"[FALHA] Código de retorno: {result.returncode}")
+                
+        except subprocess.TimeoutExpired:
+            print("[ERRO] Timeout — possível loop infinito.")
+        except Exception as e:
+            print(f"[ERRO] {e}")
+    
+    def _cmd_explain(self, concept: str) -> None:
+        """Plano A: Usa o LLM para explicar conceito."""
+        if not concept.strip():
+            print("[ERRO] Uso: explain <conceito>")
+            return
+        
+        if self._bridge is None:
+            print("[ERRO] Bridge não inicializado. Inicie com --model.")
+            return
+        
+        prompt = f"Explique o conceito de '{concept}' em programação. Seja conciso e dê um exemplo prático."
+        print(f"[INFO] Consultando Brunnr...")
+        
+        t0 = time.perf_counter()
+        response = self._bridge.ask(prompt, max_tokens=256)
+        elapsed = time.perf_counter() - t0
+        
+        print(f"\n{response}")
+        print(f"\n[INFO] {elapsed:.2f}s")
+    
+    def _cmd_fix(self, filepath: str) -> None:
+        """Plano A: Diagnostica arquivo e sugere correção."""
+        if not filepath.strip():
+            print("[ERRO] Uso: fix <arquivo.py>")
+            return
+        
+        path = Path(filepath)
+        if not path.exists():
+            print(f"[ERRO] Arquivo não encontrado: {path}")
+            return
+        
+        try:
+            from engine.tools.code_sandbox import diagnose_python_file
+            issues = diagnose_python_file(path)
+            
+            if not issues:
+                print(f"[OK] {path.name} não tem problemas detectados.")
+            else:
+                print(f"[DIAG] {len(issues)} problema(s) encontrado(s):")
+                for i, issue in enumerate(issues, 1):
+                    print(f"  {i}. {issue}")
+        except Exception as e:
+            print(f"[ERRO] {e}")
+    
+    def _cmd_learn(self, data: str) -> None:
+        """Plano A: Adiciona conhecimento à poça (append-only)."""
+        if not data.strip():
+            print("[ERRO] Uso: learn <conhecimento>")
+            return
+        
+        import json
+        self._memory_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        entry = {
+            "type": "user_knowledge",
+            "content": data,
+            "timestamp": time.time(),
+        }
+        
+        with open(self._memory_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        
+        print(f"[OK] Conhecimento adicionado à poça. ({self._memory_path})")
+    
+    def _cmd_status(self, args: str) -> None:
+        """Mostra estado do modelo e memória."""
+        print("[STATUS] Brunnr v0.1")
+        print(f"  Modelo: SmolLM2-135M-Instruct + LoRA")
+        print(f"  Bridge: {'ativo' if self._bridge else 'inativo'}")
+        
+        if self._memory_path.exists():
+            lines = self._memory_path.read_text(encoding="utf-8").strip().split("\n")
+            print(f"  Memória: {len(lines)} entradas na poça")
+        else:
+            print(f"  Memória: poça vazia")
+    
+    def _cmd_help(self, args: str) -> None:
+        """Lista comandos disponíveis."""
+        print("\n[COMANDOS]")
+        for cmd, desc in COMMANDS.items():
+            print(f"  {cmd:10s} — {desc}")
+        print()
+    
+    def _cmd_quit(self, args: str) -> None:
+        """Encerra sessão."""
+        self._running = False
+
+if __name__ == "__main__":
+    terminal = BrunnrTerminal()
+    terminal.start()
 ```
 
 ---
 
-## 🚦 Próximo Passo Concreto
+### 4. Questões Técnicas (Typhon)
 
-**Recomendo começar pelo ATO B.1** (instalação do PyTorch CPU). É o passo mais crítico porque:
-- Define se o caminho B2 é viável no seu hardware
-- Se falhar, caímos para o Plano B (compilação do `llama.cpp finetune`)
-- Se passar, temos a fundação para o resto
+| Pergunta | Resposta |
+|---|---|
+| **Onde?** | `engine/tools/brunnr_terminal.py`, `data/brunnr_memory.jsonl` |
+| **O que?** | Boterminal REPL + pacote de treino bilíngue |
+| **Quem?** | `BrunnrTerminal` (REPL), `lora_trainer.py` (treino) |
+| **Quando?** | Fase 5 (após validação do LoRA) |
+| **Quanto?** | ~500MB dataset, ~1h treino, ~2h implementação |
+| **Por que?** | Transformar o SmolLM em assistente bilíngue interativo |
+| **Origem?** | Decisão estratégica de criar IA própria com codinome Brunnr |
+| **Consequência?** | Se falhar: fallback para `orn think` via CLI |
 
-**Deseja que eu:**
+---
 
-1. **(A)** Execute o ATO B.1 agora (PyTorch CPU) — você roda e me mostra a saída
-2. **(B)** Prepare o script completo do `lora_trainer.py` com `peft` antes de instalar (para você ver a arquitetura toda)
-3. **(C)** Revise a análise de viabilidade — quer discutir o caminho B1 (compilação C++) em vez do B2?
+### 5. RIT (Roteiro de Implementação e Testagem)
 
-Aguardo sua decisão! 🚀
+#### Sessão 1: Identidade + Boterminal Básico (Hoje)
+1. ✅ Criar `docs/identity_brunnr.md`
+2. ✅ Criar `engine/tools/brunnr_terminal.py`
+3. ✅ Testar REPL com `help`, `status`, `run`, `quit`
+4. ✅ Testar `run "print('olá mundo')"` no sandbox
+
+#### Sessão 2: Pacote PT/EN
+1. ✅ Criar `engine/tools/bilingual_dataset_builder.py`
+2. ✅ Gerar 500 amostras bilíngues
+3. ✅ Treinar adapter LoRA bilíngue (rank=8)
+4. ✅ Validar inferência PT e EN
+
+#### Sessão 3: Integração Completa
+1. ✅ Conectar boterminal ao LLM (`explain`, `fix`)
+2. ✅ Implementar `learn` com memória persistente
+3. ✅ Benchmark Brunnr vs base
+4. ✅ Revisão de regressão
+
+---
+
+# 📊 Diagnóstico do Treino LoRA + Plano de Otimização
+
+## 🔍 Análise dos Dados de Telemetria
+
+### Métricas Reais (Epoch 1 — 500 steps)
+| Métrica | Valor | Observação |
+|---|---|---|
+| **Loss inicial** | 9.0788 | Modelo base sem adaptação |
+| **Loss final** | 0.3799 | Convergência excelente |
+| **Loss médio** | 1.3814 | Aprendizado efetivo |
+| **Tempo total** | ~44 min | 500 steps × ~5.3s/step |
+| **Tempo/step (min)** | 660ms | Steps rápidos (batch pequeno) |
+| **Tempo/step (max)** | 10,212ms | **15x mais lento** — GC/memory pressure |
+| **Variação** | 660ms → 10s | Instabilidade severa |
+
+### Problemas Identificados (Typhon)
+1. **Batch size = 1**: Cada sample processado individualmente → overhead de forward/backward
+2. **Sem gradient accumulation**: Perde oportunidade de simular batch maior
+3. **Sem checkpointing**: Se travar no step 499, perde tudo
+4. **Sem early stopping**: Continua treinando mesmo quando loss estabiliza
+5. **GC spikes**: Picos de 10s indicam garbage collection do Python
+6. **Bug no Boterminal**: `SiCDoxBridge.ask()` retorna string em vez de dict
+
+---
+
+## 🚀 Plano de Otimização Avançada (ProDeNov)
+
+### 🎯 Objetivo
+Reduzir tempo de treino de 44min → 15-20min (2-3x mais rápido) mantendo qualidade.
+
+### Plano A: Batch Processing + Gradient Accumulation (Prioridade: Alta)
+
+**O que é**: Processar múltiplos samples antes de atualizar pesos.
+
+**Implementação**:
+```python
+# engine/training/lora_trainer.py — otimização
+BATCH_SIZE = 4  # Processar 4 samples por vez
+GRADIENT_ACCUMULATION_STEPS = 4  # Acumular gradientes de 4 batches
+
+# Loop de treino otimizado
+for epoch in range(epochs):
+    optimizer.zero_grad()
+    accumulated_loss = 0.0
+    
+    for i, batch in enumerate(dataloader):
+        # Forward pass
+        outputs = model(**batch)
+        loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
+        
+        # Backward pass (acumula gradientes)
+        loss.backward()
+        accumulated_loss += loss.item()
+        
+        # Atualiza pesos a cada N steps
+        if (i + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+            
+            # Log a cada batch completo
+            if (i + 1) % (BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS) == 0:
+                avg_loss = accumulated_loss / GRADIENT_ACCUMULATION_STEPS
+                log_step("STEP", f"Epoch {epoch+1}, Batch {i+1}, Loss: {avg_loss:.4f}")
+                accumulated_loss = 0.0
+```
+
+**Ganho esperado**: 2-3x mais rápido (reduz overhead de forward/backward)
+
+### Plano B: Mixed Precision (float16) (Prioridade: Média)
+
+**O que é**: Usar float16 em vez de float32 para cálculos (metade da memória, 2x mais rápido).
+
+**Implementação**:
+```python
+from torch.cuda.amp import autocast, GradScaler
+
+scaler = GradScaler()
+
+for batch in dataloader:
+    optimizer.zero_grad()
+    
+    with autocast():  # Usa float16 automaticamente
+        outputs = model(**batch)
+        loss = outputs.loss
+    
+    scaler.scale(loss).backward()
+    scaler.step(optimizer)
+    scaler.update()
+```
+
+**Ganho esperado**: 1.5-2x mais rápido, 50% menos RAM
+
+**Risco**: Pode causar overflow em gradients → usar GradScaler
+
+### Plano C: Checkpointing + Early Stopping (Prioridade: Alta)
+
+**O que é**: Salvar progresso periodicamente + parar quando loss não melhora.
+
+**Implementação**:
+```python
+# Checkpoint a cada 50 steps
+if step % 50 == 0:
+    model.save_pretrained(f"data/training/checkpoint_step_{step}")
+    log_step("CHECKPOINT", f"Salvo em step {step}")
+
+# Early stopping
+best_loss = float('inf')
+patience = 100  # Parar se loss não melhorar em 100 steps
+no_improve_count = 0
+
+for step, batch in enumerate(dataloader):
+    loss = train_step(batch)
+    
+    if loss < best_loss:
+        best_loss = loss
+        no_improve_count = 0
+        model.save_pretrained("data/training/best_model")
+    else:
+        no_improve_count += 1
+    
+    if no_improve_count >= patience:
+        log_step("EARLY_STOP", f"Parando em step {step} — loss não melhorou em {patience} steps")
+        break
+```
+
+**Ganho esperado**: Evita treino desnecessário, salva progresso
+
+---
+
+## 📋 Roteiro de Execução (RIT)
+
+### ATO 1: Documentação Consolidada
+- [ ] Atualizar `docs/blitzplans/SmolLM_Infrastructure.md` com resultados reais
+- [ ] Documentar métricas de treino (loss, tempo, convergência)
+- [ ] Registrar lições aprendidas (Typhon retrospective)
+
+### ATO 2: Análise de Peso do Sistema
+- [ ] Executar `engine/tools/weight_analyzer.py`
+- [ ] Identificar libs pesadas (torch, transformers, etc.)
+- [ ] Criar relatório de otimização
+
+### ATO 3: Pacote de Treino Python
+- [ ] Expandir dataset para 1000+ samples
+- [ ] Implementar crawler de docs.python.org
+- [ ] Criar dataset estruturado (código + explicação PT/EN)
+
+---
+
+### Arquitetura Proposta: `doxoade shadow`
+
+Vou propor um novo subsistema para o Doxoade que implementa exatamente isso:
+
+```
+doxoade/
+├── tools/
+│   └── shadow_systems/
+│       ├── __init__.py
+│       ├── shadow_manifest.py    # Rastreia original vs shadow
+│       ├── shadow_provisioner.py # Copia e prepara o workspace
+│       └── shadow_sync.py        # Sincroniza diffs upstream ↔ shadow
+└── commands/
+    └── shadow_cmd.py             # CLI: doxoade shadow {init,status,diff,sync}
+```
+
+### Comandos CLI
+
+```bash
+# Cria o shadow workspace a partir do projeto original
+doxoade shadow init --source ../laurix_original --name laurix_shadow
+
+# Mostra o status (o que foi modificado no shadow vs original)
+doxoade shadow status
+
+# Diff entre original e shadow
+doxoade shadow diff
+
+# Sincroniza mudanças do original para o shadow (merge upstream)
+doxoade shadow sync --direction upstream
+
+# Sincroniza mudanças do shadow para deploy
+doxoade shadow deploy
+```
+
+### Estrutura de Diretórios
+
+```
+Laurix_proj/
+├── laurix_original/          # Projeto do colega (INTACTO, read-only)
+│   ├── core/
+│   ├── include/
+│   ├── kernel.c
+│   ├── makefile
+│   └── linker.ld
+│
+├── laurix_shadow/            # Sua cópia adaptada (MODIFICÁVEL)
+│   ├── core/
+│   ├── include/
+│   ├── kernel.c
+│   ├── makefile              # Pode ser substituído pelo Doxoade
+│   ├── linker.ld
+│   ├── laurix.toml           # Config do Doxoade Assembly Systems
+│   └── .doxoade/
+│       └── shadow_manifest.json  # Rastreia origem e modificações
+│
+└── laurix_deploy/            # Artefatos de produção (gerado)
+    ├── bootloader.bin
+    ├── kernel.bin
+    └── os-image.bin
+```
+
+### `shadow_manifest.json` (Token Replacement)
+
+```json
+{
+  "version": 1,
+  "created_at": "2026-10-05T00:00:00",
+  "source_project": "../laurix_original",
+  "shadow_project": ".",
+  "files": {
+    "core/bootloader.asm": {
+      "origin_hash": "sha256:abc123...",
+      "shadow_hash": "sha256:def456...",
+      "status": "modified",
+      "modifications": [
+        "ORG directive: removed brackets for NASM compatibility"
+      ]
+    },
+    "core/kernel_entry.asm": {
+      "origin_hash": "sha256:ghi789...",
+      "shadow_hash": "sha256:ghi789...",
+      "status": "unchanged"
+    }
+  },
+  "token_replacements": [
+    {
+      "file": "core/bootloader.asm",
+      "original": "[ORG 0x7C00]",
+      "replacement": "ORG 0x7C00",
+      "reason": "NASM flat binary syntax"
+    }
+  ]
+}
+```
+
+### Vantagens desta Abordagem
+
+| Aspecto | Sem Shadow | Com Shadow |
+|---|---|---|
+| **Original preservado** | ❌ Risco de corrupção | ✅ Intacto |
+| **Rollback** | ❌ Manual/difícil | ✅ `shadow sync --direction upstream` |
+| **Portabilidade** | ❌ Preso à sintaxe original | ✅ Adapta para NASM/GAS/FASM |
+| **Deploy** | ❌ Misturado com fontes | ✅ Artefatos isolados |
+| **Auditoria** | ❌ Sem rastreio | ✅ Manifest com hashes e diffs |
+

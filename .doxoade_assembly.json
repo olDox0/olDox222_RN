@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "assemblers": {
+    "nasm": {
+      "name": "nasm",
+      "path": "C:\\winlibs\\mingw64\\bin\\nasm.EXE",
+      "version": "3.01"
+    },
+    "gas": {
+      "name": "gas",
+      "path": "C:\\winlibs\\mingw64\\bin\\as.EXE",
+      "version": "2.47.20260726"
+    }
+  },
+  "timestamp": "2026-10-05T19:56:05.998469"
+}
