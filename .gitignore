@@ -109,4 +109,5 @@ obj/
 
 # --- Auto-Quarentena Doxoade Guardian ---
 ./models/sicdox/qwen2.5-coder-0.5b-instruct-q2_k.gguf
+models/smol_sys/
 
