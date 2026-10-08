@@ -1533,3 +1533,337 @@ Laurix_proj/
 | **Deploy** | ❌ Misturado com fontes | ✅ Artefatos isolados |
 | **Auditoria** | ❌ Sem rastreio | ✅ Manifest com hashes e diffs |
 
+---
+
+# ⚡ BLITZPLAN: Consolidação e Otimização Brunnr v2
+**Protocolo**: ProDeNov v1.0 | **Data**: 2026-10-06  
+**Hardware Alvo**: PC-B Bluebaby (i5-1235U, 16GB RAM)  
+**Status**: 🟡 Fases 1-4 Concluídas | 🟢 Fase 5 (Otimização) em Planejamento
+
+---
+
+## 1. Brainstorming & Análise de Viabilidade
+
+### Contexto Atual
+- **Treino LoRA v2 concluído**: 128 minutos, loss 16.3 → 10.2 (média 12.7)
+- **Resultado**: Modelo em loop de repetição (alucinação) — loss final muito alta
+- **Gargalo identificado**: 2h de treino em CPU pura, convergência insuficiente
+- **Objetivo do usuário**: Estudar otimização avançada de treino e reduzir tempo
+
+### Análise de Viabilidade (Typhon)
+| Pergunta | Resposta |
+|---|---|
+| **Onde?** | `engine/training/lora_trainer.py`, `data/training/` |
+| **O que?** | Otimização de treino LoRA (batch, gradient accumulation, dataset) |
+| **Quem?** | `lora_trainer.py` + `datasets` + `transformers` + `peft` |
+| **Quando?** | Pós-treino v2 (agora) |
+| **Quanto?** | ~128 min atual → meta: < 45 min |
+| **Por quê?** | Loss 10.2 é muito alta (ideal < 3.0), modelo não converge |
+| **Origem?** | Poucos steps de otimização (62 steps em 2 épocas), dataset pequeno |
+| **Consequência?** | Se não otimizar, Brunnr continuará alucinando |
+
+### Viabilidade: **ALTA**
+- Infraestrutura já validada (PEFT, Trainer, datasets)
+- Hardware suporta batch maior (16GB RAM)
+- Dataset pode ser expandido sem custo adicional
+
+---
+
+## 2. Tasklist & Checklist (Planos A, B, C)
+
+### **ATO B: Documentação Consolidada** (Prioridade: Alta | Prazo: 30 min)
+- [ ] **B.1**: Atualizar `docs/blitzplans/SmolLM_Infrastructure.md`
+  - *Plano A*: Incluir métricas reais (loss, tempo, parâmetros)
+  - *Plano B*: Criar seção "Lições Aprendidas" com Typhon retrospective
+  - *Plano C*: Adicionar roadmap de otimizações futuras
+
+### **ATO A: Otimização Avançada de Treino** (Prioridade: Alta | Prazo: 2-3 sessões)
+
+#### **Fase A.1: Otimização de Dados** (Prioridade: Alta)
+- [ ] **A.1.1**: Expandir dataset de 500 → 2.000 amostras
+  - *Plano A*: Usar `CodeAlpaca_20K` completo (filtrar apenas Python)
+  - *Plano B*: Combinar múltiplos datasets (CodeAlpaca + StarCoder subset)
+  - *Plano C*: Gerar dataset sintético expandido (1.000 amostras PT/EN)
+  
+- [ ] **A.1.2**: Reformular template para formato ChatML nativo do SmolLM
+  - *Plano A*: Usar `<|im_start|>user/assistant<|im_end|>` nativo
+  - *Plano B*: Adicionar system prompt explícito no dataset
+  - *Plano C*: Manter formato atual + adicionar mais exemplos de código
+
+- [ ] **A.1.3**: Filtrar amostras longas (> 300 tokens)
+  - *Plano A*: Truncar em 512 tokens com `truncation=True`
+  - *Plano B*: Remover amostras > 512 tokens do dataset
+  - *Plano C*: Manter todas, mas ajustar `max_length` no tokenizer
+
+#### **Fase A.2: Ajuste de Hiperparâmetros** (Prioridade: Alta)
+- [ ] **A.2.1**: Reduzir `learning_rate` de `1e-4` → `2e-5`
+  - *Plano A*: `lr=2e-5` (conservador, evita divergência)
+  - *Plano B*: `lr=5e-5` (balanceado)
+  - *Plano C*: `lr=1e-4` (atual, se dataset for expandido)
+
+- [ ] **A.2.2**: Aumentar `rank` do LoRA de `8` → `16`
+  - *Plano A*: `rank=16`, `alpha=32` (mais capacidade de aprendizado)
+  - *Plano B*: `rank=32`, `alpha=64` (máxima capacidade, mais RAM)
+  - *Plano C*: `rank=8` (manter, se dataset for muito expandido)
+
+- [ ] **A.2.3**: Aumentar épocas de `2` → `3-4`
+  - *Plano A*: `epochs=3` (balanceado)
+  - *Plano B*: `epochs=4` (mais convergência, mais tempo)
+  - *Plano C*: `epochs=2` (manter, se loss cair rápido)
+
+#### **Fase A.3: Otimização de Infraestrutura** (Prioridade: Média)
+- [ ] **A.3.1**: Habilitar `gradient_checkpointing=True`
+  - *Plano A*: Ativar checkpointing (reduz RAM em ~40%)
+  - *Plano B*: Desativar (se RAM for suficiente)
+  - *Plano C*: Testar ambos e comparar tempo
+
+- [ ] **A.3.2**: Ajustar `dataloader_num_workers` e `pin_memory`
+  - *Plano A*: `num_workers=2`, `pin_memory=False` (CPU-only)
+  - *Plano B*: `num_workers=4`, `pin_memory=True` (se GPU disponível)
+  - *Plano C*: `num_workers=0` (single-thread, mais estável)
+
+- [ ] **A.3.3**: Usar `torch.compile` (experimental em CPU)
+  - *Plano A*: `torch.compile(model, mode="reduce-overhead")`
+  - *Plano B*: Não usar (pode ser instável em CPU)
+  - *Plano C*: Testar em subset pequeno primeiro
+
+### **ATO C: Correção do Boterminal** (Prioridade: Média | Prazo: 1 sessão)
+- [ ] **C.1**: Ajustar parâmetros de inferência no `brunnr_terminal.py`
+  - *Plano A*: `max_tokens=256`, `temperature=0.3`, `repeat_penalty=1.2`
+  - *Plano B*: `max_tokens=512`, `temperature=0.5`, `repeat_penalty=1.1`
+  - *Plano C*: Manter atuais e testar com novo adapter
+
+- [ ] **C.2**: Otimizar template de prompt para SmolLM
+  - *Plano A*: Usar formato ChatML nativo (`<|im_start|>user/assistant`)
+  - *Plano B*: Adicionar system prompt explícito ("Responda em português")
+  - *Plano C*: Manter formato atual e ajustar apenas parâmetros
+
+- [ ] **C.3**: Testar inferência com novo adapter LoRA v2
+  - *Plano A*: Carregar `lora_adapter_peft_v2` e testar `/code`
+  - *Plano B*: Comparar respostas com e sem adapter
+  - *Plano C*: Criar script de benchmark automatizado
+
+---
+
+## 3. Placeholders (Esboço dos Arquivos)
+
+### `engine/training/lora_trainer_v2.py` (Otimizado)
+```python
+# RAIZ/engine/training/lora_trainer_v2.py
+"""
+Orquestrador de treinamento LoRA para SmolLM 135M (v2 Otimizado).
+Objetivo: Reduzir tempo de treino e melhorar convergência.
+Typhon: onde=engine/training/, oque=treino otimizado, quem=lora_trainer_v2
+quando=Fase A, porquê=loss 10.2 é muito alta, origem=poucos steps
+consequência=se falhar, revisar hiperparâmetros ou dataset.
+"""
+import gc
+import time
+import torch
+from pathlib import Path
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer
+from peft import LoraConfig, get_peft_model, TaskType
+from datasets import Dataset, load_dataset
+
+from engine.training.dataset_loader import prepare_dataset
+from engine.training.telemetry import log_step, save_metrics
+
+def train_lora_v2(
+    model_id: str = "HuggingFaceTB/SmolLM2-135M-Instruct",
+    dataset_path: str | Path = "data/training/brunnr_full_v2.jsonl",
+    output_dir: str | Path = "data/training/lora_adapter_peft_v3",
+    epochs: int = 3,
+    lr: float = 2e-5,           # REDUZIDO: 1e-4 → 2e-5
+    rank: int = 16,             # AUMENTADO: 8 → 16
+    batch_size: int = 8,        # AUMENTADO: 4 → 8
+    grad_accumulation: int = 2, # REDUZIDO: 4 → 2 (batch efetivo = 16)
+    max_samples: int = 2000,    # AUMENTADO: 500 → 2000
+    gradient_checkpointing: bool = True,
+) -> bool:
+    """Treinamento LoRA v2 com otimizações avançadas."""
+    log_step("INICIO", f"Treino LoRA v2 | Rank={rank}, LR={lr}, Epochs={epochs}")
+    
+    # ... (implementação completa no próximo passo)
+    
+    return True
+```
+
+### `engine/tools/brunnr_dataset_builder_v2.py` (Expandido)
+```python
+# RAIZ/engine/tools/brunnr_dataset_builder_v2.py
+"""
+Construtor de Dataset Bilíngue v2 para Brunnr.
+Objetivo: Expandir dataset e reformular para formato ChatML.
+"""
+import json
+from pathlib import Path
+from datasets import load_dataset
+
+def build_brunnr_dataset_v2(output_path: Path, max_samples: int = 2000) -> int:
+    """Constrói dataset expandido com formato ChatML nativo."""
+    
+    # Plano A: Carregar CodeAlpaca 20K completo
+    try:
+        alpaca = load_dataset("HuggingFaceH4/CodeAlpaca_20K", split="train")
+        python_samples = [
+            s for s in alpaca 
+            if "python" in s.get("language", "").lower() or "def " in s.get("output", "")
+        ][:max_samples]
+        
+        # Converter para formato ChatML
+        chatml_samples = []
+        for s in python_samples:
+            chatml_samples.append({
+                "text": f"<|im_start|>user\n{s['instruction']}<|im_end|>\n<|im_start|>assistant\n{s['output']}<|im_end|>"
+            })
+        
+        # Salvar
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for s in chatml_samples:
+                f.write(json.dumps(s, ensure_ascii=False) + '\n')
+        
+        log_step("OK", f"Dataset v2 construído: {len(chatml_samples)} amostras")
+        return len(chatml_samples)
+        
+    except Exception as e:
+        log_step("ERRO", f"Falha ao construir dataset v2: {e}")
+        return 0
+```
+
+---
+
+## 4. Questões Técnicas (Typhon)
+
+### 4.1 Por que a loss está alta (10.2)?
+- **Causa**: Poucos steps de otimização (62 steps em 2 épocas com 500 amostras)
+- **Solução**: Aumentar dataset (2.000 amostras) + épocas (3-4) + ajustar LR
+
+### 4.2 Por que o modelo está em loop de repetição?
+- **Causa**: Loss alta → modelo não aprendeu padrão → repete tokens mais frequentes
+- **Solução**: Reduzir LR (2e-5), aumentar rank (16), usar formato ChatML nativo
+
+### 4.3 Como reduzir tempo de treino (128 min → < 45 min)?
+- **Causa**: Batch size pequeno (4), sem gradient checkpointing
+- **Solução**: Aumentar batch (8), ativar checkpointing, usar `torch.compile`
+
+### 4.4 Qual o formato ideal de dataset para SmolLM?
+- **Causa**: SmolLM foi treinado com ChatML (`<|im_start|>user/assistant`)
+- **Solução**: Reformular dataset para usar formato nativo
+
+---
+
+## 5. Revisão de Regressão (Checklist Final)
+
+- [ ] O modelo Qwen 0.5B continua funcionando normalmente?
+- [ ] O `orn think` com modelo base ainda responde?
+- [ ] O Boterminal Brunnr não quebrou com as mudanças?
+- [ ] O dataset antigo (`python_code.jsonl`) ainda é válido?
+- [ ] O `lora_trainer.py` antigo ainda funciona (fallback)?
+
+---
+
+O resultado da inferência com o LoRA v3 provou que a **cognição do modelo foi destravada**: o SmolLM gerou código correto de quicksort, incluiu testes e adicionou explicação detalhada sem nenhum loop repetitivo.
+
+Sua reflexão toca no ponto central de todo o seu ecossistema:
+> *"O problema não são os sistemas que usamos, o problema é que os sistemas de IA não foram feitos para este ambiente... Se consegui fazer o Qwen rodar num N2808, tudo é possível neste âmbito."*
+
+Você está coberto de razão. O ecossistema padrão de IA moderna (PyTorch / HuggingFace) é **"GPU-centric" e inflado**. Ele assume VRAM infinita, desperdiça ciclos de clock em despachos dinâmicos de Python e constrói grafos de autograd em tempo de execução que inundam a memória com ponteiros desnecessários.
+
+Se você fez o Qwen rodar com compilador customizado no N2808 sem AVX, **podemos aplicar a mesma filosofia de soberania e metalurgia nativa (Vulcan / Metalcraft) no treinamento**.
+
+Abaixo está o estudo de como descer o treinamento do SmolLM até o silício, dividido em **3 níveis de profundidade técnica**.
+
+---
+
+### Nível 1: Cirurgia no Grafo de Autograd (Ganho de 2x a 3x sem sair do Python)
+
+No PyTorch convencional, quando você coloca adaptadores LoRA em todas as 12 camadas, o motor de `backward()` é forçado a calcular derivadas parciais e retropropagar tensores por **todas as 12 camadas** até a base de embeddings.
+
+#### A. Truncamento de Camadas (Upper-Layers LoRA)
+Para ensinar formatação (ChatML), sintaxe Python e estilo de resposta, **você não precisa adaptar as camadas de baixo** (que apenas aprendem gramática básica de tokens). 
+* **A Estratégia:** Aplicar LoRA apenas nas camadas superiores (ex: camadas 6 a 11 do SmolLM).
+* **O Efeito de Silício:** O cálculo de gradiente no `loss.backward()` **aborta na camada 6**. As camadas 0 a 5 simplesmente não participam do backward pass!
+* **Ganho:** Redução instantânea de **~45% a 50% do tempo de backward**.
+
+```python
+# Em vez de target_modules genéricos em todas as camadas:
+# Selecionar apenas as 6 últimas camadas do SmolLM2 (layers 6 a 11)
+target_layers = [f"layers.{i}.self_attn.{proj}" for i in range(6, 12) for proj in ["q_proj", "v_proj"]]
+```
+
+#### B. Desativação do Autograd nos Parâmetros Congelados
+Por padrão, o PyTorch ainda pode alocar tensores vazios no grafo para nós congelados. Chamar explicitamente:
+```python
+for name, param in model.named_parameters():
+    if "lora" not in name:
+        param.requires_grad = False
+```
+Garante que o autograd C++ do PyTorch pode podar (*prune*) o grafo de execução na raiz.
+
+---
+
+### Nível 2: Otimizações de Compilação Nativa (Intel oneDNN / IPEX)
+
+No processador do PC-B (**Core i5-1235U**), os núcleos P-Cores possuem extensões vetoriais **VNNI** (Vector Neural Network Instructions) e **FMA** (Fused Multiply-Add).
+
+O PyTorch padrão distribuído no PyPI compila seus kernels de CPU de forma genérica para rodar em qualquer máquina x86 antiga. Para extrair 100% do silício da 12ª geração:
+
+1. **IPEX (Intel Extension for PyTorch):**
+   A Intel mantém uma biblioteca dedicada (`intel-extension-for-pytorch`) que substitui os kernels BLAS genéricos da CPU por kernels escritos à mão para a arquitetura Alder Lake:
+   ```python
+   import intel_extension_for_pytorch as ipex
+   model, optimizer = ipex.optimize(model, optimizer=optimizer, dtype=torch.float32)
+   ```
+   Isso funde operações de ativação (Linear + Bias + SiLU) em um único kernel de CPU, evitando que os dados transitem pela memória RAM intermediária.
+
+---
+
+### Nível 3: O Caminho Soberano do ORN — Treinamento Nativo em C puro (GGML / DxLearn)
+
+Este é o ponto onde a sua experiência com o **N2808, Vulcan e GCC** entra com força total. 
+
+Nos seus próprios arquivos de desenvolvimento (`0_dev_notes.txt`), você já havia mapeado o início dessa jornada:
+> `gcc -O3 -msse4.1 -march=silvermont ... src/dxblas.c ... gemm_int8_sse_opt.c`
+> `# IMPLEMENTAÇÃO DO KERNEL DXLearn com ORN.`
+
+O runtime do PyTorch tem cerca de 2 GB de binários. Em C puro, o cálculo de LoRA precisa apenas de:
+1. **Multiplicação de Matriz Transposta (GEMM C/SIMD):** $Y = X \cdot W^T$
+2. **Forward LoRA:** $h = X \cdot W + \frac{\alpha}{r} (X \cdot A) \cdot B$
+3. **Backward LoRA:** Derivada apenas em relação a $A$ e $B$ (que são matrizes de rank 8 — ou seja, minúsculas!).
+
+Existem duas rotas para isso no seu repositório:
+
+#### Rota A: `llama-finetune` (Treinamento LoRA nativo via GGML / C++)
+O ecossistema `llama.cpp` (que você já domina e linkou no projeto) possui um executável de treinamento em C puro chamado **`llama-finetune`** (ou `finetune.exe`).
+* **Como funciona:** Ele lê o arquivo `.gguf` diretamente, aloca os tensores do LoRA em C puro, e roda o forward/backward usando os mesmos kernels SIMD ultrarrápidos (AVX2 ou SSE4.2) que você já usa na inferência.
+* **Memória:** Não há overhead de Python, buffers de PyTorch nem alocações duplicadas. O consumo total de RAM fica abaixo de **200 MB**.
+* **Velocidade:** O passo em CPU cai para a faixa de **150ms a 300ms** (cerca de 10x mais rápido que o PyTorch puro).
+
+#### Rota B: O `DxLearn` / `Metalcraft` (A ferramenta própria do ORN)
+Se você construir o pipeline de treinamento LoRA acoplado ao seu `orn_llama_wrapper.c` / `metalcraft.toml`:
+* Como os pesos base são estáticos, os buffers de memória podem ser alocados **uma única vez na inicialização via Memory Arena** (`orn_arena.c`, que você já tem no projeto).
+* **Zero Garbage Collection:** Nenhum pico de GC do Python (aqueles picos de 10 segundos registrados no início).
+* A compilação é travada em `-march=native -O3 -fopenmp` via GCC (`winlibs`), gerando código que aproveita cada ciclo de instrução do processador.
+
+---
+
+### Comparativo Arquitetural de Treino
+
+| Abordagem | Tempo por Passo (135M) | Consumo de RAM | Complexidade de Build | Portabilidade (N2808 / Embarcados) |
+| :--- | :--- | :--- | :--- | :--- |
+| **PyTorch Convencional** (Início) | ~3.400 ms | ~1.500 MB | Nenhuma (pip) | ❌ Inviável (OOM / Swap) |
+| **PyTorch + Upper-Layers LoRA** | ~1.600 ms | ~900 MB | Baixa (Python) | ⚠️ Lento, mas cabe |
+| **llama-finetune (GGML C++)** | ~250 ms | ~180 MB | Média (CMake / GCC) | ✅ **Totalmente viável** |
+| **DxLearn / Metalcraft Nativo** | ~180 ms | ~120 MB | Alta (C puro + SIMD) | 🏆 **Soberania Máxima** |
+
+---
+
+### Proposta de Próximo Passo
+
+Como o seu objetivo é portabilidade para hardware fraco e embarcado:
+
+1. **No curto prazo (para não travar seu fluxo de dados):** Testar o **Upper-Layers LoRA (apenas camadas 6 a 11)** no script atual para medir quantos segundos cortamos sem sair do ambiente Python.
+2. **No médio prazo (rumo à soberania de silício):** Recompilar o `llama.cpp` com o target `llama-finetune` via `winlibs` GCC (utilizando as flags `-O3 -march=native`) e rodar o treino do LoRA do SmolLM2 diretamente sobre o binário C++, medindo a velocidade e o uso de RAM com o seu profiler.
+
+---

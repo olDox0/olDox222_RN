@@ -29,6 +29,7 @@ doxoade_report.json
 Exemplo/
 tmp/
 .orn/
+\342\224\202/
 .dox_agent_workspace/
 .dox_lab/
 tests/
