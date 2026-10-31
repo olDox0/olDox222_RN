@@ -20,6 +20,7 @@ dist/
 
 # --- ARQUIVOS SENSÍVEIS E DE USUÁRIO (NUNCA COMPARTILHAR) ---
 #doxoade.bat
+.gguf
 *.bak
 *.bkp
 *.dox
@@ -64,6 +65,31 @@ token.json
 # Arquivos de sistema do Windows
 desktop.ini
 Thumbs.db
+
+# ═════════════════════════════════════════════════════════════════════
+# 🔨 ARTEFATOS EFÊMEROS DE COMPILAÇÃO C / JANUS / HERMES / ASM / OS dump
+# ═════════════════════════════════════════════════════════════════════
+doxoade/tools/hermes_systems/native/*.dll
+doxoade/tools/hermes_systems/native/*.pyd
+doxoade/tools/hermes_systems/native/.bridge_build_cache.json
+.bridge_build_cache.json
+*.pyd
+*.dll
+*.dll.*
+*.old_*
+hermes_async_log.dll*
+*.o
+*.a
+.doxoade/janus/
+.doxoade/mesh_daemon.pid
+.doxoade/mesh_state.json
+.doxoade_assembly.json
+# OS Dev & Emulation Artifacts
+*.img
+*.bin
+qemu_trace.log
+serial.log
+firmware/
 
 # --- BACKUPS E ARQUIVOS TEMPORÁRIOS ---
 Vers/
