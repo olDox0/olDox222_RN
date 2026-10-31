@@ -1,3 +1,5 @@
+
+# [VULCAN-SKIP] Proteção contra introspecção Click
 """
 DOXOADE BRAIN v14.0 (Batching Maestro).
 Orquestra o treino em bathes reais para máxima performance.

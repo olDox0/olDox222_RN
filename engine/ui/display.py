@@ -42,9 +42,18 @@ class Display:
 
     @staticmethod
     def banner() -> None:
-        """Exibe o banner ASCII do ORN."""
         print(header(_BANNER))
-        print(dimmed("  AI CLI para Código — Qwen2.5-Coder local"))
+        try:
+            from engine.training.registry import ModelRegistry
+            reg = ModelRegistry()
+            active = reg.active()
+            if active:
+                label = f"{active.alias} ({active.base})"
+            else:
+                label = "Qwen2.5-Coder local"
+        except Exception:
+            label = "Qwen2.5-Coder local"
+        print(dimmed(f"  AI CLI para Código — {label}"))
         print(dimmed(f"  {_SEP_MINOR}"))
         print()
 

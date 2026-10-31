@@ -1,3 +1,5 @@
+
+# [VULCAN-SKIP] Proteção contra introspecção Click
 # doxoade/commands/sicdox.py
 import click
 # [DOX-UNUSED] from colorama import Style

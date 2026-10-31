@@ -1,3 +1,5 @@
+
+# [VULCAN-SKIP] Proteção contra introspecção Click
 # doxoade/commands/agent.py
 import click
 import sys

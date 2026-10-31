@@ -1,4 +1,11 @@
 # --- DOXOADE_VULCAN_BOOTSTRAP:START ---
+# [DOXOADE:VULCAN]
+# [VULCAN-SKIP] Proteção contra introspecção Click
+import os, sys; _b = os.path.join(os.getcwd(), ".doxoade", "vulcan", "bootstrap.py")
+if os.path.exists(_b):
+    import importlib.util as _u; _s = _u.spec_from_file_location("_vb", _b)
+    _m = _u.module_from_spec(_s); _s.loader.exec_module(_m); _m.ignite(__file__, globals())
+# [/DOXOADE:VULCAN]
 from pathlib import Path as _doxo_path
 import importlib.util as _doxo_importlib_util
 import sys as _doxo_sys

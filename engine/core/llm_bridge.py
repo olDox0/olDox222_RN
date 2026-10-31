@@ -56,9 +56,7 @@ class BridgeConfig:
       - ttl_seconds=3600: recarregar custa 80s, manter em RAM o máximo possível
     """
     model_path:    Path = Path(
-        "models/sicdox/qwen2.5-coder-0.5b-instruct-q2_k.gguf"
-        #"models/sicdox/Qwen2.5-Coder-0.5B-Instruct-Q4_K_M-GGUF/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
-        #"/qwen2.5-coder-0.5b-instruct-q4_k_m.gguf"
+        "models/smolm_sys/smollm2-135m-instruct-q2_k.gguf"
     )
     memory_profile:          str  = "default"  # default|low (env: ORN_MEMORY_PROFILE)
     n_ctx:                   int  = 4096   # Era 512. 1024 dá espaço de sobra pro prompt + resposta
@@ -88,8 +86,8 @@ class BridgeConfig:
     temperature:    float =  0.40
     top_p:          float =  0.80       #top_p:          float =  0.85
     top_k:          int   =  25         #top_k:          int   =  35
-    repeat_penalty: float =  1.05
-    min_p:          float =  0.01       #min_p:          float =  0.05 ou None
+    repeat_penalty: float =  1.15
+    min_p:          float =  0.05       #min_p:          float =  0.05 ou None
     # Menemonização de repetições (com pruning LRU)
     repetition_memo_enabled: bool = True
     repetition_memo_size:    int  = 128
@@ -104,7 +102,7 @@ class BridgeConfig:
     rope_freq_scale: float | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
     flash_attn: bool = True             # flash_attn: True | None = None
-    system_prompt: str = ("succinct response. portuguese language") # system_prompt: str = "" 
+    system_prompt: str = "Responda em português de forma clara e direta."
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
         if value is None:
@@ -326,6 +324,24 @@ class BridgeConfig:
             self.active_window = 1
         if self.active_window > self.n_ctx:
             self.active_window = self.n_ctx
+
+        # --- T1: resolução de alias via catálogo ---
+        # Se model_path ainda é o default hardcoded, tenta resolver via catálogo.
+        # Precedência: ORN_MODEL_PATH > ORN_MODEL_ALIAS > active_alias > default.
+        _default_hardcoded = Path("models/smolm_sys/smollm2-135m-instruct-q2_k.gguf")
+        try:
+            _is_default = (self.model_path == _default_hardcoded)
+        except Exception:
+            _is_default = False
+        if _is_default:
+            try:
+                from engine.tools.model_catalog import resolve_active_model
+                _resolved = resolve_active_model()
+                if _resolved is not None:
+                    self.model_path = _resolved
+            except Exception:
+                pass  # OSL-15: mantém o default hardcoded
+
 # ---------------------------------------------------------------------------
 # KV-cache — sliding window (Relatório §2.2)
 # ---------------------------------------------------------------------------
@@ -503,8 +519,9 @@ class SiCDoxBridge:
         # llm_bridge.py — linha ~414, após o pitstop
         #prompt, max_tokens = pitstop(prompt, max_tokens, active_window=self._cfg.active_window)
         prompt = clean_prompt(prompt)
-        if max_tokens is None or max_tokens < 1000:
-            max_tokens = 8192  #4096 
+        # if max_tokens is None or max_tokens < 1000:
+        #     max_tokens = 8192  # 4096 
+        if max_tokens is None: max_tokens = 512
             
         print(f"[DEBUG] após pitstop: max_tokens={max_tokens}", flush=True)  # ← temporário
 

@@ -19,6 +19,13 @@ God: Hefesto — fornalha contínua; a forja não apaga entre peças.
 """
 
 from __future__ import annotations
+# [DOXOADE:VULCAN]
+# [VULCAN-SKIP] Proteção contra introspecção Click
+import os, sys; _b = os.path.join(os.getcwd(), ".doxoade", "vulcan", "bootstrap.py")
+if os.path.exists(_b):
+    import importlib.util as _u; _s = _u.spec_from_file_location("_vb", _b)
+    _m = _u.module_from_spec(_s); _s.loader.exec_module(_m); _m.ignite(__file__, globals())
+# [/DOXOADE:VULCAN]
 
 import json
 import os
@@ -164,7 +171,6 @@ def _load_model() -> None:
 
     if _use_native:
         from engine.core.native_backend import NativeBackend
-
         _native = NativeBackend(
             dll_path=dll,
             model_path=_cfg.model_path,
@@ -172,18 +178,23 @@ def _load_model() -> None:
             n_threads=_cfg.n_threads,
         )
         t0 = time.monotonic()
-        _native.load()
-        elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
-        _boot_perf["model_load_ms"] = elapsed_ms
-        _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
-        _stats["start"] = time.monotonic()
-        print(f"[BOOT] orn.dll ativo [{dll}]", flush=True)
-        print(
-            f"[BOOT] nativo cfg n_ctx={_cfg.n_ctx} n_threads={_cfg.n_threads}",
-            flush=True,
-        )
-        return
-
+        try:
+            _native.load()
+            elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
+            _boot_perf["model_load_ms"] = elapsed_ms
+            _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
+            _stats["start"] = time.monotonic()
+            print(f"[BOOT] orn.dll ativo [{dll}]", flush=True)
+            print(
+                f"[BOOT] nativo cfg n_ctx={_cfg.n_ctx} n_threads={_cfg.n_threads}",
+                flush=True,
+            )
+            return
+        except Exception as exc:
+            print(f"[BOOT] orn.dll indisponivel ({exc}) — fallback llama-cpp-python", flush=True)
+            _native = None
+            # OSL-15: cai para o caminho Python abaixo
+            
     # ── Fallback: llama-cpp-python (bridge Python) ─────────────────────────
     from engine.core.llm_bridge import SiCDoxBridge
     t0 = time.monotonic()

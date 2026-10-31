@@ -14,6 +14,13 @@ Uso:
     print(f"{c.BRIGHT_CYAN}texto{c.RESET}")
 """
 
+# [DOXOADE:VULCAN]
+# [VULCAN-SKIP] Proteção contra introspecção Click
+import os, sys; _b = os.path.join(os.getcwd(), ".doxoade", "vulcan", "bootstrap.py")
+if os.path.exists(_b):
+    import importlib.util as _u; _s = _u.spec_from_file_location("_vb", _b)
+    _m = _u.module_from_spec(_s); _s.loader.exec_module(_m); _m.ignite(__file__, globals())
+# [/DOXOADE:VULCAN]
 import os
 import sys
 from functools import wraps

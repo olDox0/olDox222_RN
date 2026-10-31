@@ -1,3 +1,5 @@
+
+# [VULCAN-SKIP] Proteção contra introspecção Click
 # -*- coding: utf-8 -*-
 # engine/cli.p
 """
@@ -21,12 +23,20 @@ Comandos futuros:
   gen     → geração de código                    [Fase 4]
 """
 
+# [DOXOADE:VULCAN]
+# [VULCAN-SKIP] Proteção contra introspecção Click
+import os, sys; _b = os.path.join(os.getcwd(), ".doxoade", "vulcan", "bootstrap.py")
+if os.path.exists(_b):
+    import importlib.util as _u; _s = _u.spec_from_file_location("_vb", _b)
+    _m = _u.module_from_spec(_s); _s.loader.exec_module(_m); _m.ignite(__file__, globals())
+# [/DOXOADE:VULCAN]
 import os
 import sys
 import json
 import time
 import re
 import subprocess
+from pathlib import Path
 import click
 
 from pathlib import Path
@@ -549,6 +559,35 @@ def _lint_python_text(text: str) -> list[str]:
     from engine.tools.code_sandbox import lint_python_text  # noqa: PLC0415
     return lint_python_text(text)
 
+@cli.command("sandbox")
+@click.argument("target", type=click.Path(exists=True, dir_okay=False))
+def sandbox_cmd(target):
+    """Executa um arquivo Python em ambiente isolado (Job Object)."""
+    from engine.tools.sandbox import run_in_sandbox
+    from engine.ui.display import Display
+    from pathlib import Path
+
+    Display.section("SANDBOX", target)
+    try:
+        code = Path(target).read_text(encoding="utf-8")
+    except Exception as e:
+        Display.error(f"Falha ao ler arquivo: {e}")
+        raise SystemExit(1)
+
+    Display.info("Executando em isolamento...")
+    result = run_in_sandbox(code, timeout_s=5)
+
+    if result.success:
+        Display.success("Execução concluída com sucesso.")
+    else:
+        Display.error(f"Falha com código {result.exit_code}")
+
+    if result.stdout:
+        Display.separator()
+        print(result.stdout)
+    if result.stderr:
+        Display.separator()
+        print(result.stderr)
 
 @cli.command("diagnose")
 @click.argument("target", type=click.Path(exists=True), default=".")
@@ -1019,6 +1058,75 @@ def bench(prompt: str, runs: int, tokens: int) -> None:
         )
 
 # ---------------------------------------------------------------------------
+# T4.2 — `orn diff` (edição cirúrgica via @N)
+# ---------------------------------------------------------------------------
+
+@cli.command("diff")
+@click.argument("target", type=click.Path(exists=True, dir_okay=False))
+@click.option("--instruction", "-i", required=True,
+              help="Tarefa em linguagem natural. Ex: 'Troque + por - na linha 5'")
+@click.option("--apply", is_flag=True, default=False,
+              help="Aplicar o patch no arquivo (default: dry-run).")
+@click.option("--verify", is_flag=True, default=False,
+              help="Após aplicar, executa o código no Sandbox isolado.")
+@click.option("--model", "-m", default=None,
+              help="Alias do modelo (default: active_alias do catálogo).")
+@click.option("--max-tokens", type=int, default=256, show_default=True)
+@click.option("--temperature", type=float, default=0.2, show_default=True)
+@click.option("--raw", is_flag=True, default=False,
+              help="Mostrar output cru do modelo.")
+def diff_cmd(target: str, instruction: str, apply: bool, verify: bool, model: str | None,
+             max_tokens: int, temperature: float, raw: bool) -> None:
+    """Gera e (opcionalmente) aplica edições cirúrgicas no formato @N - old + new."""
+    from engine.tools.diff_engine import generate_and_apply
+
+    Display.section("DIFF", target)
+    Display.kv("instruction", instruction[:80])
+    Display.kv("apply",       "sim" if apply else "não (dry-run)")
+    Display.kv("verify",      "sim" if verify else "não")
+    Display.kv("model",       model or "(active)")
+
+    result = generate_and_apply(
+        target, instruction,
+        apply=apply,
+        verify=verify,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        model_alias=model,
+    )
+
+    if raw:
+        Display.separator()
+        print(result.raw_output)
+
+    if result.hunks:
+        Display.separator()
+        print(f"  {len(result.hunks)} hunk(s):")
+        for h in result.hunks:
+            print(f"    @{h.line}")
+            for r in h.removed:
+                print(f"      - {r}")
+            for a in h.added:
+                print(f"      + {a}")
+
+    if result.errors:
+        Display.separator()
+        for e in result.errors:
+            Display.error(e)
+
+    Display.separator()
+    if result.applied:
+        Display.success(f"patch aplicado em {target} ({result.elapsed_s}s)")
+    elif apply:
+        Display.warn(f"patch NÃO aplicado ({result.elapsed_s}s)")
+        raise SystemExit(1)
+    else:
+        Display.info(f"dry-run — use --apply para escrever ({result.elapsed_s}s)")
+
+    if not result.success:
+        raise SystemExit(1)
+
+# ---------------------------------------------------------------------------
 # server — grupo de subcomandos para orn-server
 # ---------------------------------------------------------------------------
 
@@ -1197,3 +1305,730 @@ def probe_status(json_output: bool, limit: int, strict: bool, out: str | None) -
                 f"avg={_fmt_ms(row.get('avg_ms', 0))} p95={_fmt_ms(row.get('p95_ms', 0))} "
                 f"total={_fmt_ms(row.get('total_ms', 0))} share={share:.1f}%"
             )
+
+# ---------------------------------------------------------------------------
+# T1 — Grupo `models` (catálogo de modelos GGUF)
+# ---------------------------------------------------------------------------
+
+@cli.group("models")
+def models_group() -> None:
+    """Catálogo de modelos GGUF (list, show, use, scan, verify)."""
+
+@models_group.command("merge")
+@click.argument("adapter")
+@click.option("--base", required=True, type=click.Path(exists=True),
+              help="GGUF base F16.")
+@click.option("--out", required=True, type=click.Path(),
+              help="GGUF de saída (F16 fundido).")
+@click.option("--scale", default="auto", show_default=True,
+              help="'auto' usa alpha/r do adapter_config.json.")
+@click.option("--force", is_flag=True, default=False,
+              help="Sobrescreve --out se existir.")
+
+def models_merge(adapter: str, base: str, out: str, scale: str, force: bool) -> None:
+    from engine.training.merge import merge_lora, load_adapter_config
+    from engine.tools.model_catalog import resolve_alias
+    from pathlib import Path as _P
+
+    # Resolução do adapter, em ordem de precedência:
+    # 1. path literal (se usuário passou caminho completo)
+    # 2. data/training/<adapter>
+    # 3. alias de modelo no catálogo (raro — adapter não é modelo, mas por consistência)
+    candidate_paths = [
+        _P(adapter),
+        _P("data") / "training" / adapter,
+    ]
+    adapter_path = None
+    for c in candidate_paths:
+        if c.exists() and c.is_dir():
+            adapter_path = c
+            break
+    if adapter_path is None:
+        alias_resolved = resolve_alias(adapter)
+        if alias_resolved is not None and alias_resolved.parent.is_dir():
+            adapter_path = alias_resolved.parent
+    if adapter_path is None:
+        Display.error(f"adapter não encontrado: {adapter}")
+        Display.info("Tentou: " + ", ".join(str(c) for c in candidate_paths))
+        raise SystemExit(1)
+
+    Display.section("MERGE", f"{adapter} → {out}")
+    Display.kv("base",    base)
+    Display.kv("adapter", str(adapter_path))
+    Display.kv("out",     out)
+
+    scale_val: float | str = scale
+    if scale == "auto":
+        try:
+            cfg = load_adapter_config(adapter_path)
+            r = cfg.get("r", 8)
+            alpha = cfg.get("lora_alpha", 16)
+            Display.kv("scale", f"auto (alpha/r = {alpha}/{r} = {alpha/r:.2f})")
+        except Exception:
+            pass
+
+    result = merge_lora(
+        base_gguf=_P(base),
+        adapter_dir=adapter_path,
+        out_gguf=_P(out),
+        scale=scale_val,
+        force=force,
+    )
+
+    if not result.success:
+        for err in result.errors:
+            Display.error(err)
+        raise SystemExit(1)
+
+    Display.separator()
+    Display.success(
+        f"{result.fused_tensors} tensor(es) fundido(s), "
+        f"{result.skipped_tensors} pulado(s) em {result.elapsed_s}s"
+    )
+    Display.kv("out",   str(result.output_path))
+    Display.kv("scale", f"{result.scale:.4f}")
+    if result.errors:
+        Display.warn(f"{len(result.errors)} erro(s) não-fatal(is):")
+        for e in result.errors[:5]:
+            Display.info(f"  - {e}")
+
+
+@models_group.command("quantize")
+@click.argument("input_gguf", type=click.Path(exists=True))
+@click.option("--type", "quant_type",
+              type=click.Choice(["q2_k", "q3_k_m", "q4_k_m", "q5_k_m", "q6_k", "q8_0"]),
+              default="q4_k_m", show_default=True)
+@click.option("--out", type=click.Path(), default=None,
+              help="Saída (default: <input>-<type>.gguf).")
+@click.option("--force", is_flag=True, default=False)
+def models_quantize(input_gguf: str, quant_type: str, out: str | None, force: bool) -> None:
+    from engine.training.quantize import quantize_gguf
+    from pathlib import Path as _P
+
+    inp = _P(input_gguf)
+    if out is None:
+        out = str(inp.with_name(f"{inp.stem}-{quant_type}.gguf"))
+
+    Display.section("QUANTIZE", f"{inp.name} → {quant_type.upper()}")
+    Display.kv("input",  str(inp))
+    Display.kv("output", out)
+
+    result = quantize_gguf(inp, _P(out), quant_type, force=force)
+
+    if not result.success:
+        Display.error(result.error or "quantize falhou")
+        raise SystemExit(1)
+
+    Display.separator()
+    Display.success(
+        f"{result.quant_type} gerado em {result.elapsed_s}s "
+        f"({result.size_mb} MB)"
+    )
+    Display.kv("path", str(result.output_path))
+
+@models_group.command("list")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Saída em JSON bruto.")
+def models_list(as_json: bool) -> None:
+    from engine.training.registry import ModelRegistry
+    reg = ModelRegistry()
+    entries = reg.all()
+    active = reg.active_alias()
+
+    if as_json:
+        out = {
+            "active_alias": active,
+            "models": [
+                {
+                    "alias": e.alias,
+                    "path": str(e.path),
+                    "quant": e.quant,
+                    "base": e.base,
+                    "size_mb": e.size_mb,
+                    "tags": e.tags,
+                    "active": e.alias == active,
+                }
+                for e in entries
+            ],
+        }
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
+    Display.section("MODELS", f"{len(entries)} entradas — ativo: {active or '(nenhum)'}")
+    for e in entries:
+        marker = " ✓" if e.alias == active else "  "
+        size = f"{e.size_mb:>7.1f} MB" if e.size_mb else "        ?"
+        tags = ",".join(e.tags) if e.tags else "-"
+        print(f"{marker} {e.alias:<22} {size}  {e.quant:<7}  [{tags}]")
+        if not e.path.exists():
+            Display.warn(f"    arquivo ausente: {e.path}")
+
+
+@models_group.command("show")
+@click.argument("alias")
+@click.option("--json", "as_json", is_flag=True, default=False)
+def models_show(alias: str, as_json: bool) -> None:
+    from engine.training.registry import ModelRegistry
+    reg = ModelRegistry()
+    entry = reg.get(alias)
+    if entry is None:
+        Display.error(f"alias não catalogado: {alias!r}")
+        raise SystemExit(1)
+
+    ok, motivo = reg.verify(alias)
+
+    if as_json:
+        print(json.dumps({
+            "alias": entry.alias,
+            "path": str(entry.path),
+            "base": entry.base,
+            "quant": entry.quant,
+            "adapter": entry.adapter,
+            "tags": entry.tags,
+            "source": entry.source,
+            "created_at": entry.created_at,
+            "size_mb": entry.size_mb,
+            "sha256": entry.sha256,
+            "verify_ok": ok,
+            "verify_msg": motivo,
+        }, ensure_ascii=False, indent=2))
+        return
+
+    Display.section("MODEL", entry.alias)
+    Display.kv("path",       str(entry.path))
+    Display.kv("base",       entry.base)
+    Display.kv("quant",      entry.quant)
+    if entry.adapter:
+        Display.kv("adapter", entry.adapter)
+    Display.kv("tags",       ", ".join(entry.tags) or "-")
+    Display.kv("source",     entry.source)
+    Display.kv("created_at", entry.created_at)
+    Display.kv("size_mb",    str(entry.size_mb) if entry.size_mb else "?")
+    Display.kv("sha256",     (entry.sha256[:16] + "...") if entry.sha256 else "(não calculado)")
+    Display.separator()
+    if ok:
+        Display.success(motivo)
+    else:
+        Display.warn(motivo)
+
+
+@models_group.command("use")
+@click.argument("alias")
+def models_use(alias: str) -> None:
+    from engine.training.registry import ModelRegistry
+    reg = ModelRegistry()
+    entry = reg.get(alias)
+    if entry is None:
+        Display.error(f"alias não catalogado: {alias!r}")
+        Display.info("Use `orn models list` para ver os disponíveis.")
+        raise SystemExit(1)
+    if not entry.path.exists():
+        Display.warn(f"arquivo ausente: {entry.path} — ativando mesmo assim")
+    reg.set_active(alias)
+    Display.success(f"active_alias = {alias}")
+    Display.info(f"Próximo `orn think` usará {entry.path.name}")
+
+
+@models_group.command("scan")
+@click.option("--dir", "models_dir", type=click.Path(),
+              default="models", show_default=True,
+              help="Diretório para escanear.")
+@click.option("--hash", "compute_hash", is_flag=True, default=False,
+              help="Calcula sha256 (lento, ~10-20s).")
+def models_scan(models_dir: str, compute_hash: bool) -> None:
+    from engine.training.registry import ModelRegistry
+    reg = ModelRegistry()
+    rows = reg.scan(models_dir=models_dir, compute_hash=compute_hash)
+
+    if not rows:
+        Display.warn(f"nenhum .gguf em {models_dir}")
+        return
+
+    known = [r for r in rows if r["known"]]
+    unknown = [r for r in rows if not r["known"]]
+
+    Display.section("SCAN", f"{len(rows)} arquivo(s) .gguf em {models_dir}")
+    for r in rows:
+        marker = "✓" if r["known"] else "?"
+        alias = r["alias"] or "(não catalogado)"
+        hash_str = f" sha256={r['sha256'][:12]}..." if r["sha256"] else ""
+        print(f"  [{marker}] {alias:<22} {r['size_mb']:>7.1f} MB  {r['path']}{hash_str}")
+
+    # Atualiza cache local com size_mb/sha256
+    if compute_hash or known:
+        cache = mc_load_local()
+        cache.setdefault("models", {})
+        for r in known:
+            if r["alias"]:
+                row = cache["models"].setdefault(r["alias"], {})
+                row["size_mb"] = r["size_mb"]
+                if r["sha256"]:
+                    row["sha256"] = r["sha256"]
+        mc_save_local(cache)
+
+    Display.separator()
+    Display.success(f"{len(known)} catalogado(s), {len(unknown)} não catalogado(s)")
+    if unknown:
+        Display.info("Adicione manualmente em data/model_catalog.json ou aguarde `orn models import` (T1.1)")
+
+
+def mc_load_local() -> dict:
+    from engine.tools import model_catalog
+    return model_catalog.load_local_cache()
+
+
+def mc_save_local(data: dict) -> None:
+    from engine.tools import model_catalog
+    model_catalog.save_local_cache(data)
+
+
+@models_group.command("verify")
+@click.argument("alias")
+def models_verify(alias: str) -> None:
+    from engine.training.registry import ModelRegistry
+    reg = ModelRegistry()
+    ok, motivo = reg.verify(alias)
+    if ok:
+        Display.success(f"{alias}: {motivo}")
+    else:
+        Display.warn(f"{alias}: {motivo}")
+        raise SystemExit(1)
+
+# ---------------------------------------------------------------------------
+# T2 — Grupo `data` (dataset builder)
+# ---------------------------------------------------------------------------
+
+@cli.group("data")
+def data_group() -> None:
+    """Datasets de treino (build, inspect, preview, list, stats)."""
+
+@data_group.command("gen-diffs")
+@click.argument("name")
+@click.option("--sources", "-s", required=True,
+              help="Arquivos/pastas separados por vírgula (.py).")
+@click.option("--max-per-file", type=int, default=20, show_default=True,
+              help="Mutações máximas por arquivo.")
+@click.option("--out", default="data/processed", show_default=True,
+              type=click.Path(),
+              help="Diretório de saída (pai do <name>).")
+def data_gen_diffs(name: str, sources: str, max_per_file: int, out: str) -> None:
+    """Gera dataset de diffs a partir de código Python válido."""
+    from engine.tools.diff_dataset import build_diff_dataset
+
+    src_list = [s.strip() for s in sources.split(",") if s.strip()]
+    if not src_list:
+        Display.error("--sources vazio")
+        raise SystemExit(1)
+
+    Display.section("DATA GEN-DIFFS", name)
+    for s in src_list:
+        Display.kv("source", s)
+    Display.kv("max_per_file", str(max_per_file))
+    Display.separator()
+
+    manifest = build_diff_dataset(
+        sources=src_list,
+        name=name,
+        out_dir=out,
+        max_per_file=max_per_file,
+    )
+    stats = manifest["stats"]
+
+    Display.success(
+        f"{stats['total']} amostras "
+        f"({stats['train']} train / {stats['val']} val)"
+    )
+    Display.kv("files_scanned",      str(stats["files_scanned"]))
+    Display.kv("files_with_mut",     str(stats["files_with_mutations"]))
+    Display.kv("mutations_gen",      str(stats["mutations_generated"]))
+    Display.kv("mutations_valid",    str(stats["mutations_validated"]))
+    Display.kv("manifest",           str(Path(out) / name / "manifest.json"))
+
+    if manifest["warning"]:
+        Display.warn(manifest["warning"])
+
+@data_group.command("build")
+@click.argument("name")
+@click.option("--sources", "-s", required=True,
+              help="Arquivos separados por vírgula (.jsonl ou .txt).")
+@click.option("--dedup", type=click.Choice(["hash", "none"]), default="hash",
+              show_default=True)
+@click.option("--strict", is_flag=True, default=False,
+              help="Dedup com normalização de whitespace (mais agressivo).")
+@click.option("--split", type=float, default=0.9, show_default=True,
+              help="Fração para train (resto vai para val).")
+@click.option("--by", type=click.Choice(["line", "source"]), default="line",
+              show_default=True,
+              help="Split por linha ou por arquivo-fonte.")
+def data_build(name: str, sources: str, dedup: str, strict: bool,
+               split: float, by: str) -> None:
+    from engine.training.dataset import DatasetBuilder
+    src_list = [s.strip() for s in sources.split(",") if s.strip()]
+    if not src_list:
+        Display.error("--sources vazio")
+        raise SystemExit(1)
+
+    Display.section("DATA BUILD", name)
+    for s in src_list:
+        Display.kv("source", s)
+
+    builder = DatasetBuilder(name)
+    manifest = builder.build(
+        src_list, dedup=dedup, strict=strict, split=split, by=by,
+    )
+
+    Display.separator()
+    Display.success(
+        f"{manifest.stats['train']} train / {manifest.stats['val']} val "
+        f"({manifest.stats['total']} total)"
+    )
+    Display.kv("by_lang",   str(manifest.stats.get("by_lang", {})))
+    Display.kv("by_task",   str(manifest.stats.get("by_task", {})))
+    Display.kv("manifest",  str(Path("data/processed") / name / "manifest.json"))
+
+    if manifest.warning:
+        Display.warn(manifest.warning)
+
+
+@data_group.command("inspect")
+@click.argument("name")
+def data_inspect(name: str) -> None:
+    from engine.training.dataset import DatasetBuilder
+    try:
+        m = DatasetBuilder.inspect(name)
+    except (FileNotFoundError, RuntimeError) as exc:
+        Display.error(str(exc))
+        raise SystemExit(1)
+
+    Display.section("DATA INSPECT", name)
+    Display.kv("created_at", m.get("created_at", "?"))
+    stats = m.get("stats", {})
+    Display.kv("total",   str(stats.get("total", 0)))
+    Display.kv("train/val", f"{stats.get('train', 0)} / {stats.get('val', 0)}")
+    Display.kv("by_lang", str(stats.get("by_lang", {})))
+    Display.kv("by_source", str(stats.get("by_source", {})))
+    Display.kv("by_task", str(stats.get("by_task", {})))
+    Display.kv("avg_chars", str(stats.get("avg_chars", 0)))
+    sizes = stats.get("sizes_mb", {})
+    if sizes:
+        Display.separator()
+        for k, v in sizes.items():
+            Display.kv(k, f"{v} MB")
+    Display.separator()
+    if m.get("sufficient"):
+        Display.success("dataset suficiente para treino útil")
+    else:
+        Display.warn(m.get("warning") or "dataset pode ser insuficiente")
+
+
+@data_group.command("preview")
+@click.argument("name")
+@click.option("-n", "n", type=int, default=3, show_default=True)
+def data_preview(name: str, n: int) -> None:
+    from engine.training.dataset import DatasetBuilder
+    try:
+        previews = DatasetBuilder.preview(name, n=n)
+    except (FileNotFoundError, RuntimeError) as exc:
+        Display.error(str(exc))
+        raise SystemExit(1)
+    if not previews:
+        Display.warn("nenhuma amostra encontrada")
+        return
+    for i, p in enumerate(previews, 1):
+        Display.separator()
+        print(f"  [{i}]")
+        for line in p.splitlines():
+            print(f"  {line}")
+
+
+@data_group.command("list")
+def data_list() -> None:
+    from engine.training.dataset import DatasetBuilder
+    names = DatasetBuilder.list_processed()
+    if not names:
+        Display.warn("nenhum dataset em data/processed/")
+        return
+    Display.section("DATA LIST", f"{len(names)} dataset(s)")
+    for name in names:
+        try:
+            m = DatasetBuilder.inspect(name)
+            s = m.get("stats", {})
+            print(f"  {name:<24} {s.get('train', 0):>5} train / "
+                  f"{s.get('val', 0):>4} val")
+        except Exception:
+            print(f"  {name:<24} (manifest ilegível)")
+
+
+@data_group.command("stats")
+@click.argument("name")
+def data_stats(name: str) -> None:
+    from engine.training.dataset import DatasetBuilder
+    try:
+        info = DatasetBuilder.stats(name)
+    except (FileNotFoundError, RuntimeError) as exc:
+        Display.error(str(exc))
+        raise SystemExit(1)
+
+    Display.section("DATA STATS", name)
+    stats = info.get("stats", {})
+    Display.kv("total",    str(stats.get("total", 0)))
+    Display.kv("train",    str(stats.get("train", 0)))
+    Display.kv("val",      str(stats.get("val", 0)))
+    Display.kv("by_lang",  str(stats.get("by_lang", {})))
+    Display.kv("by_task",  str(stats.get("by_task", {})))
+    Display.separator()
+    if info.get("sufficient"):
+        Display.success("dataset suficiente (>= 100 amostras únicas)")
+    else:
+        Display.warn(info.get("warning") or "insuficiente")
+
+# ---------------------------------------------------------------------------
+# T3.A — Grupo `tools` (provisionamento nativo)
+# ---------------------------------------------------------------------------
+
+@cli.group("tools")
+def tools_group() -> None:
+    """Ferramentas nativas (provision, list, which)."""
+
+
+@tools_group.command("provision")
+@click.option("--profile", type=click.Choice(["auto", "1235u", "portable"]),
+              default="auto", show_default=True,
+              help="Perfil de otimização da CPU.")
+@click.option("--check-only", is_flag=True, default=False,
+              help="Só verifica, não builda.")
+@click.option("--tool", "tools", multiple=True,
+              help="Targets específicos (default: llama-quantize).")
+def tools_provision(profile: str, check_only: bool, tools: tuple) -> None:
+    from engine.tools.provision import provision, check_all, detect_profile
+    targets = list(tools) if tools else ["llama-quantize"]
+    prof = profile if profile != "auto" else detect_profile()
+
+    Display.section("TOOLS PROVISION", f"profile={prof}")
+    if check_only:
+        for name, path in check_all().items():
+            if path:
+                Display.success(f"{name}: {path}")
+            else:
+                Display.warn(f"{name}: não encontrado")
+        return
+
+    results = provision(targets, profile=prof, check_only=False)
+    for r in results:
+        if r.found and r.built:
+            Display.success(f"{r.tool}: compilado em {r.elapsed_s}s → {r.path}")
+        elif r.found:
+            Display.info(f"{r.tool}: já existe → {r.path}")
+        else:
+            Display.error(f"{r.tool}: {r.error}")
+
+
+@tools_group.command("which")
+@click.argument("tool")
+def tools_which(tool: str) -> None:
+    from engine.tools.provision import find_tool
+    p = find_tool(tool)
+    if p:
+        Display.success(f"{tool}: {p}")
+    else:
+        Display.warn(f"{tool}: não encontrado")
+        Display.info("Rode `orn tools provision` para compilar.")
+
+
+@tools_group.command("list")
+def tools_list() -> None:
+    from engine.tools.provision import check_all
+    Display.section("TOOLS", "binários nativos")
+    for name, path in check_all().items():
+        if path:
+            Display.kv(name, str(path))
+        else:
+            Display.kv(name, "(ausente)")
+
+# ---------------------------------------------------------------------------
+# T4 — Grupo `train` (LoRA) + `orn models import`
+# ---------------------------------------------------------------------------
+
+@cli.group("train")
+def train_group() -> None:
+    """Treino LoRA (lora, status, eval)."""
+
+
+@train_group.command("lora")
+@click.argument("name")
+@click.option("--data", "data_dir", required=True,
+              type=click.Path(exists=True),
+              help="Dataset em data/processed/<nome>/")
+@click.option("--base", default="HuggingFaceTB/SmolLM2-135M-Instruct",
+              help="Modelo base do HuggingFace.")
+@click.option("--out", default=None, help="Saída (default: data/training/<name>)")
+@click.option("--rank", type=int, default=8, show_default=True)
+@click.option("--alpha", type=int, default=16, show_default=True)
+@click.option("--dropout", type=float, default=0.05, show_default=True)
+@click.option("--target-modules", default="q_proj,k_proj,v_proj,o_proj",
+              show_default=True)
+@click.option("--epochs", type=int, default=3, show_default=True)
+@click.option("--batch-size", type=int, default=4, show_default=True)
+@click.option("--grad-accum", type=int, default=2, show_default=True)
+@click.option("--lr", type=float, default=5e-5, show_default=True)
+@click.option("--max-length", type=int, default=512, show_default=True)
+@click.option("--patience", type=int, default=2, show_default=True)
+@click.option("--qlora", is_flag=True, default=False,
+              help="QLoRA 4-bit (requer bitsandbytes).")
+@click.option("--dtype", type=click.Choice(["fp32", "fp16", "bf16"]),
+              default="fp32", show_default=True)
+def train_lora_cmd(name, data_dir, base, out, rank, alpha, dropout,
+                   target_modules, epochs, batch_size, grad_accum, lr,
+                   max_length, patience, qlora, dtype) -> None:
+    from engine.training.train import TrainConfig, train_lora
+
+    Display.section("TRAIN LORA", name)
+    Display.kv("data",    data_dir)
+    Display.kv("base",    base)
+    Display.kv("rank/α",  f"{rank}/{alpha}")
+    Display.kv("targets", target_modules)
+    Display.kv("epochs",  str(epochs))
+    Display.kv("lr",      str(lr))
+    Display.kv("qlora",   str(qlora))
+    Display.kv("dtype",   dtype)
+    Display.separator()
+
+    cfg = TrainConfig(
+        name=name,
+        data_dir=Path(data_dir),
+        base_model=base,
+        out_dir=Path(out) if out else None,
+        rank=rank, alpha=alpha, dropout=dropout,
+        target_modules=[t.strip() for t in target_modules.split(",") if t.strip()],
+        epochs=epochs, batch_size=batch_size, grad_accum=grad_accum,
+        lr=lr, max_length=max_length, patience=patience,
+        qlora=qlora, dtype=dtype,
+    )
+
+    result = train_lora(cfg)
+
+    if not result.success:
+        for e in result.errors:
+            Display.error(e)
+        raise SystemExit(1)
+
+    Display.separator()
+    Display.success(
+        f"treinado em {result.elapsed_s}s — "
+        f"train_loss={result.final_loss} val_loss={result.val_loss}"
+    )
+    Display.kv("adapter", str(result.adapter_dir))
+    Display.info("Próximo passo: orn models merge ... --base <gguf> --out ...")
+
+
+@train_group.command("status")
+@click.argument("name", required=False)
+def train_status(name: str | None) -> None:
+    from pathlib import Path as _P
+    root = _P("data") / "training"
+    if name:
+        d = root / name
+        if not d.exists():
+            Display.error(f"adapter não encontrado: {d}")
+            raise SystemExit(1)
+        _print_adapter_status(d)
+        return
+    if not root.exists():
+        Display.warn("data/training/ vazio")
+        return
+    Display.section("TRAIN STATUS", "adapters")
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        if (d / "adapter_model.safetensors").exists():
+            _print_adapter_status(d, compact=True)
+
+
+def _print_adapter_status(d: Path, compact: bool = False) -> None:
+    from pathlib import Path as _P
+    cfg_p = d / "adapter_config.json"
+    state_p = d / "trainer_state.json"
+    r_str, a_str = "?", "?"
+    if cfg_p.exists():
+        try:
+            c = json.loads(cfg_p.read_text(encoding="utf-8"))
+            r_str = str(c.get("r", "?"))
+            a_str = str(c.get("lora_alpha", "?"))
+        except Exception:
+            pass
+    if compact:
+        print(f"  {d.name:<30} r={r_str} α={a_str}")
+    else:
+        Display.section("ADAPTER", d.name)
+        Display.kv("path",   str(d))
+        Display.kv("rank",   r_str)
+        Display.kv("alpha",  a_str)
+    if state_p.exists():
+        try:
+            s = json.loads(state_p.read_text(encoding="utf-8"))
+            log = s.get("log_history", [])
+            train_l = [e for e in log if "loss" in e and "eval_loss" not in e]
+            val_l   = [e for e in log if "eval_loss" in e]
+            if train_l:
+                last = train_l[-1]
+                print(f"  last train_loss: {last['loss']:.4f}  (step {last.get('step','?')})")
+            if val_l:
+                last = val_l[-1]
+                print(f"  last val_loss:   {last['eval_loss']:.4f}")
+            if len(train_l) >= 2:
+                first = train_l[0]['loss']
+                final = train_l[-1]['loss']
+                drop = (first - final) / first * 100 if first else 0
+                print(f"  Δ train:         {first:.4f} → {final:.4f} ({drop:+.1f}%)")
+        except Exception as exc:
+            print(f"  (trainer_state ilegível: {exc})")
+
+
+@models_group.command("import")
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--alias", required=True)
+@click.option("--base",   default="")
+@click.option("--quant",  default="")
+@click.option("--adapter", default="")
+@click.option("--tags",   default="",
+              help="Tags separadas por vírgula.")
+def models_import(path, alias, base, quant, adapter, tags) -> None:
+    from engine.tools.model_catalog import (
+        load_catalog, save_catalog, catalog_path,
+    )
+    from pathlib import Path as _P
+    from datetime import datetime, timezone
+
+    cat = load_catalog()
+    if alias in cat.get("models", {}):
+        Display.warn(f"alias '{alias}' já existe no catálogo — sobrescrevendo")
+
+    entry = {
+        "path":       str(_P(path)).replace("\\", "/"),
+        "base":       base,
+        "quant":      quant or "F16",
+        "tags":       [t.strip() for t in tags.split(",") if t.strip()],
+        "source":     "local",
+        "created_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+    }
+    if adapter:
+        entry["adapter"] = adapter
+
+    cat.setdefault("models", {})[alias] = entry
+    save_catalog(cat)
+    Display.success(f"importado: {alias} → {entry['path']}")
+
+
+@models_group.command("unimport")
+@click.argument("alias")
+def models_unimport(alias: str) -> None:
+    """Remove um alias do catálogo (NÃO deleta o arquivo .gguf)."""
+    from engine.tools.model_catalog import load_catalog, save_catalog
+    cat = load_catalog()
+    if alias not in cat.get("models", {}):
+        Display.error(f"alias não catalogado: {alias}")
+        raise SystemExit(1)
+    del cat["models"][alias]
+    if cat.get("active_alias") == alias:
+        cat["active_alias"] = None
+    save_catalog(cat)
+    Display.success(f"removido do catálogo: {alias}")
+

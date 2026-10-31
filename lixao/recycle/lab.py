@@ -1,3 +1,5 @@
+
+# [VULCAN-SKIP] Proteção contra introspecção Click
 """
 DOXOLAB - Sandbox de Experimentação e Aprendizado.
 Ambiente isolado para prototipagem de scripts e crawlers.

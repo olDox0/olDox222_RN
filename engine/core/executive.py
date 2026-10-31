@@ -27,7 +27,7 @@ Fluxo futuro (audit, fix, gen):
 
 from __future__ import annotations
 
-import re, time, functools
+import re, time, functools, sys
 
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -101,12 +101,21 @@ class SiCDoxExecutive:
         try:
             result = self._dispatch(intent, payload, context)
         except NotImplementedError as exc:
+            import traceback
+            print("[DEBUG] TRACEBACK COMPLETO:", file=sys.stderr)
+            traceback.print_exc()
             emit_forensic_log(exc, "_dispatch")
             result = GoalResult(success=False, intent=intent, errors=[f"[TODO] {exc}"])
         except FileNotFoundError as exc:
+            import traceback
+            print("[DEBUG] TRACEBACK COMPLETO:", file=sys.stderr)
+            traceback.print_exc()
             emit_forensic_log(exc, "_dispatch")
             result = GoalResult(success=False, intent=intent, errors=[f"[ARQUIVO] {exc}"])
         except Exception as exc:
+            import traceback
+            print("[DEBUG] TRACEBACK COMPLETO:", file=sys.stderr)
+            traceback.print_exc()
             emit_forensic_log(exc, "_dispatch")
             result = GoalResult(
                 success=False,

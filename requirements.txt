@@ -18,6 +18,8 @@
 # rich      → substituído por Display + ColorManager (zero deps)
 beautifulsoup4==4.14.2
 click==8.3.1
+cython==3.3.0
 numpy>=1.26.0             # VectorDB coseno (Osíris) — já instalado
 psutil==7.1.3
 toml==0.10.2
+torch==2.14.1+cpu

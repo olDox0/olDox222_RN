@@ -1,3 +1,5 @@
+
+# [VULCAN-SKIP] Proteção contra introspecção Click
 # doxoade/commands/alfagold.py
 import click
 import os

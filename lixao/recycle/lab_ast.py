@@ -1,3 +1,5 @@
+
+# [VULCAN-SKIP] Proteção contra introspecção Click
 # doxoade/commands/lab_ast.py
 import click
 import json
