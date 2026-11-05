@@ -110,7 +110,6 @@ models/
 # Exceções (Auto-fixed pelo Doxoade)
 # permitir versionamento de testes automatizados
 
-
 # ── Modelos (nunca commitar) ──
 models/
 *.gguf
@@ -122,16 +121,22 @@ __pycache__/
 *.pyc
 *.pyo
 
-# ── Binários nativos ──
-native/*.exe
+# ── Dossiers de trabalho ──
+chief_dossier_*.xml
+*_dossier_*.xml
+orn_llm.xml
 
-# ── Arquivos de trabalho ──
+# ── Arquivos de teste ──
 teste_fix.py
 teste_fix.py.bak
-orn_llm.xml
+*.bak
+
+# ── Lixo acidental ──
 help
 o
-*.bak
+
+# ── Binários nativos ──
+native/*.exe
 
 
 # Exceções (Auto-fixed pelo Doxoade)
