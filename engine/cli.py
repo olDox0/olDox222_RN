@@ -43,6 +43,9 @@ from pathlib import Path
 
 from engine.ui.display import Display
 
+from engine.tools.server_client import query as server_query  # noqa: PLC0415
+from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
+
 #from engine.core.import_hook import install_lazy_imports
 #install_lazy_imports([
 #    "engine",
@@ -58,18 +61,12 @@ def _fmt_ms(value: float) -> str:
 
 def _guess_lang_from_prompt(prompt: str) -> str:
     p = (prompt or "").lower()
-    if "python" in p:
-        return "python"
-    if "javascript" in p or "js" in p:
-        return "javascript"
-    if "typescript" in p or "ts" in p:
-        return "typescript"
-    if "java" in p:
-        return "java"
-    if "c++" in p or "cpp" in p:
-        return "cpp"
-    if "c#" in p or "csharp" in p:
-        return "csharp"
+    if "python" in p: return "python"
+    if "javascript" in p or "js" in p: return "javascript"
+    if "typescript" in p or "ts" in p: return "typescript"
+    if "java" in p: return "java"
+    if "c++" in p or "cpp" in p: return "cpp"
+    if "c#" in p or "csharp" in p: return "csharp"
     return "python"
 
 
@@ -163,8 +160,10 @@ def process_result(result, **kwargs):
               help="Desativa busca autônoma (two-pass) nesta chamada.")
 @click.option("--telemetry", is_flag=True, default=False,
               help="Ativa telemetria detalhada para modo direto (grava telemetry/direct_runtime.jsonl).")
+@click.option("--consult", is_flag=True, default=False,
+              help="Enriquece prompt com contexto do acervo Consult (FTS5).")
 def think(prompt: tuple[str, ...], context_file: str | None,
-          raw: bool, tokens: int | None, direct: bool,
+          raw: bool, tokens: int | None, direct: bool, consult: bool,
           search: str | None, search_code_only: bool, drawer_first: bool,
           drawer_only: bool, drawer_auto_save: bool, no_auto: bool, telemetry: bool) -> None:
     """Pergunta livre ao Qwen. Ex: orn think 'como faço X em Python?'"""
@@ -174,17 +173,37 @@ def think(prompt: tuple[str, ...], context_file: str | None,
 
     telemetry_enabled = telemetry or (os.environ.get("ORN_TELEMETRY", "") == "1")
     question = " ".join(prompt).strip()
+    context_blocks: list[str] = []
+
+    consult_hint = ""
+    consult_results = []
+    if consult:
+        try:
+            from engine.tools.consult_bridge import ConsultBridge
+            cb = ConsultBridge()
+            if cb.is_available():
+                consult_results = cb.search(question, limit=3)
+                if consult_results:
+                    consult_hint = (
+                        "Use as informações de referência do acervo abaixo para complementar e fundamentar sua resposta:\n\n"
+                        + cb.format_context(consult_results, max_chars=1200)
+                    )
+                    Display.info(f"[CONSULT] {len(consult_results)} fonte(s) injetada(s).")
+                else:
+                    Display.warn("[CONSULT] Sem resultado — seguindo sem RAG.")
+        except Exception as e:
+            Display.warn(f"[CONSULT] {e}")
+
     if tokens is not None:
         max_tokens = tokens
     else:
-        # Busca focada em código tende a precisar menos verbosidade.
-        if search_code_only:
-            max_tokens = 96
-        else:
-            from engine.core.executive import _adaptive_max_tokens  # noqa: PLC0415
-            max_tokens = _adaptive_max_tokens(question)
+        from engine.core.executive import _adaptive_max_tokens  # noqa: PLC0415
+        max_tokens = _adaptive_max_tokens(question)
 
-    context_blocks: list[str] = []
+    if consult_hint:
+        context_blocks.append(f"[CONSULT-HINT]\n{consult_hint}\n[CONSULT-HINT-END]\n")
+
+    # (A LINHA 'context_blocks: list[str] = []' FOI REMOVIDA DAQUI)
     drawer_snippet = None
 
     if drawer_first or drawer_only:
@@ -229,9 +248,13 @@ def think(prompt: tuple[str, ...], context_file: str | None,
         Display.section("DRAWER-ONLY", f"{drawer_snippet.name} [{drawer_snippet.lang}]")
         if raw:
             print(drawer_snippet.code)
-        else:
+        elif _is_probably_python_snippet(drawer_snippet.code) or "```" in drawer_snippet.code:
             Display.code_block(drawer_snippet.code)
-        Display.info("Tempo: ~0s  [drawer-only]")
+        else:
+            Display.separator()
+            print(drawer_snippet.code)
+            Display.separator()
+        Display.info("Tempo: ~0s [drawer-only fast-path]")
         return
 
     if search:
@@ -342,7 +365,6 @@ def think(prompt: tuple[str, ...], context_file: str | None,
 
     if use_server and not no_auto and not context_blocks and _should_auto_search(question):
         from engine.tools.auto_search import AutoSearchDecider  # noqa: PLC0415
-        from engine.tools.server_client import query as server_query  # noqa: PLC0415
 
         decider = AutoSearchDecider()
         search_term = decider.decide(question, server_query)
@@ -394,9 +416,10 @@ def think(prompt: tuple[str, ...], context_file: str | None,
             ex = SiCDoxExecutive()
             result = ex.process_goal(
                 intent="think",
-                payload=full_prompt,
+                payload=question,            # ← prompt puro, sem Consult dentro
                 context={
-                    "context_file": None,
+                    "consult_hint": consult_hint,   # ← novo campo
+                    "context_file": context_file,
                     "max_tokens": max_tokens,
                     "search_code_only": search_code_only,
                     "use_server": False,
@@ -559,6 +582,186 @@ def _lint_python_text(text: str) -> list[str]:
     from engine.tools.code_sandbox import lint_python_text  # noqa: PLC0415
     return lint_python_text(text)
 
+# ─────────────────────────────────────────────────────────────
+# Session REPL — helpers (nível de módulo, antes do decorator)
+# ─────────────────────────────────────────────────────────────
+_SESSION_ALIASES = {
+    "help":   "/help",  "?":      "/help",
+    "open":   "/open",  "fix":    "/fix",
+    "apply":  "/apply", "diff":   "/diff",
+    "undo":   "/undo",  "status": "/status",
+    "clear":  "/clear", "exit":   "/exit", "quit": "/exit",
+}
+
+_SESSION_HELP = """
+  Comandos disponíveis (aceitam /cmd, \\cmd, cmd ou cmd:):
+
+    /help                  Esta ajuda
+    /open <arquivo>        Abre arquivo para edição
+    /fix <instrução>       Gera patch, mostra diff e pede confirmação
+    /apply                 Reaplica o último patch (após confirmação)
+    /diff                  Mostra o último diff gerado
+    /undo                  Reverte do backup .bak mais recente
+    /status                Stats do bridge (tokens, contexto, config)
+    /clear                 Limpa a lousa (sessão do DoxoBoard)
+    /exit                  Sai do REPL
+
+  Qualquer outra entrada é enviada ao modelo como pergunta livre.
+"""
+
+def _normalize_session_command(raw: str) -> str:
+    """Normaliza /cmd, \\cmd, cmd, cmd: → /cmd. Devolve '' se vazio."""
+    if not raw:
+        return ""
+    text = raw.strip()
+    if not text:
+        return ""
+    first = text.split(maxsplit=1)[0]
+    rest  = text[len(first):]
+    key   = first.lstrip("/\\").rstrip(":").lower()
+    canonical = _SESSION_ALIASES.get(key)
+    if canonical is None:
+        return text   # não é comando conhecido → instrução livre
+    return canonical + rest
+
+
+@cli.command("session")
+@click.option("--file", "-f", "initial_file",
+              type=click.Path(exists=True), default=None,
+              help="Arquivo inicial para edição.")
+def session_cmd(initial_file):
+    """REPL para edição interativa com o ORN."""
+    from engine.core.executive import SiCDoxExecutive
+    from engine.tools.server_client import is_server_online
+
+    if not is_server_online():
+        Display.warn("Servidor offline. Inicie com: orn-server start --bg")
+        Display.info("(a sessão funciona, mas recarrega o modelo a cada patch)")
+
+    ex = SiCDoxExecutive()
+    current_file = initial_file
+    try:
+        while True:
+            tag = f"📄 {current_file}" if current_file else "∅"
+            try:
+                raw_input = input(f"orn[{tag}]> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+
+            if not raw_input:
+                continue
+
+            cmd = _normalize_session_command(raw_input)
+
+            # ── Saída ──────────────────────────────────────
+            if cmd in ("/exit", "/quit"):
+                break
+
+            # ── /help ──────────────────────────────────────
+            if cmd == "/help":
+                print(_SESSION_HELP)
+                continue
+
+            # ── /status ────────────────────────────────────
+            if cmd == "/status":
+                import json as _json
+                print(_json.dumps(ex.bridge_stats(), indent=2, ensure_ascii=False))
+                continue
+
+            # ── /clear ─────────────────────────────────────
+            if cmd == "/clear":
+                ex.clear_board()
+                Display.success("Lousa limpa.")
+                continue
+
+            # ── /open <arquivo> ────────────────────────────
+            if cmd.startswith("/open "):
+                from pathlib import Path as _P
+                path = cmd[6:].strip()
+                if not _P(path).exists():
+                    Display.error(f"arquivo não existe: {path}")
+                    continue
+                current_file = path
+                Display.success(f"aberto: {path}")
+                continue
+
+            # ── /fix <instrução> ───────────────────────────
+            if cmd.startswith("/fix "):
+                if not current_file:
+                    Display.error("use /open <arquivo> primeiro")
+                    continue
+                instruction = cmd[5:].strip()
+                result = ex.process_goal(
+                    intent="fix",
+                    payload=current_file,
+                    context={"apply": False, "instruction": instruction},
+                )
+                if not result.success:
+                    for e in result.errors:
+                        Display.error(e)
+                    continue
+                Display.separator()
+                print(result.output)
+                Display.separator()
+                if click.confirm("Aplicar?", default=False):
+                    raw_patch = result.metadata.get("raw_output", "")
+                    if not raw_patch:
+                        Display.error("internal: raw_output vazio.")
+                        continue
+                    apply_res = ex.process_goal(
+                        intent="fix",
+                        payload=current_file,
+                        context={
+                            "apply":               True,
+                            "instruction":         instruction,
+                            "raw_output_override": raw_patch,
+                        },
+                    )
+                    if apply_res.success:
+                        if apply_res.metadata.get("no_op"):
+                            Display.info("O código já corresponde à sugestão (nada a aplicar).")
+                        else:
+                            n = apply_res.metadata.get("hunks", 0)
+                            Display.success(f"Patch aplicado ({n} hunk(s)).")
+                    else:
+                        for e in apply_res.errors:
+                            Display.error(e)
+                continue
+
+            # ── /undo ──────────────────────────────────────
+            if cmd == "/undo":
+                from pathlib import Path as _P
+                import shutil as _sh
+                if not current_file:
+                    Display.error("nenhum arquivo aberto")
+                    continue
+                bak = _P(current_file + ".bak")
+                if not bak.exists():
+                    Display.error(f"nenhum backup em {bak}")
+                    continue
+                _sh.copy2(bak, current_file)
+                Display.success(f"revertido de {bak}")
+                continue
+
+            # ── Comando / ou \ desconhecido → NÃO envia ao modelo ──
+            if raw_input.startswith(("/", "\\")):
+                Display.warn(f"comando desconhecido: {raw_input.split()[0]}")
+                Display.info("use /help para ver os comandos disponíveis")
+                continue
+
+            # ── Fallback: pergunta livre ───────────────────
+            result = ex.process_goal(intent="think", payload=raw_input, context={})
+            if result.success:
+                Display.separator()
+                print(result.output)
+                Display.separator()
+            else:
+                for e in result.errors:
+                    Display.error(e)
+    finally:
+        ex.shutdown()
+
 @cli.command("sandbox")
 @click.argument("target", type=click.Path(exists=True, dir_okay=False))
 def sandbox_cmd(target):
@@ -660,46 +863,27 @@ def index(local_index_args: tuple[str, ...]) -> None:
 
 @cli.command("tutorial")
 def tutorial() -> None:
-    """Mostra guia rápido com comandos principais do ORN."""
-    click.echo(
-        """
-=== ORN TUTORIAL (GUIA RÁPIDO) ===
+    click.echo("""
+=== ORN — Guia Rápido de Uso ===
 
-1) Perguntas para IA
-   orn think "explique quicksort em python"
+Comandos Principais:
+  orn think "sua pergunta"           Consulta rápida à IA local
+  orn think "..." --consult          Enriquece com o acervo Python do Doxoade (RAG FTS5)
+  orn think "..." --drawer-first     Reaproveita funções locais testadas
+  orn think "..." --tokens 256       Ajusta o limite de tokens
 
-2) Servidor de inferência (recomendado para uso contínuo)
-   orn server start
-   orn server status
-   orn server ask "resuma esse texto" --tokens 128
-   orn server stop
+Edição & Ferramentas:
+  orn diff arquivo.py -i "tarefa"    Gera e simula patch em formato @N
+  orn diff arquivo.py -i "..." --apply   Aplica alteração cirúrgica no código
+  orn gen "função quicksort"         Gera e valida código via CodeAssembler
+  orn sandbox script.py              Roda código em isolamento (Windows JobObject)
 
-3) Interface Web
-   orn web start
-   orn web stop
-
-4) Telemetria / saúde operacional
-   orn probe status
-   orn probe status --json-output --out status.json
-
-   5) Index local (atalho para engine.tools.local_index)
-   orn index list
-   orn index info wikipedia_pt_computer_maxi_2026_01
-   orn index search wikipedia_pt_computer_maxi_2026_01 "quicksort python"
-   orn index search wikipedia_pt_computer_maxi_2026_01 "quicksort python" --code-only
-   orn index preload wikipedia_pt_computer_maxi_2026_01
-
-6) Code Drawer / Code Assembler (sem gastar token com remontagem)
-   orn drawer add --name quicksort --lang python --in "list[int]" --out "list[int]" --file quicksort.py
-   orn drawer list --lang python
-   orn drawer show quicksort --lang python
-   orn drawer assemble --name quicksort --lang python --in "list[int]" --out "list[int]"
-   orn think "faça quicksort python" --drawer-first
-   orn think "faça quicksort python" --drawer-first --drawer-only
-
-Dica: use `orn <comando> --help` para detalhes.
-        """.strip()
-    )
+Servidor & Observabilidade:
+  orn server start [--bg]            Inicia servidor local em segundo plano
+  orn server status                  Estatísticas de RPS, latência e uptime
+  orn brain                          Lousa de hipóteses e telemetria agregada
+  orn probe status                   Diagnóstico de hotspots do servidor
+    """.strip())
 
 
 def _csv_list(raw: str | None) -> list[str]:
@@ -779,7 +963,6 @@ def drawer_show(name: str, lang: str | None) -> None:
         raise click.ClickException(f"Snippet não encontrado: {name!r}")
     Display.code_block(sn.code)
 
-
 @drawer.command("assemble")
 @click.option("--name", required=True, help="Função alvo.")
 @click.option("--lang", required=True, help="Linguagem alvo.")
@@ -815,19 +998,133 @@ def drawer_assemble(name: str, lang: str, inputs: str, outputs: str) -> None:
 @click.option("--func", "-f", default=None,
               help="Foca a análise em uma função específica.")
 def audit(target: str, output_format: str, func: str | None) -> None:
-    """[Fase 2] Analisa AST + aponta problemas. Ex: orn audit main.py"""
+    """[Fase 2] Analisa AST + aponta problemas no arquivo."""
     Display.section("AUDIT", target)
-    Display.not_implemented("audit")
+    from engine.core.executive import SiCDoxExecutive
+    ex = SiCDoxExecutive()
+    try:
+        result = ex.process_goal(
+            intent="audit",
+            payload=target,
+            context={"func": func},
+        )
+    finally:
+        ex.shutdown()
+
+    if not result.success:
+        for err in result.errors:
+            Display.error(err)
+        raise SystemExit(1)
+
+    if output_format == "json":
+        import json
+        print(json.dumps(result.metadata, ensure_ascii=False, indent=2))
+        return
+
+    # Exibe issues estáticos
+    static_issues = result.metadata.get("static_issues", [])
+    if static_issues:
+        Display.warn(f"{len(static_issues)} problema(s) detectado(s) pelo linter AST:")
+        for item in static_issues:
+            Display.info(f"  • {item}")
+        Display.separator()
+
+    # Exibe diagnóstico da IA
+    Display.info("Diagnóstico da IA:")
+    print(result.output)
+    Display.separator()
+    Display.info(f"Tempo: {result.metadata.get('elapsed_s', '?')}s")
+
 
 
 @cli.command()
 @click.argument("target", type=click.Path(exists=True))
-@click.option("--apply", is_flag=True, default=False,
-              help="Aplica o patch sugerido diretamente no arquivo.")
-def fix(target: str, apply: bool) -> None:
-    """[Fase 4] Sugere ou aplica correções. Ex: orn fix buggy.py"""
+@click.option("--instruction", "-i", default=None)
+@click.option("--apply", is_flag=True, default=False)
+@click.option("--dry-run", is_flag=True, default=False)
+@click.option("--consult", is_flag=True, default=False)
+@click.option("--verbose", "-v", is_flag=True, default=False,
+              help="Mostra raw_output do modelo quando o parse falhar.")
+def fix(target, instruction, apply, dry_run, consult, verbose):
+    from engine.core.executive import SiCDoxExecutive
+
+    if apply and dry_run:
+        raise click.UsageError("--apply e --dry-run são mutuamente exclusivos.")
+
     Display.section("FIX", target)
-    Display.not_implemented("fix")
+
+    # ── Fase 1: gerar patch (UMA única chamada ao modelo) ──
+    ex = SiCDoxExecutive()
+    try:
+        result = ex.process_goal(
+            intent="fix",
+            payload=target,
+            context={"apply": False, "instruction": instruction, "consult": consult},
+        )
+    finally:
+        ex.shutdown()
+
+    if not result.success:
+        for err in result.errors:
+            if not verbose and "raw_output do modelo" in err:
+                continue              # só mostra com -v
+            for line in err.splitlines():
+                Display.error(line)
+        raise SystemExit(1)
+
+    Display.separator()
+    print(result.output)
+    Display.separator()
+
+    if dry_run:
+        Display.info("dry-run — patch NÃO aplicado.")
+        return
+
+    raw = result.metadata.get("raw_output", "")
+    if not raw:
+        Display.error("internal: raw_output vazio — impossível aplicar.")
+        raise SystemExit(1)
+
+    if not apply:
+        if not click.confirm("Aplicar este patch?", default=False):
+            Display.info("Cancelado.")
+            return
+
+    # ── Fase 2: aplicar o MESMO raw, sem re-inferência ──
+    ex = SiCDoxExecutive()
+    try:
+        apply_res = ex.process_goal(
+            intent="fix",
+            payload=target,
+            context={
+                "apply":               True,
+                "instruction":         instruction,
+                "consult":             consult,
+                "raw_output_override": raw,       # ← chave da correção
+            },
+        )
+    finally:
+        ex.shutdown()
+
+    if not apply_res.success:
+        for err in apply_res.errors:
+            Display.error(err)
+        raise SystemExit(1)
+
+    applied = apply_res.metadata.get("applied", False)
+    no_op   = apply_res.metadata.get("no_op", False)
+    n_hunks = apply_res.metadata.get("hunks", 0)
+    elapsed = apply_res.metadata.get("elapsed_s", "?")
+
+    if no_op:
+        Display.info("O código já corresponde à sugestão do modelo — nada a aplicar.")
+        return
+    # if applied:
+    #     Display.success(f"Patch aplicado ({n_hunks} hunk(s)) em {elapsed}s — "
+    #                     f"backup: {target}.bak")
+    else:
+        Display.warn(f"Patch NÃO aplicado ({elapsed}s).")
+        raise SystemExit(1)
 
 
 @cli.command()
@@ -921,7 +1218,6 @@ def _display_profile(last: int) -> None:
               help="Exibe breakdown de spans do profiler (telemetry/profiler.jsonl).")
 def brain(clear: bool, last: int, json_output: bool, profile: bool) -> None:
     """Estado interno: telemetria do blackboard + bridge."""
-    from engine.core.executive import SiCDoxExecutive  # noqa: PLC0415
 
     Display.section("BRAIN", "Estado interno")
     ex = SiCDoxExecutive()
@@ -1075,7 +1371,10 @@ def bench(prompt: str, runs: int, tokens: int) -> None:
 @click.option("--temperature", type=float, default=0.2, show_default=True)
 @click.option("--raw", is_flag=True, default=False,
               help="Mostrar output cru do modelo.")
-def diff_cmd(target: str, instruction: str, apply: bool, verify: bool, model: str | None,
+@click.option("--consult", is_flag=True, default=False,
+              help="Enriquece prompt do diff com contexto do acervo.")
+def diff_cmd(target: str, instruction: str, apply: bool, verify: bool,
+             consult: bool, model: str | None,
              max_tokens: int, temperature: float, raw: bool) -> None:
     """Gera e (opcionalmente) aplica edições cirúrgicas no formato @N - old + new."""
     from engine.tools.diff_engine import generate_and_apply
@@ -1090,6 +1389,7 @@ def diff_cmd(target: str, instruction: str, apply: bool, verify: bool, model: st
         target, instruction,
         apply=apply,
         verify=verify,
+        consult=consult,
         max_tokens=max_tokens,
         temperature=temperature,
         model_alias=model,
@@ -2032,3 +2332,175 @@ def models_unimport(alias: str) -> None:
     save_catalog(cat)
     Display.success(f"removido do catálogo: {alias}")
 
+# ---------------------------------------------------------------------------
+# RAG — Grupo `consult` (busca + ask no acervo Doxoade)
+# ---------------------------------------------------------------------------
+
+@cli.group("consult")
+def consult_group() -> None:
+    """Acervo Consult: busca FTS5 + RAG via LLM."""
+
+
+@consult_group.command("search")
+@click.argument("query", nargs=-1, required=True)
+@click.option("--limit", "-n", type=int, default=5, show_default=True)
+@click.option("--category", "-c", default=None,
+              help="Filtrar por categoria (ex: python_basic_py4e).")
+@click.option("--json", "as_json", is_flag=True, default=False)
+def consult_search(query: tuple, limit: int, category: str | None, as_json: bool) -> None:
+    """Busca no acervo FTS5 (sem LLM — instantâneo)."""
+    from engine.tools.consult_bridge import ConsultBridge
+
+    q = " ".join(query).strip()
+    if not q:
+        raise click.UsageError("query vazia")
+
+    cb = ConsultBridge()
+    if not cb.is_available():
+        Display.error(f"Banco consult não encontrado: {cb.db_path}")
+        Display.info("Execute no projeto doxoade: doxoade consult index")
+        raise SystemExit(1)
+
+    results = cb.search(q, limit=limit, category=category)
+
+    if as_json:
+        import json as _json
+        print(_json.dumps(
+            [{"path": r.path, "title": r.title, "snippet": r.snippet,
+              "category": r.category} for r in results],
+            ensure_ascii=False, indent=2,
+        ))
+        return
+
+    if not results:
+        Display.warn(f"Nenhum resultado para: {q!r}")
+        return
+
+    Display.section("CONSULT SEARCH", f"{len(results)} resultado(s) — {q!r}")
+    for i, r in enumerate(results, 1):
+        print(f"\n  [{i}] {r.title}")
+        Display.kv("path", r.path)
+        if r.category:
+            Display.kv("category", r.category)
+        print(f"  {r.snippet[:400]}")
+    print()
+
+
+@consult_group.command("ask")
+@click.argument("question", nargs=-1, required=True)
+@click.option("--limit", "-n", type=int, default=3, show_default=True,
+              help="Nº de fontes injetadas no prompt.")
+@click.option("--tokens", "-t", type=int, default=None)
+@click.option("--model", "-m", default=None)
+def consult_ask(question: tuple, limit: int, tokens: int | None,
+                model: str | None) -> None:
+    """RAG: busca no consult + pergunta ao LLM (resposta ancorada)."""
+    from engine.tools.consult_bridge import ConsultBridge
+    from engine.core.executive import SiCDoxExecutive, _adaptive_max_tokens
+
+    q = " ".join(question).strip()
+    if not q:
+        raise click.UsageError("question vazia")
+
+    cb = ConsultBridge()
+    if not cb.is_available():
+        Display.error(f"Banco consult não encontrado: {cb.db_path}")
+        raise SystemExit(1)
+
+    results = cb.search(q, limit=limit)
+    context = cb.format_context(results) if results else ""
+
+    if results:
+        Display.info(f"[CONSULT] {len(results)} fonte(s) injetada(s).")
+    else:
+        Display.warn(f"[CONSULT] Nenhum contexto encontrado — respondendo sem RAG.")
+
+    if model:
+        os.environ["ORN_MODEL_ALIAS"] = model
+
+    full_prompt = q
+    if context:
+        full_prompt = f"{context}\n[QUESTION]\n{q}"
+
+    max_tokens = tokens or _adaptive_max_tokens(q)
+
+    Display.banner()
+    Display.thinking(q)
+
+    ex = SiCDoxExecutive()
+    try:
+        result = ex.process_goal(
+            intent="think",
+            payload=full_prompt,
+            context={
+                "max_tokens": max_tokens,
+                "context_file": None,
+                "search_code_only": False,
+                "use_server": False,
+            },
+        )
+    finally:
+        ex.shutdown()
+
+    if not result.success:
+        for e in result.errors:
+            Display.error(e)
+        raise SystemExit(1)
+
+    Display.separator()
+    Display.code_block(result.output)
+    Display.separator()
+    Display.info(f"Tempo: {result.metadata.get('elapsed_s', '?')}s")
+
+    if results:
+        Display.info("Fontes utilizadas:")
+        for r in results:
+            print(f"  - {r.path}")
+
+
+@consult_group.command("list")
+def consult_list() -> None:
+    """Lista categorias e volume do acervo."""
+    from engine.tools.consult_bridge import ConsultBridge
+
+    cb = ConsultBridge()
+    if not cb.is_available():
+        Display.error("Banco consult não encontrado.")
+        raise SystemExit(1)
+
+    cats = cb.list_categories()
+    if not cats:
+        Display.warn("Banco vazio.")
+        return
+
+    total = sum(cats.values())
+    Display.section("CONSULT", f"{len(cats)} categorias — {total} docs totais")
+    for cat, count in cats.items():
+        pct = (count / total * 100) if total else 0
+        bar = "█" * int(pct / 3)
+        print(f"  {cat:<38} {count:>5}  {bar}  {pct:.1f}%")
+
+
+@consult_group.command("stats")
+@click.option("--json", "as_json", is_flag=True, default=False)
+def consult_stats(as_json: bool) -> None:
+    """Estatísticas completas do banco."""
+    from engine.tools.consult_bridge import ConsultBridge
+
+    stats = ConsultBridge().stats()
+
+    if as_json:
+        import json as _json
+        print(_json.dumps(stats, ensure_ascii=False, indent=2))
+        return
+
+    if not stats.get("available"):
+        Display.error(f"Banco indisponível: {stats.get('db_path')}")
+        raise SystemExit(1)
+
+    Display.section("CONSULT STATS", "estado do acervo")
+    Display.kv("db_path",   stats["db_path"])
+    Display.kv("size_mb",   f"{stats['size_mb']} MB")
+    Display.kv("total_docs", str(stats["total_docs"]))
+    Display.kv("total_fts",  str(stats["total_fts"]))
+    Display.kv("categorias", str(len(stats.get("categories", {}))))

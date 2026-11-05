@@ -86,6 +86,10 @@ _boot_perf = {
 _VULCAN_ACTIVE = False
 _VULCAN_MSG = ""
 
+try:
+    import llama_cpp
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # Bootstrap do doxoade / Vulcan
@@ -145,15 +149,11 @@ def _read_line_from_socket(conn: socket.socket, timeout: float = 10.0) -> str:
 
 def _load_model() -> None:
     global _llm, _cfg, _native
-
     from engine.core.llm_bridge import BridgeConfig
-
     _cfg = BridgeConfig()
-
     try:
         applied, detail = apply_process_affinity(_cfg.cpu_mask, _cfg.cpuset)
-        if applied:
-            print(f"[CPU-AFFINITY] {detail}", flush=True)
+        if applied: print(f"[CPU-AFFINITY] {detail}", flush=True)
     except Exception as exc:
         print(f"[CPU-AFFINITY] falha ao aplicar: {exc}", flush=True)
 
@@ -161,12 +161,9 @@ def _load_model() -> None:
         print(f"[ERRO] Modelo nao encontrado: {_cfg.model_path}", flush=True)
         sys.exit(1)
 
-    # ── Auto-detecta orn.dll — sem precisar de ORN_NATIVE_BACKEND ──────────
     dll = Path(__file__).parent.parent.parent / "native" / "orn.dll"
     _use_native = dll.exists()
-
     if not _use_native:
-        # Fallback: env var explícita ainda funciona
         _use_native = os.environ.get("ORN_NATIVE_BACKEND", "").lower() in {"1", "true", "on"}
 
     if _use_native:
@@ -185,35 +182,17 @@ def _load_model() -> None:
             _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
             _stats["start"] = time.monotonic()
             print(f"[BOOT] orn.dll ativo [{dll}]", flush=True)
-            print(
-                f"[BOOT] nativo cfg n_ctx={_cfg.n_ctx} n_threads={_cfg.n_threads}",
-                flush=True,
-            )
+            print(f"[BOOT] nativo cfg n_ctx={_cfg.n_ctx} n_threads={_cfg.n_threads}", flush=True)
             return
         except Exception as exc:
             print(f"[BOOT] orn.dll indisponivel ({exc}) — fallback llama-cpp-python", flush=True)
             _native = None
-            # OSL-15: cai para o caminho Python abaixo
-            
-    # ── Fallback: llama-cpp-python (bridge Python) ─────────────────────────
-    from engine.core.llm_bridge import SiCDoxBridge
-    t0 = time.monotonic()
-    _llm = SiCDoxBridge(_cfg)
-    _llm._ensure_loaded()
-    elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
-    _boot_perf["model_load_ms"] = elapsed_ms
-    _observe_telemetry("server.boot.model_load", elapsed_ms, category="boot")
-    _stats["start"] = time.monotonic()
-    print(f"[BOOT] llama-cpp-python ativo (fallback — orn.dll nao encontrado)", flush=True)
 
     from llama_cpp import Llama
-
     backend = "VULCAN/nativo" if _VULCAN_ACTIVE else "Python puro"
     print(f"[BOOT] {_cfg.model_path.name}  [{backend}]", flush=True)
     print(f"[BOOT] n_threads={_cfg.n_threads}  n_ctx={_cfg.n_ctx}", flush=True)
-
     t0 = time.monotonic()
-
     kwargs: dict[str, Any] = {
         "model_path": str(_cfg.model_path),
         "n_ctx": _cfg.n_ctx,
@@ -225,24 +204,14 @@ def _load_model() -> None:
         "use_mlock": _cfg.use_mlock,
         "verbose": False,
     }
-
-    if _cfg.cache_type_k:
-        kwargs["type_k"] = _cfg.cache_type_k
-    if _cfg.cache_type_v:
-        kwargs["type_v"] = _cfg.cache_type_v
-    if _cfg.rope_freq_base is not None:
-        kwargs["rope_freq_base"] = _cfg.rope_freq_base
-    if _cfg.rope_freq_scale is not None:
-        kwargs["rope_freq_scale"] = _cfg.rope_freq_scale
-    if _cfg.flash_attn is not None:
-        kwargs["flash_attn"] = _cfg.flash_attn
-    if _cfg.no_alloc:
-        kwargs["no_alloc"] = True
-    if _cfg.pin_threads:
-        kwargs["pin_threads"] = True
-    if _cfg.cont_batching:
-        kwargs["cont_batching"] = True
-
+    if _cfg.cache_type_k: kwargs["type_k"] = _cfg.cache_type_k
+    if _cfg.cache_type_v: kwargs["type_v"] = _cfg.cache_type_v
+    if _cfg.rope_freq_base is not None: kwargs["rope_freq_base"] = _cfg.rope_freq_base
+    if _cfg.rope_freq_scale is not None: kwargs["rope_freq_scale"] = _cfg.rope_freq_scale
+    if _cfg.flash_attn is not None: kwargs["flash_attn"] = _cfg.flash_attn
+    if _cfg.no_alloc: kwargs["no_alloc"] = True
+    if _cfg.pin_threads: kwargs["pin_threads"] = True
+    if _cfg.cont_batching: kwargs["cont_batching"] = True
     try:
         _llm = Llama(**kwargs)
     except TypeError as exc:
@@ -250,10 +219,8 @@ def _load_model() -> None:
             "type_k", "type_v", "rope_freq_base", "rope_freq_scale", "flash_attn",
             "no_alloc", "use_mmap", "pin_threads", "cont_batching",
         )
-        if not any(tok in str(exc) for tok in unsupported):
-            raise
-        for tok in unsupported:
-            kwargs.pop(tok, None)
+        if not any(tok in str(exc) for tok in unsupported): raise
+        for tok in unsupported: kwargs.pop(tok, None)
         _llm = Llama(**kwargs)
 
     elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
@@ -264,15 +231,10 @@ def _load_model() -> None:
     global _system_tokens
     try:
         system_str = f"<|im_start|>system\n{_cfg.system_prompt}<|im_end|>\n"
-        try:
-            _system_tokens = _llm.tokenize(system_str.encode("utf-8"), special=True)
-        except TypeError:
-            _system_tokens = _llm.tokenize(system_str.encode("utf-8"))
+        try: _system_tokens = _llm.tokenize(system_str.encode("utf-8"), special=True)
+        except TypeError: _system_tokens = _llm.tokenize(system_str.encode("utf-8"))
     except Exception:
         _system_tokens = None
-
-    elapsed_ms = round((time.monotonic() - t0) * 1000.0, 3)
-
     print(f"[BOOT] Pronto em {round(elapsed_ms / 1000.0, 1)}s — {HOST}:{PORT}", flush=True)
 
 

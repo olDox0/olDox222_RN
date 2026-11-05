@@ -144,3 +144,10 @@
   Memoria controlada, nunca infinita
   Zero deps externas onde possivel (OSL-18)
   doxoade canonize a cada fase concluida (OSL-20.1)
+  Conhecimento não mora no modelo, mora na base (RAG > fine-tuning)
+  Consult é a fonte de verdade para Python
+
+| **T6** | Consult Integration — RAG | ⏳ Aguardando |
+| **T7** | Consult Dataset Extraction | ⏳ Planejado |
+| **T8** | Distilação Qwen→SmolLM | ⏳ Futuro |
+

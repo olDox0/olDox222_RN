@@ -83,10 +83,10 @@ class BridgeConfig:
     response_hard_limit: int = 1000000
     # Parâmetros de sampling (doc ORN_up — seção 3)
     # Qwen 0.5B alucina rápido com temperature alta — manter <= 0.6
-    temperature:    float =  0.40
-    top_p:          float =  0.80       #top_p:          float =  0.85
-    top_k:          int   =  25         #top_k:          int   =  35
-    repeat_penalty: float =  1.15
+    temperature:    float = 0.15  # 0.40
+    top_p:          float = 0.85  # 0.80
+    top_k:          int   = 20    # 25
+    repeat_penalty: float = 1.20  # 1.15
     min_p:          float =  0.05       #min_p:          float =  0.05 ou None
     # Menemonização de repetições (com pruning LRU)
     repetition_memo_enabled: bool = True
@@ -102,7 +102,10 @@ class BridgeConfig:
     rope_freq_scale: float | None = None
     # Flash Attention (quando suportado pelo backend/llama.cpp)
     flash_attn: bool = True             # flash_attn: True | None = None
-    system_prompt: str = "Responda em português de forma clara e direta."
+    system_prompt: str = (
+        "Você é o assistente de código ORN. Responda estritamente em português do Brasil (pt-BR), "
+        "de forma concisa, técnica e direta."
+    )
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
         if value is None:
@@ -523,7 +526,10 @@ class SiCDoxBridge:
         #     max_tokens = 8192  # 4096 
         if max_tokens is None: max_tokens = 512
             
-        print(f"[DEBUG] após pitstop: max_tokens={max_tokens}", flush=True)  # ← temporário
+        #print(f"[DEBUG] após pitstop: max_tokens={max_tokens}", flush=True)  # ← temporário
+        import os as _os
+        if _os.environ.get("ORN_DEBUG", "").strip() == "1":
+            print(f"[DEBUG] após pitstop: max_tokens={max_tokens}", flush=True)
 
         # ── Profiler: inicia sessão de medição ─────────────────────────
         prof = self._prof
@@ -792,56 +798,37 @@ class SiCDoxBridge:
 
         self._load()  # ← estava faltando
     def _load(self) -> None:
-        """Carrega o modelo GGUF. Chamado apenas por _ensure_loaded().
-        OSL-5.2: Verifica existência antes de abrir.
-        HARDWARE: Celeron N2808 (REP.INFRA.20260209.GOLD)
-          - Sem AVX/AVX2 — compilado com SSE4.2 apenas
-          - Sem OpenMP — n_threads=2 (Dual-Core, sem hyperthreading útil)
-          - Load time esperado: ~80 segundos — NORMAL para este hardware
-          - Performance esperada: ~1.40 t/s (após otimização SSE4.2)
-          - verbose=False: silencia output do llama.cpp no terminal
-        """
         if self._llm is not None or self._native is not None:
             return
 
+        if not self._cfg.model_path.exists():
+            raise FileNotFoundError(
+                f"Modelo não encontrado: {self._cfg.model_path}\n"
+                "Configure via `orn config --model <path>`."
+            )
+
         print("  Modo direto — carregando modelo (rápido via mmap)...", flush=True)
-        
-        # TENTA CARREGAR O NATIVO PRIMEIRO (C/CTYPES)
+
+        # 1. Tentativa via DLL nativa (Vulcan / Ptah)
         from engine.core.native_backend import NativeBackend
-        import os
-        
         dll_path = Path(__file__).parent.parent.parent / "native" / "orn.dll"
-        
         if dll_path.exists():
             try:
                 self._native = NativeBackend(
                     dll_path=dll_path,
                     model_path=self._cfg.model_path,
                     n_ctx=self._cfg.n_ctx,
-                    n_threads=self._cfg.n_threads
+                    n_threads=self._cfg.n_threads,
                 )
                 self._native.load()
                 print("  [✓] Backend Nativo (orn.dll) ativado com sucesso!", flush=True)
-                return  # Se deu certo, sai da função e nem carrega o Python!
+                return
             except Exception as e:
                 print(f"  [!] Falha no Backend Nativo, caindo pro Python. Erro: {e}")
                 self._native = None
 
-        # Se falhou ou não achou a DLL, cai pro llama-cpp-python normal
+        # 2. Instanciação única via llama-cpp-python
         from llama_cpp import Llama
-        self._llm = Llama(
-            model_path=str(self._cfg.model_path),
-            n_ctx=self._cfg.n_ctx,
-            n_threads=self._cfg.n_threads,
-            n_batch=self._cfg.n_batch,
-            verbose=False,
-        )
-        if not self._cfg.model_path.exists():
-            raise FileNotFoundError(
-                f"Modelo não encontrado: {self._cfg.model_path}\n"
-                "Configure via `orn config --model <path>`."
-            )
-        from llama_cpp import Llama  # noqa: PLC0415
         kwargs = {
             "model_path": str(self._cfg.model_path),
             "n_ctx": self._cfg.n_ctx,
@@ -853,38 +840,29 @@ class SiCDoxBridge:
             "use_mlock": self._cfg.use_mlock,
             "verbose": False,
         }
-        if self._cfg.cache_type_k:
-            kwargs["type_k"] = self._cfg.cache_type_k
-        if self._cfg.cache_type_v:
-            kwargs["type_v"] = self._cfg.cache_type_v
-        if self._cfg.rope_freq_base is not None:
-            kwargs["rope_freq_base"] = self._cfg.rope_freq_base
-        if self._cfg.rope_freq_scale is not None:
-            kwargs["rope_freq_scale"] = self._cfg.rope_freq_scale
-        if self._cfg.flash_attn is not None:
-            kwargs["flash_attn"] = self._cfg.flash_attn
-        if self._cfg.no_alloc:
-            kwargs["no_alloc"] = True
-        if self._cfg.pin_threads:
-            kwargs["pin_threads"] = True
-        if self._cfg.cont_batching:
-            kwargs["cont_batching"] = True
-        _UNSUPPORTED = ("type_k", "type_v", "rope_freq_base", "rope_freq_scale",
-                        "flash_attn", "no_alloc", "use_mmap", "pin_threads", "cont_batching")
+        if self._cfg.cache_type_k: kwargs["type_k"] = self._cfg.cache_type_k
+        if self._cfg.cache_type_v: kwargs["type_v"] = self._cfg.cache_type_v
+        if self._cfg.rope_freq_base is not None: kwargs["rope_freq_base"] = self._cfg.rope_freq_base
+        if self._cfg.rope_freq_scale is not None: kwargs["rope_freq_scale"] = self._cfg.rope_freq_scale
+        if self._cfg.flash_attn is not None: kwargs["flash_attn"] = self._cfg.flash_attn
+        if self._cfg.no_alloc: kwargs["no_alloc"] = True
+        if self._cfg.pin_threads: kwargs["pin_threads"] = True
+        if self._cfg.cont_batching: kwargs["cont_batching"] = True
+
+        _UNSUPPORTED = (
+            "type_k", "type_v", "rope_freq_base", "rope_freq_scale",
+            "flash_attn", "no_alloc", "use_mmap", "pin_threads", "cont_batching"
+        )
         try:
             self._llm = Llama(**kwargs)
         except TypeError as exc:
-            import sys as _dox_sys, os as _dox_os
-            exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-            f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-            line_n = exc_tb.tb_lineno if exc_tb else 0
-            print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(exc).__name__} | Value: {exc}\033[0m")
             msg = str(exc)
             if not any(token in msg for token in _UNSUPPORTED):
                 raise
             for token in _UNSUPPORTED:
                 kwargs.pop(token, None)
             self._llm = Llama(**kwargs)
+
         self._load_time = time.monotonic()
         self._system_tokens = self._llm.tokenize(
             self._system_prefix.encode("utf-8"),

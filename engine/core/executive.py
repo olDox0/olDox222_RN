@@ -27,7 +27,7 @@ Fluxo futuro (audit, fix, gen):
 
 from __future__ import annotations
 
-import re, time, functools, sys
+import re, time, functools, sys, os
 
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -116,6 +116,10 @@ class SiCDoxExecutive:
             import traceback
             print("[DEBUG] TRACEBACK COMPLETO:", file=sys.stderr)
             traceback.print_exc()
+            if os.environ.get("ORN_DEBUG", "").strip() == "1":
+                import traceback
+                print("[DEBUG] TRACEBACK COMPLETO:", file=sys.stderr)
+                traceback.print_exc()
             emit_forensic_log(exc, "_dispatch")
             result = GoalResult(
                 success=False,
@@ -199,7 +203,6 @@ class SiCDoxExecutive:
         _bridge = self._get_bridge()
         validator = self._get_validator()
         board = self._get_board()
-
         session_opened = False
         try:
             board.open_session(prompt)
@@ -208,20 +211,20 @@ class SiCDoxExecutive:
             return GoalResult(success=False, intent="think", errors=[f"[BOARD] Erro: {exc}"])
 
         try:
-            # 2. Popula lousa com rascunhos de raciocínio
+            # 1. Popula lousa com decomposição da query
             _decompose_query(board, prompt, context)
 
-            # 2.5 --- ATIVAÇÃO DO GAVETEIRO (HERMES) ---
-            max_tokens = context.get("max_tokens")
-            if context.get("drawer_first"):
+            token_hint = 64
+            max_tokens = context.get("max_tokens") or _adaptive_max_tokens(prompt)
+
+            # 2. Fast-track ou injeção via Gaveteiro
+            if context.get("drawer_first", True):
                 router = self._get_drawer_router()
                 if router:
-                    r_res = router.route(prompt, board)
-                    if r_res.hit:
-                        # Se achou no gaveteiro, reduzimos o trabalho do LLM para apenas explicar
-                        max_tokens = r_res.max_tokens_hint or 128
+                    route = router.route(prompt, board=board)
+                    if route.hit:
+                        max_tokens = route.max_tokens_hint or 64
                         print("\n  [Hermes] 📦 Snippet resgatado do Gaveteiro e injetado na lousa!")
-            # ------------------------------------------
 
             # 3. Contexto de arquivo opcional (--file)
             if context.get("context_file"):
@@ -234,38 +237,24 @@ class SiCDoxExecutive:
                         weight=0.95,
                     )
 
+            # 4. Síntese compacta da lousa + Consult hint
             synthesis = board.build_synthesis_block(compact=True)
+            if synthesis and len(synthesis) > 240:
+                synthesis = synthesis[:240].rsplit(" ", 1)[0] + " […]"
 
-            # Limita system_hint: cada token de prompt custa igual a
-            # um token gerado no N2808 — evita prefill caro.
-            if synthesis and len(synthesis) > 160: # 240:
-                synthesis = synthesis[:160].rsplit(" ", 1)[0] + " […]"
+            system_parts = []
+            if synthesis:
+                system_parts.append(synthesis)
+            if context.get("consult_hint"):
+                system_parts.append(context["consult_hint"])
+            system_hint = "\n\n".join(system_parts) if system_parts else None
 
-            token_hint = 64
-            max_tokens = context.get("max_tokens") or _adaptive_max_tokens(prompt)
-
-            # ── DrawerRouter: tenta código pré-pronto (Hermes) ────────
-            # Se o DrawerRouter encontrar e validar um snippet no CodeDrawer,
-            # ele injeta o código na lousa como evidência de peso 1.0 e retorna
-            # max_tokens_hint=64. O bridge.ask() subsequente só escreve a
-            # explicação — não regenera o código do zero.
-            route = self._get_drawer_router().route(
-                prompt,
-                board=board,
-            )
-            if route.hit:
-                # Código já na lousa → LLM só explica
-                max_tokens = route.max_tokens_hint or 64
-                # Reconstrói synthesis com o código injetado
-                synthesis = board.build_synthesis_block(compact=True)
-                if synthesis and len(synthesis) > 240:
-                    synthesis = synthesis[:240].rsplit(" ", 1)[0] + " […]"
-
+            # 5. Submissão ÚNICA à fila de inferência
             result = self._infer_queue.submit(
                 prompt=prompt,
                 max_tokens=max_tokens,
                 token_hint=token_hint,
-                system_hint=synthesis,
+                system_hint=system_hint,
             )
 
             if isinstance(result, Future):
@@ -274,16 +263,21 @@ class SiCDoxExecutive:
                 output = result
 
             if _looks_degenerate_think_output(prompt, output):
+                if context.get("consult_hint") and context.get("consult_first_snippet"):
+                    return GoalResult(
+                        success=True, intent="think",
+                        output="[Resposta do acervo Consult — modelo não gerou resposta válida]\n\n"
+                              + context["consult_first_snippet"],
+                    )
                 output = _deterministic_code_answer(prompt)
 
-            # ── Hook: diagnostica código no output e corrige se necessário ──
             output = apply_code_hook(
                 output,
                 task=prompt,
                 bridge=_bridge,
                 validator=validator,
-                max_retries=1,        # 1 fix attempt dentro do think (rápido)
-                run_isolated=True,    # executa python -I para validar
+                max_retries=1,
+                run_isolated=True,
             )
 
             valid, motivo = validator.validar_output(output)
@@ -297,33 +291,134 @@ class SiCDoxExecutive:
             board_snapshot = board.session_info()
             board_snapshot["token_hint"] = token_hint
             board_snapshot["system_hint"] = bool(synthesis)
-
             result_goal = GoalResult(success=True, intent="think", output=output)
             result_goal.metadata["board"] = board_snapshot
             return result_goal
-
         finally:
             if session_opened:
-                try:
-                    board.close_session()
-                except Exception:
-                    pass
-            # Limpa contexto do bridge entre sessões diretas (evita prompt_tokens crescentes)
+                try: board.close_session()
+                except Exception: pass
             if self._bridge is not None:
-                try:
-                    self._bridge._ctx.clear()
-                except Exception:
-                    pass
+                try: self._bridge._ctx.clear()
+                except Exception: pass
 
     # ------------------------------------------------------------------
     # Fases futuras — stubs com NotImplementedError descritivo
     # ------------------------------------------------------------------
 
     def _run_audit(self, payload: str, context: dict[str, Any]) -> GoalResult:
-        raise NotImplementedError("audit — implementar na Fase 2.")
+        from pathlib import Path
+        from engine.tools.code_sandbox import diagnose_python_file
+
+        file_path = Path(payload)
+        if not file_path.exists():
+            return GoalResult(success=False, intent="audit", errors=[f"Arquivo não encontrado: {file_path}"])
+
+        # 1. Auditoria Estática via AST (Anúbis)
+        static_issues = diagnose_python_file(file_path)
+        content = _read_file_safe(str(file_path))
+
+        target_func = context.get("func")
+        func_focus = f" (Foco na função: {target_func})" if target_func else ""
+
+        issues_summary = "\n".join(f"- {i}" for i in static_issues[:8]) if static_issues else "Nenhum erro de sintaxe detectado pelo linter."
+
+        # 2. Prompt Estruturado para o Qwen (Atena / Ma'at)
+        prompt = (
+            f"Analise o código Python abaixo e aponte problemas de lógica, segurança ou performance.{func_focus}\n\n"
+            f"[PROBLEMAS DETECTADOS PELO LINTER AST]\n{issues_summary}\n\n"
+            f"[CÓDIGO FONTE]\n```python\n{content}\n```\n\n"
+            f"Forneça um diagnóstico conciso e pontual em tópicos."
+        )
+
+        # Se o servidor estiver ativo, usa inferência instantânea de 3s
+        from engine.tools.server_client import is_server_online, query as server_query
+        max_tokens = context.get("max_tokens") or 512
+
+        if is_server_online():
+            s_resp = server_query(prompt, max_tokens=max_tokens)
+            raw_output = str(s_resp.get("output", "")).strip() if s_resp else ""
+        else:
+            _bridge = self._get_bridge()
+            raw_output = _bridge.ask(prompt, max_tokens=max_tokens)
+            
+        metadata = {
+            "file": str(file_path),
+            "static_issues_count": len(static_issues),
+            "static_issues": static_issues,
+        }
+        return GoalResult(success=True, intent="audit", output=raw_output, metadata=metadata)
 
     def _run_fix(self, payload: str, context: dict[str, Any]) -> GoalResult:
-        raise NotImplementedError("fix — implementar na Fase 4.")
+        from pathlib import Path
+        from engine.tools.diff_engine import generate_and_apply
+
+        file_path = Path(payload)
+        if not file_path.exists():
+            return GoalResult(
+                success=False, intent="fix",
+                errors=[f"Arquivo não encontrado: {file_path}"],
+            )
+
+        apply_patch  = bool(context.get("apply", False))
+        raw_override = context.get("raw_output_override")
+        instruction  = context.get("instruction") or (
+            "Corrija os erros e melhore a robustez do código preservando a interface."
+        )
+
+        # B-003: max_tokens adaptativo à instrução
+        instr_lower = (instruction or "").lower()
+        _EXPENSIVE_KW = (
+            "melhore", "refatore", "modularize", "reorganize",
+            "extraia", "divida", "reestruture", "renomeie",
+            "modularize", "modular", "clean up", "cleanup",
+        )
+        default_tokens = 768 if any(kw in instr_lower for kw in _EXPENSIVE_KW) else 512
+        max_tokens = context.get("max_tokens") or default_tokens
+
+        diff_res = generate_and_apply(
+            file_path=file_path,
+            instruction=instruction,
+            apply=apply_patch,
+            verify=True,
+            consult=bool(context.get("consult", False)),
+            max_tokens=max_tokens,
+            raw_output_override=raw_override,
+        )
+
+        if not diff_res.success:
+            return GoalResult(
+                success=False,
+                intent="fix",
+                output=diff_res.raw_output,
+                errors=diff_res.errors,
+                metadata={
+                    "elapsed_s":  diff_res.elapsed_s,
+                    "applied":    diff_res.applied,
+                    "raw_output": diff_res.raw_output,
+                },
+            )
+
+        hunks_fmt = "\n\n".join(
+            f"@{h.line}\n"
+            + "\n".join(f"- {r}" for r in h.removed)
+            + (("\n" if h.removed and h.added else ""))
+            + "\n".join(f"+ {a}" for a in h.added)
+            for h in diff_res.hunks
+        )
+        status = "aplicado" if diff_res.applied else "simulado (dry-run)"
+        return GoalResult(
+            success=True,
+            intent="fix",
+            output=f"Patch {status}:\n\n{hunks_fmt}",
+            metadata={
+                "elapsed_s":  diff_res.elapsed_s,
+                "applied":    diff_res.applied,
+                "hunks":      len(diff_res.hunks),
+                "raw_output": diff_res.raw_output,
+                "no_op":      diff_res.no_op,
+            },
+        )
 
     # Fase 4 — Geração (gen) via CodeAssembler (Cosmo Visão)
     def _run_gen(self, payload: str, context: dict[str, Any]) -> GoalResult:
@@ -550,7 +645,6 @@ def _read_file_safe(path: str, bridge_active_window: int = 512) -> str:
     """Lê um arquivo e aplica Redução Cognitiva para poupar o LLM."""
     if not path:
         return ""
-
     try:
         from pathlib import Path
         file_path = Path(path)
@@ -572,32 +666,37 @@ def _read_file_safe(path: str, bridge_active_window: int = 512) -> str:
         emit_forensic_log(exc, "_read_file_safe")
         return ""
 
+_SYSTEM_ECHO_PREFIXES = (
+    "responda em português",
+    "use somente o material",
+    "você tem acesso a trechos",
+    "código esperado em",
+    "tarefa: geração",
+    "tarefa: explicação",
+)
+
+_SYSTEM_ECHO_PREFIXES = (
+    "responda em português",
+    "use somente o material",
+    "você tem acesso a trechos",
+    "código esperado em",
+    "tarefa: geração",
+    "tarefa: explicação",
+)
 
 def _looks_degenerate_think_output(prompt: str, output: str) -> bool:
     out = (output or "").strip().lower()
-    p = (prompt or "").strip().lower()
-    if not out:
-        return True
-    if out == p:
-        return True
-    if out in {"[task]", "[task]\nbuffer python"}:
-        return True
-    if out.startswith("[task]"):
-        return True
-    if "não tenho acesso a um contexto específico" in out:
-        return True
-    # Modelo recusou a tarefa (prompt system contradiz a query)
+    p   = (prompt or "").strip().lower()
+    if not out: return True
+    if out == p: return True
+    if out.startswith(("[task]", "[loja]", "[lousa]")): return True
+    if any(out.startswith(pref) for pref in _SYSTEM_ECHO_PREFIXES): return True
+    if len(out) < 20 and p[:15] in out: return True
     _REFUSALS = (
-        "não tenho capacidade de produzir",
-        "não posso fornecer um bloco",
-        "como assistente de ia, não",
-        "desculpe, mas não posso",
+        "não tenho capacidade", "não posso fornecer",
+        "como assistente de ia", "desculpe, mas não posso",
     )
-    if any(r in out for r in _REFUSALS):
-        return True
-    # Saudação — modelo perdeu o contexto da task
-    if out.startswith(("olá", "olá!", "oi!", "hello", "hi!")):
-        return True
+    if any(r in out for r in _REFUSALS): return True
     return False
 
 

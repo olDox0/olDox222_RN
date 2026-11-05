@@ -1,0 +1,98 @@
+# ORN — Metalcraft Configuration
+# Builda os 3 componentes nativos do ORN_proj:
+#
+#   engine/native/orn_html.dll  ← HTML stripper (C puro, zero deps)
+#   native/orn_varint.dll       ← Varint encoder (C puro, zero deps)
+#   native/orn.dll              ← llama.cpp wrapper + optimizer SIMD
+#
+# IMPORTANTE (orn.dll):
+#   Os headers em thirdparty/llama.cpp/include/ DEVEM ser da mesma
+#   versão do llama_cpp instalado no venv (llama_cpp/lib/*.dll).
+#   Mismatch de ABI → orn_init() retorna -1 (struct llama_model_params
+#   com layout diferente → llama_model_load_from_file() falha).
+#
+# Build:
+#   doxoade metalcraft --file metalcraft.toml
+#
+# Verificação:
+#   python native/test.py
+#     esperado: orn_init = 0   (antes: -1)
+#     esperado: orn_infer > 0
+#
+#   python -c "from engine.native.html_helper import strip_html_fast; print(strip_html_fast(b'<b>oi</b>'))"
+#     esperado: "oi"
+#
+#   python -c "from engine.native.varint_helper import encode_varint; b=bytearray(); encode_varint(b,300); print(bytes(b))"
+#     esperado: b'\xac\x02'
+
+[project]
+name = "orn"
+version = "1.0.0"
+type = "library"
+
+[compiler]
+engine = "gcc"
+std = "c11"
+opt = "O2"
+shield = true
+incremental = true
+
+[paths]
+sources = []
+headers = [
+    "engine/native",
+    "native",
+    "thirdparty/llama.cpp/include",
+    "thirdparty/llama.cpp/ggml/include",
+    "venv/Lib/site-packages/llama_cpp/lib",
+]
+output = "."
+
+# ============================================================
+# DLL 1: HTML stripper (standalone, zero deps)
+# Consumido por engine/native/html_helper.py
+# ============================================================
+[[targets]]
+name = "orn_html"
+sources = ["engine/native/orn_html.c"]
+output = "engine/native/orn_html.dll"
+flags = ["-shared"]
+opt = "O2"
+soteria = false
+
+# ============================================================
+# DLL 2: Varint encoder (standalone, zero deps)
+# Consumido por engine/native/varint_helper.py
+# ============================================================
+[[targets]]
+name = "orn_varint"
+sources = ["native/orn_varint.c"]
+output = "native/orn_varint.dll"
+flags = ["-shared"]
+opt = "O2"
+soteria = false
+
+# ============================================================
+# DLL 3: llama.cpp wrapper — o quebrado (orn_init = -1)
+# Linka contra llama_cpp/lib/*.lib do venv.
+# Headers DEVEM vir de thirdparty/llama.cpp (versão-matched).
+# ============================================================
+[[targets]]
+name = "orn_llama"
+sources = [
+    "native/orn_llama_wrapper.c",
+    "native/orn_optimizer.c",
+]
+output = "native/orn.dll"
+flags = [
+    "-shared",
+    "-msse4.2",
+    "-mpopcnt",
+    "-Lvenv/Lib/site-packages/llama_cpp/lib",
+    "-l:llama.lib",
+    "-l:ggml.lib",
+    "-l:ggml-base.lib",
+    "-l:ggml-cpu.lib",
+]
+opt = "O2"
+soteria = false

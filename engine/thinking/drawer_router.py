@@ -152,78 +152,16 @@ def _extract_intent(prompt: str) -> tuple[str | None, str, list[str], list[str]]
 # ---------------------------------------------------------------------------
 
 class DrawerRouter:
-    """Roteador pré-LLM: CodeDrawer → sandbox → lousa.
-
-    Args:
-        max_fix_attempts: Tentativas de fix de I/O antes de desistir.
-    """
-
     def __init__(self, max_fix_attempts: int = 1) -> None:
         self._max_fix = max(0, int(max_fix_attempts))
 
-    # ------------------------------------------------------------------
-    # API pública
-    # ------------------------------------------------------------------
-
-    def route(self, prompt: str, board: "DoxoBoard", lang_override: str | None = None) -> RouteResult:
-        """Fast-track: Tenta buscar e montar o código do gaveteiro."""
+    def route(self, prompt: str, board: "DoxoBoard | None" = None, lang_override: str | None = None) -> RouteResult:
         try:
             return self._route_impl(prompt, board, lang_override)
         except Exception as e:
-            # OSL-15: fail-silent (se der erro no roteador, cai pra inferência normal)
             import sys
             print(f"[Hermes] Falha no roteador: {e}", file=sys.stderr)
             return RouteResult(hit=False)
-
-    def _route_impl(self, prompt: str, board: "DoxoBoard", lang_override: str | None = None) -> RouteResult:
-        name, lang, inputs, outputs = _extract_intent(prompt)
-        
-        # Se foi passado um lang_override, a gente força o uso dele
-        if lang_override:
-            lang = lang_override
-
-        if not name:
-            return RouteResult(hit=False)
-
-        # Importa o Gaveteiro só se a intenção bateu (lazy load OSL-3)
-        from engine.tools.code_drawer import CodeDrawer
-        drawer = CodeDrawer()
-
-        # 1. Busca por nome diretamente!
-        snippet = drawer.get(name=name, lang=lang)
-        
-        # 2. Fallback pro assemble caso não ache pelo nome exato
-        if not snippet:
-            snippet = drawer.assemble(
-                name=name,
-                lang=lang,
-                inputs=inputs if inputs else None,
-                outputs=outputs if outputs else None,
-            )
-
-        if not snippet:
-            return RouteResult(hit=False)
-
-        # ACHOU! Valida a sintaxe rápido (Sandbox)
-        issues = self._diagnose(snippet.code, lang)
-        
-        # Se tem erro, a gente ignora o gaveteiro e deixa o LLM resolver
-        if issues:
-            return RouteResult(hit=False)
-
-        # TUDO OK! Injeta na Lousa.
-        self._post_to_board(board, snippet)
-        
-        # Fast-track Result!
-        return RouteResult(
-            hit=True,
-            code=snippet.code,
-            max_tokens_hint=8192
-        )
-
-    # ------------------------------------------------------------------
-    # Implementação interna
-    # ------------------------------------------------------------------
 
     def _route_impl(
         self,
@@ -231,90 +169,66 @@ class DrawerRouter:
         board: "DoxoBoard | None",
         lang_override: str | None,
     ) -> RouteResult:
-        # 1. Extrai intent
         name, lang, inputs, outputs = _extract_intent(prompt)
         if lang_override:
             lang = lang_override
         if name is None:
             return RouteResult(hit=False)
 
-        # 2. Busca no CodeDrawer (lazy — OSL-3)
         from engine.tools.code_drawer import CodeDrawer
         drawer = CodeDrawer()
-        snippet = drawer.assemble(
-            name=name,
-            lang=lang,
-            inputs=inputs or None,
-            outputs=outputs or None,
-        )
+        snippet = drawer.get(name=name, lang=lang)
+        if not snippet:
+            snippet = drawer.assemble(
+                name=name,
+                lang=lang,
+                inputs=inputs or None,
+                outputs=outputs or None,
+            )
         if snippet is None:
             return RouteResult(hit=False)
 
         code = snippet.code
         attempts = 0
         issues: list[str] = []
-
-        # 3. Diagnóstico no sandbox
         for attempt in range(self._max_fix + 1):
             attempts = attempt + 1
             issues = self._diagnose(code)
-
             if not issues:
                 break
-
             if attempt < self._max_fix:
-                # Fix pontual: apenas ajusta nomes de variáveis / tipo de IO
-                # Não chama o LLM para regerar tudo — só aplica substituições simples.
                 fixed = _fix_io(code, inputs, outputs)
                 if fixed != code:
                     code = fixed
                     continue
-                # Se fix de IO não ajudou, desiste
                 break
 
         if issues:
-            # Sandbox falhou mesmo após fix → não injeta código ruim na lousa
             return RouteResult(hit=False, issues=issues, attempts=attempts)
 
-        # 4. Injeta na lousa como evidência pesada
         if board is not None:
             self._post_to_board(board, code, name, lang)
 
         return RouteResult(
             hit=True,
             code=code,
-            max_tokens_hint=64,   # LLM só precisa escrever a explicação
+            max_tokens_hint=64,
             attempts=attempts,
         )
-
-    # ------------------------------------------------------------------
-    # Sandbox — diagnóstico inline (OSL-3: lazy)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _diagnose(code: str) -> list[str]:
         try:
             from engine.tools.code_sandbox import lint_python_text
             issues = lint_python_text(code)
-            # Ignora issues cosméticos — só bloqueia erros que quebram execução
             _SKIP = ("trailing whitespace", "evitar TAB", "linha acima de 120")
             return [i for i in issues if not any(s in i for s in _SKIP)]
         except Exception as exc:
             return [f"[ROUTER] linter indisponível: {exc}"]
 
-    # ------------------------------------------------------------------
-    # Injeção na lousa
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _post_to_board(board: Any, code: str, name: str, lang: str) -> None:
-        """Posta o código como draft de alta evidência na lousa.
-
-        O `system_hint` que chega ao bridge.ask() já vai conter o código,
-        então o LLM só precisa escrever a explicação em torno dele.
-        """
         try:
-            # Código como evidência — peso máximo
             board.post_draft(
                 source="drawer_router",
                 content=(
@@ -324,7 +238,6 @@ class DrawerRouter:
                 role="evidence",
                 weight=1.0,
             )
-            # Instrução para o LLM: não regenerar, só explicar
             board.post_draft(
                 source="drawer_router",
                 content=(
@@ -336,7 +249,7 @@ class DrawerRouter:
                 weight=1.0,
             )
         except Exception:
-            pass  # OSL-15
+            pass
 
 
 # ---------------------------------------------------------------------------

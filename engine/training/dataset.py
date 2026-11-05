@@ -70,9 +70,9 @@ def _sha256(text: str) -> str:
 # Parsers — cada um retorna list[Sample] (0..N), pra cobrir bilíngue.
 # ---------------------------------------------------------------------------
 
-_RE_TASK_PT = re.compile(r"#\s*Tarefa\s+PT\s*:\s*(.+)", re.IGNORECASE)
-_RE_TASK_EN = re.compile(r"#\s*Task\s+EN\s*:\s*(.+)",    re.IGNORECASE)
-_RE_TASK_ANY = re.compile(r"#\s*Tarefa\s*:\s*(.+)",      re.IGNORECASE)
+_RE_TASK_PT = re.compile(r"^#\s*(?:Tarefa|Task|Instrução|PT)\s*:\s*(.*)", re.IGNORECASE)
+_RE_TASK_EN = re.compile(r"^#\s*(?:Task|EN)\s*:\s*(.*)", re.IGNORECASE)
+_RE_TASK_ANY = re.compile(r"^#\s*(?:Tarefa|Task|Instrução)\s*:\s*(.*)", re.IGNORECASE)
 
 
 def _split_task_block(text: str) -> tuple[str, str, str]:
@@ -212,13 +212,10 @@ def _parse_line(line: str, source: str) -> list[Sample]:
 
 
 def _parse_txt_blocks(text: str, source: str) -> list[Sample]:
-    """Parser para .txt com blocos separados por linha em branco dupla."""
-    #blocks = re.split(r"\n\s*\n(?=#\s*Tarefa)", text)
-    blocks = re.split(r"\n(?=#\s*Tarefa)", text)
+    blocks = re.split(r"\n(?=#\s*(?:Tarefa|Task|Instrução|PT|EN)\s*:)", text, flags=re.IGNORECASE)
     out: list[Sample] = []
     for block in blocks:
-        if not block.strip():
-            continue
+        if not block.strip(): continue
         out.extend(_parse_task_text(block, source))
     return out
 

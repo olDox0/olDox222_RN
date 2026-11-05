@@ -105,9 +105,34 @@ Vers/
 # terceirizados
 opt/w64devkit/
 models/sicdox/
+models/
 
 # Exceções (Auto-fixed pelo Doxoade)
 # permitir versionamento de testes automatizados
+
+
+# ── Modelos (nunca commitar) ──
+models/
+*.gguf
+*.safetensors
+*.bin
+
+# ── Python cache ──
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Binários nativos ──
+native/*.exe
+
+# ── Arquivos de trabalho ──
+teste_fix.py
+teste_fix.py.bak
+orn_llm.xml
+help
+o
+*.bak
+
 
 # Exceções (Auto-fixed pelo Doxoade)
 !requirements.txt

@@ -25,9 +25,10 @@ class NativeBackend:
     _OUTPUT_SIZE = 1000000
 
     def __init__(self, dll_path: str | Path, model_path: str | Path,
-                     n_ctx: int = 1024, n_threads: int = 2) -> None:
-        self._dll_path   = Path(dll_path)
-        self._model_path = str(model_path)
+                 n_ctx: int = 1024, n_threads: int = 2) -> None:
+        self._dll_path   = Path(dll_path).resolve()
+        # Força caminho absoluto formatado para o sistema operacional
+        self._model_path = str(Path(model_path).resolve())
         self._n_ctx      = n_ctx
         self._n_threads  = n_threads
         self._lib        = None
