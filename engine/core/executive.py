@@ -365,26 +365,72 @@ class SiCDoxExecutive:
         instruction  = context.get("instruction") or (
             "Corrija os erros e melhore a robustez do código preservando a interface."
         )
+        symbol_mode  = context.get("symbol_mode", "off")
+        if symbol_mode not in ("off", "auto", "on"):
+            symbol_mode = "off"
 
         # B-003: max_tokens adaptativo à instrução
         instr_lower = (instruction or "").lower()
         _EXPENSIVE_KW = (
             "melhore", "refatore", "modularize", "reorganize",
             "extraia", "divida", "reestruture", "renomeie",
-            "modularize", "modular", "clean up", "cleanup",
+            "modular", "clean up", "cleanup",
         )
         default_tokens = 768 if any(kw in instr_lower for kw in _EXPENSIVE_KW) else 512
         max_tokens = context.get("max_tokens") or default_tokens
+
+        # Em modo surgical, desativamos sandbox: ast.parse já validou o bloco,
+        # e arquivos reais (cli.py etc.) não rodam isolados com `-I`.
+        verify_flag = True if symbol_mode == "off" else False
+
+        # Construir hunks_override a partir do contexto (fase 2 do surgical)
+        hunks_override_raw = context.get("surgical_hunks_override")
+        hunks_override = None
+        if hunks_override_raw:
+            from engine.tools.diff_engine import DiffHunk as _DH
+            hunks_override = [
+                _DH(line=h["line"], removed=list(h["removed"]), added=list(h["added"]))
+                for h in hunks_override_raw
+            ]
 
         diff_res = generate_and_apply(
             file_path=file_path,
             instruction=instruction,
             apply=apply_patch,
-            verify=True,
+            verify=verify_flag,
             consult=bool(context.get("consult", False)),
             max_tokens=max_tokens,
             raw_output_override=raw_override,
+            symbol_mode=symbol_mode,
+            hunks_override=hunks_override,        # ← NOVO
         )
+
+        # ── F5.2 Guard A: modelo copiou system prompt (resposta degenerada) ──
+        _ECHO_SIGNALS = (
+            "Opção 1 — Patch de linha",
+            "Opção 2 — Apenas a função",
+            "Apenas o código ou patch",
+            "def nome_da_funcao",
+        )
+        if diff_res.raw_output and any(
+            sig in diff_res.raw_output for sig in _ECHO_SIGNALS
+        ):
+            from engine.tools.diff_engine import DiffResult as _DR
+            return GoalResult(
+                success=False,
+                intent="fix",
+                output=diff_res.raw_output,
+                errors=[
+                    "Modelo copiou o system prompt — resposta degenerada.",
+                    "Tente: instrução mais específica; --symbol/--symbol-auto; "
+                    "ou arquivo maior (0.5B se perde em arquivos <10 linhas).",
+                ],
+                metadata={
+                    "elapsed_s":  diff_res.elapsed_s,
+                    "applied":    False,
+                    "symbol_mode": symbol_mode,
+                },
+            )
 
         if not diff_res.success:
             return GoalResult(
@@ -396,6 +442,7 @@ class SiCDoxExecutive:
                     "elapsed_s":  diff_res.elapsed_s,
                     "applied":    diff_res.applied,
                     "raw_output": diff_res.raw_output,
+                    "symbol_mode": symbol_mode,
                 },
             )
 
@@ -407,16 +454,25 @@ class SiCDoxExecutive:
             for h in diff_res.hunks
         )
         status = "aplicado" if diff_res.applied else "simulado (dry-run)"
+        surgical_hunks_payload = None
+        if symbol_mode != "off" and diff_res.hunks:
+            surgical_hunks_payload = [
+                {"line": h.line, "removed": list(h.removed), "added": list(h.added)}
+                for h in diff_res.hunks
+            ]
+
         return GoalResult(
             success=True,
             intent="fix",
             output=f"Patch {status}:\n\n{hunks_fmt}",
             metadata={
-                "elapsed_s":  diff_res.elapsed_s,
-                "applied":    diff_res.applied,
-                "hunks":      len(diff_res.hunks),
-                "raw_output": diff_res.raw_output,
-                "no_op":      diff_res.no_op,
+                "elapsed_s":      diff_res.elapsed_s,
+                "applied":        diff_res.applied,
+                "hunks":          len(diff_res.hunks),
+                "raw_output":     diff_res.raw_output,
+                "no_op":          diff_res.no_op,
+                "symbol_mode":    symbol_mode,
+                "surgical_hunks": surgical_hunks_payload,   # ← NOVO
             },
         )
 

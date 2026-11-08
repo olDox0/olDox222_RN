@@ -95,10 +95,16 @@ class NativeBackend:
     # ------------------------------------------------------------------
 
     def call(self, prompt: str, max_tokens: int) -> dict:
-        """Executa inferência nativa e retorna dict compatível com bridge."""
         if not self._ready:
             raise RuntimeError("NativeBackend não inicializado.")
-
+        # Guard: prompt gigante estoura llama_tokenize (-3).
+        # ~3 chars/token é heurística conservadora. 8192 tokens é o teto
+        # do ORN_MAX_PROMPT_TOKENS. Reservar 512 tokens para a resposta.
+        _MAX_PROMPT_CHARS = (8192 - max_tokens - 64) * 3
+        if _MAX_PROMPT_CHARS > 0 and len(prompt) > _MAX_PROMPT_CHARS:
+            prompt = prompt[:_MAX_PROMPT_CHARS - 40] + "\n[prompt truncado]"
+            print(f"[NATIVE] prompt truncado para {len(prompt)} chars "
+                  f"(n_ctx={self._n_ctx}, max_tokens={max_tokens})", flush=True)
         self._buf[0] = b'\0'
         t0 = time.perf_counter()
 
@@ -153,11 +159,11 @@ class NativeBackend:
         }
         
     def stream(self, prompt: str, max_tokens: int):
-        """Gerador que yield cada peça de token conforme é produzida pela DLL."""
         if not self._ready:
             raise RuntimeError("NativeBackend não inicializado.")
-
-        # Tenta registrar orn_infer_stream — se a DLL antiga não tiver, faz fallback
+        _MAX_PROMPT_CHARS = (8192 - max_tokens - 64) * 3
+        if _MAX_PROMPT_CHARS > 0 and len(prompt) > _MAX_PROMPT_CHARS:
+            prompt = prompt[:_MAX_PROMPT_CHARS - 40] + "\n[prompt truncado]"
         fn = getattr(self._lib, "orn_infer_stream", None)
         if fn is None:
             # DLL antiga sem streaming — emite tudo de uma vez

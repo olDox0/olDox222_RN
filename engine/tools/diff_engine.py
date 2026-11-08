@@ -46,6 +46,55 @@ def build_prompt(file_content: str, instruction: str, context: str = "") -> str:
         f"<|im_start|>assistant\n"
     )
 
+def build_prompt_surgical(
+    snippet: str,
+    symbol_name: str,
+    symbol_kind: str,
+    instruction: str,
+) -> str:
+    """Prompt cirúrgico: o modelo vê só o símbolo-alvo e devolve a versão
+    reescrita completa (bloco Python), não um patch @N.
+
+    A saída é convertida em um único DiffHunk que substitui
+    [start_line, end_line] no arquivo original.
+    """
+    system = (
+        "Você é um assistente de edição de código cirúrgica. "
+        f"Vou te dar APENAS o {symbol_kind} `{symbol_name}` extraído de um "
+        "arquivo maior. Sua tarefa é REESCREVER esse símbolo conforme a "
+        "instrução e devolver o bloco Python completo, substituível.\n\n"
+        "Regras:\n"
+        "- Devolva APENAS o bloco Python dentro de ```python ... ``` "
+        "(ou [code-begin]...[code-end]).\n"
+        "- Mantenha o MESMO nome e assinatura, salvo se a instrução pedir "
+        "alteração explícita.\n"
+        "- Preserve docstring e type hints quando existirem.\n"
+        "- Sem explicações antes ou depois do bloco.\n"
+        "- O bloco deve ser sintaticamente válido."
+    )
+    user = (
+        f"```python\n{snippet.strip()}\n```\n\n"
+        f"Tarefa: {instruction}"
+    )
+    return (
+        f"<|im_start|>system\n{system}<|im_end|>\n"
+        f"<|im_start|>user\n{user}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+
+
+def _extract_python_block(raw: str) -> str:
+    """Extrai bloco Python de ```python```, [code-begin]...[code-end]
+    ou código bare começando com def/class/@."""
+    from engine.thinking.code_hook import _extract_code, _extract_markdown_code
+    code = _extract_code(raw) or _extract_markdown_code(raw)
+    if code:
+        return code
+    stripped = (raw or "").strip()
+    if stripped.startswith(("def ", "class ", "async def ", "import ", "from ", "@")):
+        return stripped
+    return ""
+
 def _clean_model_output(raw: str) -> str:
     txt = (raw or "").strip()
     if "```" in txt:
@@ -156,83 +205,184 @@ def _line_ending(content: str) -> tuple[str, bool]:
     has_trailing = content.endswith(("\n", "\r\n"))
     return ("\r\n" if "\r\n" in content else "\n"), has_trailing
 
-def generate_and_apply(
-    file_path: Path | str,
-    instruction: str,
-    *,
-    apply: bool = False,
-    verify: bool = False,
-    consult: bool = False,
-    max_tokens: int = 512,
-    temperature: float = 0.2,
-    model_alias: str | None = None,
-    raw_output_override: str | None = None,   # ← NOVO
-) -> DiffResult:
-    t0 = time.monotonic()
-    path = Path(file_path)
-    if not path.exists():
-        return DiffResult(success=False, errors=[f"arquivo não existe: {path}"])
+def _infer_prompt(
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+) -> tuple[str, str | None]:
+    """Chama o modelo (server se online; senão direto).
+    Retorna (raw, error_msg_or_None)."""
+    from engine.tools.server_client import is_server_online, query as server_query
+    if is_server_online():
+        s_resp = server_query(prompt, max_tokens=max_tokens)
+        if not s_resp or s_resp.get("error"):
+            err = s_resp.get("error") if s_resp else "servidor offline"
+            return "", f"inferência no servidor falhou: {err}"
+        return str(s_resp.get("output", "")).strip(), None
+
+    from engine.core.llm_bridge import BridgeConfig, SiCDoxBridge
+    cfg = BridgeConfig()
+    cfg.temperature = temperature
+    bridge = SiCDoxBridge(cfg)
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return DiffResult(success=False, errors=[f"leitura falhou: {exc}"])
+        bridge._ensure_loaded()
+        call_res = bridge._call_engine(prompt, max_tokens=max_tokens)
+        return str(call_res.get("text", "")).strip(), None
+    except Exception as exc:
+        return "", f"inferência falhou: {exc}"
+    finally:
+        try: bridge.shutdown()
+        except Exception: pass
 
-    if model_alias:
-        os.environ["ORN_MODEL_ALIAS"] = model_alias
 
-    context = ""
-    if consult and raw_output_override is None:
-        try:
-            from engine.tools.consult_bridge import ConsultBridge
-            cb = ConsultBridge()
-            if cb.is_available():
-                results = cb.search(instruction, limit=2)
-                if results:
-                    context = cb.format_context(results, max_chars=1500)
-        except Exception:
-            pass
+def _try_surgical_path(
+    *,
+    path: Path,
+    content: str,
+    instruction: str,
+    symbol_mode: str,
+    max_tokens: int,
+    temperature: float,
+    t0: float,
+) -> "DiffResult | list[DiffHunk] | None":
+    """Tenta resolver símbolo e produzir um único hunk cirúrgico.
 
-    # ── Geração (ou override) ────────────────────────────────
-    if raw_output_override is not None:
-        raw = raw_output_override
-    else:
-        prompt = build_prompt(content, instruction, context=context)
-        from engine.tools.server_client import is_server_online, query as server_query
-        if is_server_online():
-            s_resp = server_query(prompt, max_tokens=max_tokens)
-            if s_resp and not s_resp.get("error"):
-                raw = str(s_resp.get("output", "")).strip()
+    Retorno:
+      - DiffResult      → erro terminal (symbol_mode='on' e falhou)
+      - list[DiffHunk]  → sucesso; caller continua com apply pipeline
+      - None            → fallback para whole-file (modo 'auto')
+    """
+    import ast
+    try:
+        from engine.tools.symbol_indexer import load_or_build as _idx_load_or_build
+        from engine.tools.symbol_resolver import (
+            resolve, pick_best, source_snippet, format_matches,
+        )
+    except ImportError:
+        return None   # F5.1 indisponível → fallback silencioso
+
+    try:
+        index = _idx_load_or_build(path)
+    except Exception:
+        return None
+
+    matches = resolve(instruction, index, scope=path)
+    best = pick_best(matches)
+
+    if best is None or best.confidence != "high":
+        if symbol_mode == "on":
+            if best is None:
+                err_lines = [
+                    f"Não identifiquei símbolo-alvo em: '{instruction}'",
+                    "Candidatos próximos:",
+                    format_matches(matches[:5]) if matches else "  (nenhum)",
+                ]
             else:
-                err_msg = (
-                    s_resp.get("error") if s_resp
-                    else "servidor offline ou resposta vazia"
-                )
-                return DiffResult(
-                    success=False,
-                    errors=[f"inferência no servidor falhou: {err_msg}"],
-                    elapsed_s=round(time.monotonic() - t0, 2),
-                )
-        else:
-            from engine.core.llm_bridge import BridgeConfig, SiCDoxBridge
-            cfg = BridgeConfig()
-            cfg.temperature = temperature
-            bridge = SiCDoxBridge(cfg)
-            try:
-                bridge._ensure_loaded()
-                call_res = bridge._call_engine(prompt, max_tokens=max_tokens)
-                raw = str(call_res.get("text", "")).strip()
-            except Exception as exc:
-                return DiffResult(
-                    success=False,
-                    errors=[f"inferência falhou: {exc}"],
-                    elapsed_s=round(time.monotonic() - t0, 2),
-                )
-            finally:
-                try: bridge.shutdown()
-                except Exception: pass
+                err_lines = [
+                    f"Match ambíguo: {best.symbol.name} "
+                    f"(score={best.score:.2f}, confiança={best.confidence})",
+                    "Use --symbol-auto para fallback automático.",
+                ]
+            return DiffResult(
+                success=False,
+                errors=err_lines,
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
+        return None
 
-    # ── Resto do função: parse + apply (sem mudanças) ────────
-    hunks = parse_diff(raw, original_content=content)
+    n_lines = best.symbol.end_line - best.symbol.start_line + 1
+    if n_lines > 200:
+        if symbol_mode == "on":
+            return DiffResult(
+                success=False,
+                errors=[
+                    f"Símbolo {best.symbol.name} tem {n_lines} linhas (>200). "
+                    "Grande demais para modo cirúrgico — use sem --symbol."
+                ],
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
+        return None
+
+    snippet = source_snippet(best.symbol, path)
+    if not snippet.strip():
+        return None
+
+    surgical_max = min(1024, max(384, n_lines * 8))
+    prompt = build_prompt_surgical(
+        snippet, best.symbol.name, best.symbol.kind, instruction,
+    )
+    raw, err = _infer_prompt(prompt, surgical_max, temperature)
+    if err:
+        if symbol_mode == "on":
+            return DiffResult(
+                success=False,
+                errors=[f"(surgical) {err}"],
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
+        return None
+
+    new_code = _extract_python_block(raw)
+    if not new_code:
+        if symbol_mode == "on":
+            return DiffResult(
+                success=False,
+                raw_output=raw,
+                errors=["Modelo (surgical) não retornou bloco Python reconhecível."],
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
+        return None
+
+    try:
+        ast.parse(new_code)
+    except SyntaxError as exc:
+        if symbol_mode == "on":
+            return DiffResult(
+                success=False,
+                raw_output=raw,
+                errors=[f"Modelo retornou código inválido: {exc}"],
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
+        return None
+
+    # F5.2 Guard C: output cirúrgico suspeito (perdeu corpo do símbolo).
+    # Heurística: se < 30% do tamanho original, provavelmente o modelo
+    # truncou (ex.: só docstring, corpo sumiu).
+    ratio = len(new_code.strip()) / max(1, len(snippet.strip()))
+    if ratio < 0.30 and n_lines > 3:
+        if symbol_mode == "on":
+            return DiffResult(
+                success=False,
+                raw_output=raw,
+                errors=[
+                    f"Modelo retornou apenas {int(ratio*100)}% do tamanho "
+                    f"original de '{best.symbol.name}' ({n_lines} linhas). "
+                    "Provável truncamento — tente instrução mais específica "
+                    "ou use --symbol-auto com arquivo maior."
+                ],
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
+        return None
+
+    snippet_lines = snippet.splitlines()
+    new_lines = new_code.rstrip("\n").splitlines()
+    return [DiffHunk(
+        line=best.symbol.start_line,
+        removed=snippet_lines,
+        added=new_lines,
+    )]
+
+
+def _apply_and_finalize(
+    *,
+    path: Path,
+    content: str,
+    hunks: list[DiffHunk],
+    raw: str,
+    t0: float,
+    apply: bool,
+    verify: bool,
+) -> DiffResult:
+    """Pipeline de aplicação compartilhado entre caminho cirúrgico e whole-file."""
     if not hunks:
         preview = (raw or "").strip()
         if len(preview) > 400:
@@ -248,8 +398,12 @@ def generate_and_apply(
             elapsed_s=round(time.monotonic() - t0, 2),
         )
 
-    # B-NOOP: todos os hunks são no-op (removed == added) → nada a fazer
-    if all(h.removed == h.added for h in hunks):
+    # F5.2 Guard B: no_op com normalização de trailing whitespace.
+    # LLMs costumam reescrever com espaços extras; isso não é mudança real.
+    def _norm(lines: list[str]) -> list[str]:
+        return [l.rstrip() for l in lines]
+
+    if all(_norm(h.removed) == _norm(h.added) for h in hunks):
         return DiffResult(
             success=True,
             raw_output=raw,
@@ -264,22 +418,16 @@ def generate_and_apply(
     lines = content.splitlines()
     new_lines, errors = apply_hunks(lines, hunks)
     applied = False
-
     if apply and not errors and new_lines != lines:
         new_content = line_ending.join(new_lines)
         if has_trailing:
             new_content += line_ending
         try:
             backup_content = path.read_text(encoding="utf-8", errors="replace")
-            
-            # Salva backup físico .bak antes de qualquer alteração (OSL-20)
             bak_path = path.with_suffix(path.suffix + ".bak")
             bak_path.write_text(backup_content, encoding="utf-8")
-
-            # Escreve o patch no arquivo alvo
             path.write_text(new_content, encoding="utf-8")
             applied = True
-
             if verify:
                 from engine.tools.sandbox import run_in_sandbox
                 sb_res = run_in_sandbox(new_content, timeout_s=5)
@@ -298,4 +446,92 @@ def generate_and_apply(
         errors=errors,
         elapsed_s=round(time.monotonic() - t0, 2),
         applied=applied,
+    )
+
+
+def generate_and_apply(
+    file_path: Path | str,
+    instruction: str,
+    *,
+    apply: bool = False,
+    verify: bool = False,
+    consult: bool = False,
+    max_tokens: int = 512,
+    temperature: float = 0.2,
+    model_alias: str | None = None,
+    raw_output_override: str | None = None,
+    symbol_mode: str = "off",
+    hunks_override: list[DiffHunk] | None = None,
+) -> DiffResult:
+    t0 = time.monotonic()
+    path = Path(file_path)
+    if not path.exists():
+        return DiffResult(success=False, errors=[f"arquivo não existe: {path}"])
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return DiffResult(success=False, errors=[f"leitura falhou: {exc}"])
+
+    if model_alias:
+        os.environ["ORN_MODEL_ALIAS"] = model_alias
+
+    # ── Prioridade 1: hunks pré-computados (fase 2 do surgical) ──
+    if hunks_override is not None:
+        return _apply_and_finalize(
+            path=path, content=content, hunks=hunks_override,
+            raw=raw_output_override or "[surgical — hunks pré-computados]",
+            t0=t0, apply=apply, verify=False,
+        )
+
+    # ── Prioridade 2: raw_output pré-computado (fase 2 do whole-file) ──
+    if raw_output_override is not None:
+        hunks = parse_diff(raw_output_override, original_content=content)
+        return _apply_and_finalize(
+            path=path, content=content, hunks=hunks, raw=raw_output_override,
+            t0=t0, apply=apply, verify=verify,
+        )
+
+    # ── Prioridade 3: modo cirúrgico (fase 1) ──
+    if symbol_mode in ("auto", "on"):
+        surgical = _try_surgical_path(
+            path=path, content=content, instruction=instruction,
+            symbol_mode=symbol_mode, max_tokens=max_tokens,
+            temperature=temperature, t0=t0,
+        )
+        if isinstance(surgical, DiffResult):
+            return surgical
+        if isinstance(surgical, list):
+            return _apply_and_finalize(
+                path=path, content=content, hunks=surgical,
+                raw="[surgical — bloco Python substituído]",
+                t0=t0, apply=apply, verify=False,
+            )
+        # surgical is None → cai no fallback
+
+    # ── Prioridade 4: whole-file (padrão) ──
+    context = ""
+    if consult:
+        try:
+            from engine.tools.consult_bridge import ConsultBridge
+            cb = ConsultBridge()
+            if cb.is_available():
+                results = cb.search(instruction, limit=2)
+                if results:
+                    context = cb.format_context(results, max_chars=1500)
+        except Exception:
+            pass
+
+    prompt = build_prompt(content, instruction, context=context)
+    raw, infer_err = _infer_prompt(prompt, max_tokens, temperature)
+    if infer_err:
+        return DiffResult(
+            success=False,
+            errors=[infer_err],
+            elapsed_s=round(time.monotonic() - t0, 2),
+        )
+
+    hunks = parse_diff(raw, original_content=content)
+    return _apply_and_finalize(
+        path=path, content=content, hunks=hunks, raw=raw,
+        t0=t0, apply=apply, verify=verify,
     )

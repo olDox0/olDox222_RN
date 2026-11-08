@@ -586,11 +586,14 @@ def _lint_python_text(text: str) -> list[str]:
 # Session REPL — helpers (nível de módulo, antes do decorator)
 # ─────────────────────────────────────────────────────────────
 _SESSION_ALIASES = {
-    "help":   "/help",  "?":      "/help",
-    "open":   "/open",  "fix":    "/fix",
-    "apply":  "/apply", "diff":   "/diff",
-    "undo":   "/undo",  "status": "/status",
-    "clear":  "/clear", "exit":   "/exit", "quit": "/exit",
+    "help":       "/help",       "?":      "/help",
+    "open":       "/open",
+    "fix":        "/fix",
+    "fix-symbol": "/fix-symbol",
+    "fix-auto":   "/fix-auto",
+    "apply":      "/apply",      "diff":   "/diff",
+    "undo":       "/undo",       "status": "/status",
+    "clear":      "/clear",      "exit":   "/exit", "quit": "/exit",
 }
 
 _SESSION_HELP = """
@@ -599,6 +602,8 @@ _SESSION_HELP = """
     /help                  Esta ajuda
     /open <arquivo>        Abre arquivo para edição
     /fix <instrução>       Gera patch, mostra diff e pede confirmação
+    /fix-symbol <instrução> Fix cirúrgico (só alvo) — erro se não resolver
+    /fix-auto <instrução>  Fix cirúrgico com fallback para arquivo inteiro
     /apply                 Reaplica o último patch (após confirmação)
     /diff                  Mostra o último diff gerado
     /undo                  Reverte do backup .bak mais recente
@@ -624,6 +629,75 @@ def _normalize_session_command(raw: str) -> str:
         return text   # não é comando conhecido → instrução livre
     return canonical + rest
 
+def _session_handle_fix(ex, current_file: str, instruction: str, symbol_mode: str) -> None:
+    """Executa fix em duas fases para /fix, /fix-symbol e /fix-auto.
+
+    symbol_mode: 'off' (whole-file), 'on' (cirúrgico, erro se falhar),
+                 'auto' (cirúrgico com fallback).
+    """
+    mode_label = {"off": "", "on": " [symbol]", "auto": " [symbol-auto]"}[symbol_mode]
+    if mode_label:
+        Display.info(f"Modo cirúrgico{mode_label}")
+
+    # ── Fase 1 ──
+    ctx1 = {"apply": False, "instruction": instruction}
+    if symbol_mode != "off":
+        ctx1["symbol_mode"] = symbol_mode
+
+    result = ex.process_goal(
+        intent="fix",
+        payload=current_file,
+        context=ctx1,
+    )
+    if not result.success:
+        for e in result.errors:
+            Display.error(e)
+        return
+
+    # Curto-circuito: nada a aplicar, não pergunta
+    if result.metadata.get("no_op"):
+        Display.info("O código já corresponde à sugestão (nada a aplicar).")
+        return
+
+    Display.separator()
+    print(result.output)
+    Display.separator()
+
+    if not click.confirm("Aplicar?", default=False):
+        return
+
+    # ── Fase 2 ──
+    raw_patch = result.metadata.get("raw_output", "")
+    if not raw_patch:
+        Display.error("internal: raw_output vazio.")
+        return
+
+    ctx2 = {
+        "apply":               True,
+        "instruction":         instruction,
+        "raw_output_override": raw_patch,
+    }
+    if symbol_mode != "off":
+        ctx2["symbol_mode"] = symbol_mode
+
+    surgical_hunks = result.metadata.get("surgical_hunks")
+    if surgical_hunks:
+        ctx2["surgical_hunks_override"] = surgical_hunks
+
+    apply_res = ex.process_goal(
+        intent="fix",
+        payload=current_file,
+        context=ctx2,
+    )
+    if apply_res.success:
+        if apply_res.metadata.get("no_op"):
+            Display.info("O código já corresponde à sugestão (nada a aplicar).")
+        else:
+            n = apply_res.metadata.get("hunks", 0)
+            Display.success(f"Patch aplicado ({n} hunk(s)).")
+    else:
+        for e in apply_res.errors:
+            Display.error(e)
 
 @cli.command("session")
 @click.option("--file", "-f", "initial_file",
@@ -686,47 +760,28 @@ def session_cmd(initial_file):
                 Display.success(f"aberto: {path}")
                 continue
 
+            # ── /fix-symbol <instrução> ────────────────────
+            if cmd.startswith("/fix-symbol "):
+                if not current_file:
+                    Display.error("use /open <arquivo> primeiro")
+                    continue
+                _session_handle_fix(ex, current_file, cmd[12:].strip(), "on")
+                continue
+
+            # ── /fix-auto <instrução> ──────────────────────
+            if cmd.startswith("/fix-auto "):
+                if not current_file:
+                    Display.error("use /open <arquivo> primeiro")
+                    continue
+                _session_handle_fix(ex, current_file, cmd[10:].strip(), "auto")
+                continue
+
             # ── /fix <instrução> ───────────────────────────
             if cmd.startswith("/fix "):
                 if not current_file:
                     Display.error("use /open <arquivo> primeiro")
                     continue
-                instruction = cmd[5:].strip()
-                result = ex.process_goal(
-                    intent="fix",
-                    payload=current_file,
-                    context={"apply": False, "instruction": instruction},
-                )
-                if not result.success:
-                    for e in result.errors:
-                        Display.error(e)
-                    continue
-                Display.separator()
-                print(result.output)
-                Display.separator()
-                if click.confirm("Aplicar?", default=False):
-                    raw_patch = result.metadata.get("raw_output", "")
-                    if not raw_patch:
-                        Display.error("internal: raw_output vazio.")
-                        continue
-                    apply_res = ex.process_goal(
-                        intent="fix",
-                        payload=current_file,
-                        context={
-                            "apply":               True,
-                            "instruction":         instruction,
-                            "raw_output_override": raw_patch,
-                        },
-                    )
-                    if apply_res.success:
-                        if apply_res.metadata.get("no_op"):
-                            Display.info("O código já corresponde à sugestão (nada a aplicar).")
-                        else:
-                            n = apply_res.metadata.get("hunks", 0)
-                            Display.success(f"Patch aplicado ({n} hunk(s)).")
-                    else:
-                        for e in apply_res.errors:
-                            Display.error(e)
+                _session_handle_fix(ex, current_file, cmd[5:].strip(), "off")
                 continue
 
             # ── /undo ──────────────────────────────────────
@@ -1045,21 +1100,38 @@ def audit(target: str, output_format: str, func: str | None) -> None:
 @click.option("--consult", is_flag=True, default=False)
 @click.option("--verbose", "-v", is_flag=True, default=False,
               help="Mostra raw_output do modelo quando o parse falhar.")
-def fix(target, instruction, apply, dry_run, consult, verbose):
+@click.option("--symbol", "symbol_mode_on", is_flag=True, default=False,
+              help="Força modo cirúrgico: resolve símbolo-alvo na instrução. "
+                   "Falha com candidatos se não achar.")
+@click.option("--symbol-auto", "symbol_mode_auto", is_flag=True, default=False,
+              help="Tenta modo cirúrgico; fallback silencioso para arquivo inteiro.")
+def fix(target, instruction, apply, dry_run, consult, verbose,
+        symbol_mode_on, symbol_mode_auto):
     from engine.core.executive import SiCDoxExecutive
 
     if apply and dry_run:
         raise click.UsageError("--apply e --dry-run são mutuamente exclusivos.")
+    if symbol_mode_on and symbol_mode_auto:
+        raise click.UsageError("--symbol e --symbol-auto são mutuamente exclusivos.")
+
+    symbol_mode = "on" if symbol_mode_on else "auto" if symbol_mode_auto else "off"
 
     Display.section("FIX", target)
+    if symbol_mode != "off":
+        Display.kv("symbol_mode", symbol_mode)
 
-    # ── Fase 1: gerar patch (UMA única chamada ao modelo) ──
+    # ── Fase 1 ──
     ex = SiCDoxExecutive()
     try:
         result = ex.process_goal(
             intent="fix",
             payload=target,
-            context={"apply": False, "instruction": instruction, "consult": consult},
+            context={
+                "apply":       False,
+                "instruction": instruction,
+                "consult":     consult,
+                "symbol_mode": symbol_mode,
+            },
         )
     finally:
         ex.shutdown()
@@ -1090,18 +1162,24 @@ def fix(target, instruction, apply, dry_run, consult, verbose):
             Display.info("Cancelado.")
             return
 
-    # ── Fase 2: aplicar o MESMO raw, sem re-inferência ──
+    # ── Fase 2 ──
+    surgical_hunks = result.metadata.get("surgical_hunks")
+    apply_context = {
+        "apply":               True,
+        "instruction":         instruction,
+        "consult":             consult,
+        "raw_output_override": raw,
+        "symbol_mode":         symbol_mode,
+    }
+    if surgical_hunks:
+        apply_context["surgical_hunks_override"] = surgical_hunks
+
     ex = SiCDoxExecutive()
     try:
         apply_res = ex.process_goal(
             intent="fix",
             payload=target,
-            context={
-                "apply":               True,
-                "instruction":         instruction,
-                "consult":             consult,
-                "raw_output_override": raw,       # ← chave da correção
-            },
+            context=apply_context,
         )
     finally:
         ex.shutdown()
@@ -1119,13 +1197,12 @@ def fix(target, instruction, apply, dry_run, consult, verbose):
     if no_op:
         Display.info("O código já corresponde à sugestão do modelo — nada a aplicar.")
         return
-    # if applied:
-    #     Display.success(f"Patch aplicado ({n_hunks} hunk(s)) em {elapsed}s — "
-    #                     f"backup: {target}.bak")
+    if applied:
+        Display.success(f"Patch aplicado ({n_hunks} hunk(s)) em {elapsed}s — "
+                        f"backup: {target}.bak")
     else:
         Display.warn(f"Patch NÃO aplicado ({elapsed}s).")
         raise SystemExit(1)
-
 
 @cli.command()
 @click.argument("description", nargs=-1, required=True)
