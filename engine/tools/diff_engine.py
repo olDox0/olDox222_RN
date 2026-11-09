@@ -63,14 +63,20 @@ def build_prompt_surgical(
         f"Vou te dar APENAS o {symbol_kind} `{symbol_name}` extraído de um "
         "arquivo maior. Sua tarefa é REESCREVER esse símbolo conforme a "
         "instrução e devolver o bloco Python completo, substituível.\n\n"
-        "Regras:\n"
+        "Regras OBRIGATÓRIAS:\n"
         "- Devolva APENAS o bloco Python dentro de ```python ... ``` "
         "(ou [code-begin]...[code-end]).\n"
         "- Mantenha o MESMO nome e assinatura, salvo se a instrução pedir "
         "alteração explícita.\n"
         "- Preserve docstring e type hints quando existirem.\n"
         "- Sem explicações antes ou depois do bloco.\n"
-        "- O bloco deve ser sintaticamente válido."
+        "- O bloco deve ser sintaticamente válido.\n"
+        "- Retorne APENAS o corpo do símbolo. NÃO inclua:\n"
+        "  * `print(...)` ou código de exemplo/teste fora da função\n"
+        "  * imports que já existem no arquivo original\n"
+        "  * definições de outros símbolos\n"
+        "  * blocos `if __name__` ou `# Example usage:`\n"
+        "- Se a instrução não mencionar mudança na assinatura, retorne-a idêntica."
     )
     user = (
         f"```python\n{snippet.strip()}\n```\n\n"
@@ -209,9 +215,9 @@ def _infer_prompt(
     prompt: str,
     max_tokens: int,
     temperature: float,
+    bridge=None,
 ) -> tuple[str, str | None]:
-    """Chama o modelo (server se online; senão direto).
-    Retorna (raw, error_msg_or_None)."""
+    """Chama o modelo. Se `bridge` for passado, reusa (sem shutdown)."""
     from engine.tools.server_client import is_server_online, query as server_query
     if is_server_online():
         s_resp = server_query(prompt, max_tokens=max_tokens)
@@ -220,10 +226,13 @@ def _infer_prompt(
             return "", f"inferência no servidor falhou: {err}"
         return str(s_resp.get("output", "")).strip(), None
 
-    from engine.core.llm_bridge import BridgeConfig, SiCDoxBridge
-    cfg = BridgeConfig()
-    cfg.temperature = temperature
-    bridge = SiCDoxBridge(cfg)
+    own_bridge = bridge is None
+    if own_bridge:
+        from engine.core.llm_bridge import BridgeConfig, SiCDoxBridge
+        cfg = BridgeConfig()
+        cfg.temperature = temperature
+        bridge = SiCDoxBridge(cfg)
+
     try:
         bridge._ensure_loaded()
         call_res = bridge._call_engine(prompt, max_tokens=max_tokens)
@@ -231,9 +240,37 @@ def _infer_prompt(
     except Exception as exc:
         return "", f"inferência falhou: {exc}"
     finally:
-        try: bridge.shutdown()
-        except Exception: pass
+        if own_bridge:
+            try: bridge.shutdown()
+            except Exception: pass
 
+def _instruction_looks_symbolic(text: str) -> bool:
+    """True se instrução menciona identificador que parece nome de símbolo.
+
+    Critério:
+      - começa com '_' (≥4 chars): `_fmt_ms`, `_run_fix`
+      - tem snake_case: `session_cmd`, `cache_dir`
+      - tem camelCase: `GoalResult`, `SiCDoxExecutive`
+    Não conta se for stopword PT-BR (mesmo critério do symbol_resolver).
+    """
+    if not text:
+        return False
+    try:
+        from engine.tools.symbol_resolver import _STOPWORDS
+    except ImportError:
+        _STOPWORDS = frozenset()
+
+    for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", text):
+        low = t.lower()
+        if low in _STOPWORDS:
+            continue
+        if t.startswith("_") and len(t) >= 4:
+            return True
+        if "_" in t and not t.startswith("__"):
+            return True
+        if re.search(r"[a-z][A-Z]", t):
+            return True
+    return False
 
 def _try_surgical_path(
     *,
@@ -244,6 +281,7 @@ def _try_surgical_path(
     max_tokens: int,
     temperature: float,
     t0: float,
+    bridge=None,          # ← NOVO
 ) -> "DiffResult | list[DiffHunk] | None":
     """Tenta resolver símbolo e produzir um único hunk cirúrgico.
 
@@ -253,6 +291,14 @@ def _try_surgical_path(
       - None            → fallback para whole-file (modo 'auto')
     """
     import ast
+
+    trace = {
+        "resolved_symbol": None,
+        "infer_raw_len": 0,
+        "infer_raw_preview": "",
+        "outcome": "",
+    }
+    
     try:
         from engine.tools.symbol_indexer import load_or_build as _idx_load_or_build
         from engine.tools.symbol_resolver import (
@@ -267,7 +313,22 @@ def _try_surgical_path(
         return None
 
     matches = resolve(instruction, index, scope=path)
+
+    # F5.5c: `load_or_build` retorna o cache completo (multi-arquivo);
+    # `scope` no resolver é só boost, não filtro. Surgical opera em UM
+    # arquivo, então descartar matches de outros arquivos (senão
+    # source_snippet leria linhas erradas do arquivo-alvo).
+    try:
+        _target_resolved = Path(path).resolve()
+    except OSError:
+        _target_resolved = Path(path)
+    matches = [
+        m for m in matches
+        if Path(m.file_path).resolve() == _target_resolved
+    ]
+
     best = pick_best(matches)
+
 
     if best is None or best.confidence != "high":
         if symbol_mode == "on":
@@ -288,6 +349,19 @@ def _try_surgical_path(
                 errors=err_lines,
                 elapsed_s=round(time.monotonic() - t0, 2),
             )
+
+        if best is None and _instruction_looks_symbolic(instruction):
+            return DiffResult(
+                success=False,
+                errors=[
+                    f"Instrução menciona símbolo não encontrado em '{path.name}'.",
+                    f"  Símbolo citado: {instruction}",
+                    "Use `orn grep <nome>` para localizar o arquivo correto.",
+                    "Ou reescreva a instrução sem referência a símbolo específico.",
+                ],
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
+        return None
         return None
 
     n_lines = best.symbol.end_line - best.symbol.start_line + 1
@@ -311,7 +385,8 @@ def _try_surgical_path(
     prompt = build_prompt_surgical(
         snippet, best.symbol.name, best.symbol.kind, instruction,
     )
-    raw, err = _infer_prompt(prompt, surgical_max, temperature)
+    raw, err = _infer_prompt(prompt, surgical_max, temperature, bridge=bridge)
+#    raw, err = _infer_prompt(prompt, surgical_max, temperature)
     if err:
         if symbol_mode == "on":
             return DiffResult(
@@ -475,7 +550,7 @@ def generate_and_apply(
     if model_alias:
         os.environ["ORN_MODEL_ALIAS"] = model_alias
 
-    # ── Prioridade 1: hunks pré-computados (fase 2 do surgical) ──
+    # ── Prioridade 1: hunks_override ─────────────────────────────
     if hunks_override is not None:
         return _apply_and_finalize(
             path=path, content=content, hunks=hunks_override,
@@ -483,7 +558,7 @@ def generate_and_apply(
             t0=t0, apply=apply, verify=False,
         )
 
-    # ── Prioridade 2: raw_output pré-computado (fase 2 do whole-file) ──
+    # ── Prioridade 2: raw_output_override ────────────────────────
     if raw_output_override is not None:
         hunks = parse_diff(raw_output_override, original_content=content)
         return _apply_and_finalize(
@@ -491,47 +566,67 @@ def generate_and_apply(
             t0=t0, apply=apply, verify=verify,
         )
 
-    # ── Prioridade 3: modo cirúrgico (fase 1) ──
-    if symbol_mode in ("auto", "on"):
-        surgical = _try_surgical_path(
-            path=path, content=content, instruction=instruction,
-            symbol_mode=symbol_mode, max_tokens=max_tokens,
-            temperature=temperature, t0=t0,
-        )
-        if isinstance(surgical, DiffResult):
-            return surgical
-        if isinstance(surgical, list):
-            return _apply_and_finalize(
-                path=path, content=content, hunks=surgical,
-                raw="[surgical — bloco Python substituído]",
-                t0=t0, apply=apply, verify=False,
-            )
-        # surgical is None → cai no fallback
-
-    # ── Prioridade 4: whole-file (padrão) ──
-    context = ""
-    if consult:
+    # ── Bridge compartilhado (evita reload entre surgical e fallback) ──
+    from engine.tools.server_client import is_server_online
+    shared_bridge = None
+    if not is_server_online():
         try:
-            from engine.tools.consult_bridge import ConsultBridge
-            cb = ConsultBridge()
-            if cb.is_available():
-                results = cb.search(instruction, limit=2)
-                if results:
-                    context = cb.format_context(results, max_chars=1500)
+            from engine.core.llm_bridge import BridgeConfig, SiCDoxBridge
+            cfg = BridgeConfig()
+            cfg.temperature = temperature
+            shared_bridge = SiCDoxBridge(cfg)
         except Exception:
-            pass
+            shared_bridge = None
 
-    prompt = build_prompt(content, instruction, context=context)
-    raw, infer_err = _infer_prompt(prompt, max_tokens, temperature)
-    if infer_err:
-        return DiffResult(
-            success=False,
-            errors=[infer_err],
-            elapsed_s=round(time.monotonic() - t0, 2),
+    try:
+        # ── Prioridade 3: surgical ──────────────────────────────
+        if symbol_mode in ("auto", "on"):
+            surgical = _try_surgical_path(
+                path=path, content=content, instruction=instruction,
+                symbol_mode=symbol_mode, max_tokens=max_tokens,
+                temperature=temperature, t0=t0,
+                bridge=shared_bridge,
+            )
+            if isinstance(surgical, DiffResult):
+                return surgical
+            if isinstance(surgical, list):
+                return _apply_and_finalize(
+                    path=path, content=content, hunks=surgical,
+                    raw="[surgical — bloco Python substituído]",
+                    t0=t0, apply=apply, verify=False,
+                )
+            # None → fallback whole-file
+
+        # ── Prioridade 4: whole-file ─────────────────────────────
+        context = ""
+        if consult:
+            try:
+                from engine.tools.consult_bridge import ConsultBridge
+                cb = ConsultBridge()
+                if cb.is_available():
+                    results = cb.search(instruction, limit=2)
+                    if results:
+                        context = cb.format_context(results, max_chars=1500)
+            except Exception:
+                pass
+
+        prompt = build_prompt(content, instruction, context=context)
+        raw, infer_err = _infer_prompt(
+            prompt, max_tokens, temperature, bridge=shared_bridge,
         )
+        if infer_err:
+            return DiffResult(
+                success=False,
+                errors=[infer_err],
+                elapsed_s=round(time.monotonic() - t0, 2),
+            )
 
-    hunks = parse_diff(raw, original_content=content)
-    return _apply_and_finalize(
-        path=path, content=content, hunks=hunks, raw=raw,
-        t0=t0, apply=apply, verify=verify,
-    )
+        hunks = parse_diff(raw, original_content=content)
+        return _apply_and_finalize(
+            path=path, content=content, hunks=hunks, raw=raw,
+            t0=t0, apply=apply, verify=verify,
+        )
+    finally:
+        if shared_bridge is not None:
+            try: shared_bridge.shutdown()
+            except Exception: pass
