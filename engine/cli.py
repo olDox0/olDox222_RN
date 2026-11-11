@@ -946,6 +946,87 @@ def _csv_list(raw: str | None) -> list[str]:
         return []
     return [x.strip() for x in raw.split(",") if x.strip()]
 
+@cli.command("grep")
+@click.argument("symbol", required=False)
+@click.option("--pattern", "-p", default=None,
+              help="Regex aplicado ao nome do símbolo (case-insensitive).")
+@click.option("--kind", "-k",
+              type=click.Choice(["all", "function", "method", "class", "async_function"]),
+              default="all", show_default=True)
+@click.option("--path", "-P", "search_path", default=".",
+              type=click.Path(exists=True), show_default=True,
+              help="Diretório para buscar.")
+@click.option("--limit", "-n", type=int, default=50, show_default=True,
+              help="Máximo de resultados.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Saída JSON para scripting.")
+def grep(symbol, pattern, kind, search_path, limit, as_json):
+    """Busca símbolos (funções, métodos, classes) no projeto.
+
+    Exemplos:
+        orn grep session_cmd
+        orn grep --pattern '^_get_' --path engine/
+        orn grep fix --kind function --json
+
+    Nota cmd.exe: o caret (^) é escape. Use ^^ ou aspas duplas:
+        orn grep --pattern "^^_fmt"
+    """
+    if not symbol and not pattern:
+        raise click.UsageError("informe <symbol> ou --pattern")
+
+    from engine.tools.symbol_indexer import build_dir
+    import re as _re
+
+    try:
+        regex = _re.compile(pattern, re.IGNORECASE) if pattern else None
+    except _re.error as exc:
+        raise click.UsageError(f"regex inválido: {exc}")
+
+    index = build_dir(search_path)
+    needle = (symbol or "").lower()
+
+    matches: list[tuple] = []
+    for file_path, symbols in sorted(index.items()):
+        for s in symbols:
+            if kind != "all" and s.kind != kind:
+                continue
+            if regex is not None:
+                if not regex.search(s.name):
+                    continue
+            elif needle and needle not in s.name.lower():
+                continue
+            matches.append((file_path, s))
+            if len(matches) >= limit:
+                break
+        if len(matches) >= limit:
+            break
+
+    if as_json:
+        import json as _json
+        payload = [
+            {
+                "file":      str(fp),
+                "line":      s.start_line,
+                "end_line":  s.end_line,
+                "kind":      s.kind,
+                "name":      s.name,
+                "parent":    s.parent,
+                "signature": s.signature,
+            }
+            for fp, s in matches
+        ]
+        print(_json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    if not matches:
+        Display.warn(f"nenhum símbolo encontrado: {symbol or pattern}")
+        return
+
+    query_label = pattern if regex else symbol
+    Display.section("GREP", f"{len(matches)} match(es) para '{query_label}'")
+    for fp, s in matches:
+        parent = f" em {s.parent}" if s.parent else ""
+        Display.kv(f"{fp}:{s.start_line}", f"[{s.kind}] {s.signature}{parent}")
 
 @cli.group("drawer", invoke_without_command=True)
 @click.option("--list", "list_flag", is_flag=True, default=False, help="Atalho para `orn drawer list`.")
@@ -1090,7 +1171,39 @@ def audit(target: str, output_format: str, func: str | None) -> None:
     Display.separator()
     Display.info(f"Tempo: {result.metadata.get('elapsed_s', '?')}s")
 
+def _print_surgical_trace(trace: dict) -> None:
+    Display.separator()
+    Display.info("[surgical] trace:")
+    Display.kv("  outcome",         str(trace.get("outcome", "?")))
+    Display.kv("  instruction",     str(trace.get("instruction", ""))[:70])
+    Display.kv("  matches_count",   str(trace.get("matches_count", 0)))
+    resolved = trace.get("resolved")
+    if resolved:
+        rfile = trace.get("resolved_file", "?")
+        rlines = trace.get("resolved_lines")
+        line_str = f"L{rlines[0]}-{rlines[1]}" if rlines else "?"
+        Display.kv("  resolved", f"{resolved} ({rfile}:{line_str})")
+        Display.kv("  lines_count", str(trace.get("resolved_lines_count", "?")))
+    if trace.get("surgical_max_tokens"):
+        Display.kv("  max_tokens", str(trace["surgical_max_tokens"]))
+    if trace.get("prompt_chars"):
+        Display.kv("  prompt_chars", str(trace["prompt_chars"]))
+    if trace.get("infer_error"):
+        Display.kv("  infer_error", str(trace["infer_error"])[:120])
+    if trace.get("syntax_error"):
+        Display.kv("  syntax_error", str(trace["syntax_error"])[:120])
+    if "output_ratio" in trace:
+        Display.kv("  output_ratio", f"{trace['output_ratio']:.1%}")
+    Display.kv("  raw_len", str(trace.get("infer_raw_len", 0)))
 
+    preview = trace.get("infer_raw_preview") or ""
+    if preview:
+        Display.info("  raw (primeiros 800 chars):")
+        for line in preview.splitlines()[:40]:
+            print(f"    {line}")
+        if len(trace.get("infer_raw_preview", "")) >= 800:
+            print("    [...truncado]")
+    Display.separator()
 
 @cli.command()
 @click.argument("target", type=click.Path(exists=True))
@@ -1139,9 +1252,11 @@ def fix(target, instruction, apply, dry_run, consult, verbose,
     if not result.success:
         for err in result.errors:
             if not verbose and "raw_output do modelo" in err:
-                continue              # só mostra com -v
+                continue
             for line in err.splitlines():
                 Display.error(line)
+        if verbose and result.metadata.get("surgical_trace"):
+            _print_surgical_trace(result.metadata["surgical_trace"])
         raise SystemExit(1)
 
     Display.separator()
@@ -1186,7 +1301,12 @@ def fix(target, instruction, apply, dry_run, consult, verbose,
 
     if not apply_res.success:
         for err in apply_res.errors:
-            Display.error(err)
+            if not verbose and "raw_output do modelo" in err:
+                continue
+            for line in err.splitlines():
+                Display.error(line)
+        if verbose and apply_res.metadata.get("surgical_trace"):
+            _print_surgical_trace(apply_res.metadata["surgical_trace"])
         raise SystemExit(1)
 
     applied = apply_res.metadata.get("applied", False)
@@ -2581,3 +2701,96 @@ def consult_stats(as_json: bool) -> None:
     Display.kv("total_docs", str(stats["total_docs"]))
     Display.kv("total_fts",  str(stats["total_fts"]))
     Display.kv("categorias", str(len(stats.get("categories", {}))))
+
+@cli.group("symbol")
+def symbol_group():
+    """Ferramentas do índice de símbolos (F5)."""
+
+
+@symbol_group.command("cache")
+@click.option("--show", "show_flag", is_flag=True, default=False,
+              help="Mostra estado do cache (default se nenhuma flag).")
+@click.option("--clear", "clear_flag", is_flag=True, default=False,
+              help="Deleta o cache.")
+@click.option("--rebuild", "rebuild_flag", is_flag=True, default=False,
+              help="Força rebuild do diretório atual (cwd).")
+@click.option("--path", "cache_path", default=None, type=click.Path(),
+              help="Path do cache (default: data/symbol_cache.json).")
+def symbol_cache(show_flag, clear_flag, rebuild_flag, cache_path):
+    """Inspeciona, limpa ou reconstrói o cache de símbolos."""
+    from pathlib import Path
+    from engine.tools.symbol_indexer import (
+        load as _idx_load,
+        persist as _idx_persist,
+        build_dir,
+    )
+
+    default_cache = Path("data") / "symbol_cache.json"
+    cache_file = Path(cache_path) if cache_path else default_cache
+
+    # Conveniência: sem flags = --show
+    if not (show_flag or clear_flag or rebuild_flag):
+        show_flag = True
+
+    # ── --clear ─────────────────────────────────────────
+    if clear_flag:
+        if cache_file.exists():
+            size_kb = round(cache_file.stat().st_size / 1024, 1)
+            try:
+                cache_file.unlink()
+                Display.success(f"cache removido ({size_kb} KB): {cache_file}")
+            except OSError as exc:
+                Display.error(f"falha ao remover: {exc}")
+        else:
+            Display.warn(f"cache não existe: {cache_file}")
+        return
+
+    # ── --rebuild ───────────────────────────────────────
+    if rebuild_flag:
+        import time as _t
+        root = Path.cwd()
+        Display.info(f"rebuild de {root} ...")
+        t0 = _t.perf_counter()
+        index = build_dir(root)
+        try:
+            _idx_persist(index, cache_file)
+        except OSError as exc:
+            Display.error(f"persist falhou: {exc}")
+            return
+        elapsed_ms = round((_t.perf_counter() - t0) * 1000, 1)
+        total = sum(len(s) for s in index.values())
+        Display.success(
+            f"{len(index)} arquivo(s), {total} símbolo(s) em {elapsed_ms}ms"
+        )
+        Display.kv("cache", str(cache_file))
+        if cache_file.exists():
+            Display.kv("size", f"{round(cache_file.stat().st_size / 1024, 1)} KB")
+        return
+
+    # ── --show ──────────────────────────────────────────
+    if not cache_file.exists():
+        Display.warn(f"cache não existe: {cache_file}")
+        Display.info("criado automaticamente no primeiro `orn fix --symbol`/`orn grep`")
+        return
+
+    try:
+        index = _idx_load(cache_file)
+    except Exception as exc:
+        Display.error(f"cache ilegível: {exc}")
+        Display.info("use `orn symbol cache --clear` para recriar")
+        return
+
+    size_kb = round(cache_file.stat().st_size / 1024, 1)
+    total = sum(len(s) for s in index.values())
+    Display.section("SYMBOL CACHE", str(cache_file))
+    Display.kv("size", f"{size_kb} KB")
+    Display.kv("files", str(len(index)))
+    Display.kv("symbols", str(total))
+
+    if index:
+        Display.info("arquivos indexados (top 10):")
+        top = sorted(index.items(), key=lambda kv: len(kv[1]), reverse=True)[:10]
+        for fp, syms in top:
+            Display.kv(f"  {fp}", f"{len(syms)} símbolo(s)")
+        if len(index) > 10:
+            Display.info(f"  ... + {len(index) - 10} arquivo(s)")

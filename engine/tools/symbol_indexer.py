@@ -227,12 +227,24 @@ def build_dir(
     skip_dirs: frozenset[str] = frozenset({
         "__pycache__", ".git", "venv", ".venv", ".doxoade",
         "node_modules", "models", "build", "dist", "tests",
+        "lixao", "thirdparty", "experiments", ".orn",
+        "data", "docs",
     }),
 ) -> dict[Path, list[Symbol]]:
     root_path = Path(root)
     out: dict[Path, list[Symbol]] = {}
     if not root_path.exists():
         return out
+
+    # Caso 1: arquivo único passado como --path
+    if root_path.is_file():
+        if root_path.suffix.lower() == ".py":
+            syms = build(root_path)
+            if syms:
+                out[root_path] = syms
+        return out
+
+    # Caso 2: diretório (comportamento original)
     for py in root_path.rglob(pattern):
         if any(part in skip_dirs for part in py.parts):
             continue

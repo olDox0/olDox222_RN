@@ -433,16 +433,36 @@ class SiCDoxExecutive:
             )
 
         if not diff_res.success:
+            errors = list(diff_res.errors)
+            if (
+                symbol_mode == "off"
+                and any("inferência" in e or "KV" in e for e in errors)
+            ):
+                try:
+                    n_lines = len(
+                        file_path.read_text(encoding="utf-8", errors="replace")
+                        .splitlines()
+                    )
+                    if n_lines > 200:
+                        errors.append(
+                            f"[dica] arquivo com {n_lines} linhas — "
+                            f"prompt pode exceder contexto. "
+                            f"Use --symbol-auto para cirúrgico, "
+                            f"ou reduza com --instruction mais específica."
+                        )
+                except OSError:
+                    pass
             return GoalResult(
                 success=False,
                 intent="fix",
                 output=diff_res.raw_output,
-                errors=diff_res.errors,
+                errors=errors,
                 metadata={
-                    "elapsed_s":  diff_res.elapsed_s,
-                    "applied":    diff_res.applied,
-                    "raw_output": diff_res.raw_output,
-                    "symbol_mode": symbol_mode,
+                    "elapsed_s":      diff_res.elapsed_s,
+                    "applied":        diff_res.applied,
+                    "raw_output":     diff_res.raw_output,
+                    "symbol_mode":    symbol_mode,
+                    "surgical_trace": diff_res.surgical_trace,
                 },
             )
 
@@ -472,10 +492,10 @@ class SiCDoxExecutive:
                 "raw_output":     diff_res.raw_output,
                 "no_op":          diff_res.no_op,
                 "symbol_mode":    symbol_mode,
-                "surgical_hunks": surgical_hunks_payload,   # ← NOVO
+                "surgical_hunks": surgical_hunks_payload,
+                "surgical_trace": diff_res.surgical_trace,   # ← NOVO
             },
         )
-
     # Fase 4 — Geração (gen) via CodeAssembler (Cosmo Visão)
     def _run_gen(self, payload: str, context: dict[str, Any]) -> GoalResult:
         assembler = self._get_assembler()

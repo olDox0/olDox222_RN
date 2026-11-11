@@ -100,7 +100,8 @@ class NativeBackend:
         # Guard: prompt gigante estoura llama_tokenize (-3).
         # ~3 chars/token é heurística conservadora. 8192 tokens é o teto
         # do ORN_MAX_PROMPT_TOKENS. Reservar 512 tokens para a resposta.
-        _MAX_PROMPT_CHARS = (8192 - max_tokens - 64) * 3
+        #_MAX_PROMPT_CHARS = (8192 - max_tokens - 64) * 3
+        _MAX_PROMPT_CHARS = max(500, (self._n_ctx - max_tokens - 64) * 3)
         if _MAX_PROMPT_CHARS > 0 and len(prompt) > _MAX_PROMPT_CHARS:
             prompt = prompt[:_MAX_PROMPT_CHARS - 40] + "\n[prompt truncado]"
             print(f"[NATIVE] prompt truncado para {len(prompt)} chars "
@@ -161,7 +162,8 @@ class NativeBackend:
     def stream(self, prompt: str, max_tokens: int):
         if not self._ready:
             raise RuntimeError("NativeBackend não inicializado.")
-        _MAX_PROMPT_CHARS = (8192 - max_tokens - 64) * 3
+        #_MAX_PROMPT_CHARS = (8192 - max_tokens - 64) * 3
+        _MAX_PROMPT_CHARS = max(500, (self._n_ctx - max_tokens - 64) * 3)
         if _MAX_PROMPT_CHARS > 0 and len(prompt) > _MAX_PROMPT_CHARS:
             prompt = prompt[:_MAX_PROMPT_CHARS - 40] + "\n[prompt truncado]"
         fn = getattr(self._lib, "orn_infer_stream", None)

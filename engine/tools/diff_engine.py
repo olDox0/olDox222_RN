@@ -19,6 +19,7 @@ class DiffResult:
     elapsed_s: float = 0.0
     applied: bool = False
     no_op: bool = False
+    surgical_trace: dict | None = None    # F5.5b
 
 def build_prompt(file_content: str, instruction: str, context: str = "") -> str:
     system = (
@@ -51,36 +52,46 @@ def build_prompt_surgical(
     symbol_name: str,
     symbol_kind: str,
     instruction: str,
+    start_line: int = 1,
+    end_line: int = 0,
 ) -> str:
-    """Prompt cirúrgico: o modelo vê só o símbolo-alvo e devolve a versão
-    reescrita completa (bloco Python), não um patch @N.
+    """Prompt cirúrgico: pede APENAS as linhas alteradas no formato @N.
 
-    A saída é convertida em um único DiffHunk que substitui
-    [start_line, end_line] no arquivo original.
+    Formato @N é o mesmo usado por `build_prompt` (whole-file) e por
+    `parse_diff`, então reusa todo o pipeline de aplicação. Vantagem:
+    output proporcional à mudança (5-20 linhas), não ao símbolo
+    (podendo ser 100+ linhas), evitando truncamento do Qwen 0.5B.
     """
+    if not end_line:
+        end_line = start_line + len(snippet.splitlines()) - 1
+
     system = (
         "Você é um assistente de edição de código cirúrgica. "
         f"Vou te dar APENAS o {symbol_kind} `{symbol_name}` extraído de um "
-        "arquivo maior. Sua tarefa é REESCREVER esse símbolo conforme a "
-        "instrução e devolver o bloco Python completo, substituível.\n\n"
-        "Regras OBRIGATÓRIAS:\n"
-        "- Devolva APENAS o bloco Python dentro de ```python ... ``` "
-        "(ou [code-begin]...[code-end]).\n"
-        "- Mantenha o MESMO nome e assinatura, salvo se a instrução pedir "
-        "alteração explícita.\n"
-        "- Preserve docstring e type hints quando existirem.\n"
-        "- Sem explicações antes ou depois do bloco.\n"
-        "- O bloco deve ser sintaticamente válido.\n"
-        "- Retorne APENAS o corpo do símbolo. NÃO inclua:\n"
-        "  * `print(...)` ou código de exemplo/teste fora da função\n"
-        "  * imports que já existem no arquivo original\n"
-        "  * definições de outros símbolos\n"
-        "  * blocos `if __name__` ou `# Example usage:`\n"
-        "- Se a instrução não mencionar mudança na assinatura, retorne-a idêntica."
+        f"arquivo maior, nas linhas {start_line}-{end_line}.\n\n"
+        "Sua tarefa é editar conforme a instrução.\n\n"
+        "Formato OBRIGATÓRIO — devolva APENAS as linhas alteradas:\n"
+        "@14\n"
+        "-     issues: list[str] = []\n"
+        "+     issues: tuple[str, ...] = ()\n\n"
+        "Regras:\n"
+        "- Use @N onde N é o número da linha NO ARQUIVO COMPLETO, "
+        f"não no snippet (o snippet começa em {start_line}).\n"
+        "- Exemplo: se o snippet começa em 352, use @353 para "
+        "inserir após a primeira linha.\n"
+        "- Use um @N por grupo de mudanças consecutivas.\n"
+        "- Use - para linha removida, + para linha adicionada.\n"
+        "- Mantenha a indentação original.\n"
+        "- NÃO reescreva o bloco inteiro. Só as linhas que mudam.\n"
+        "- Sem explicações. Sem \"linha antiga:\"/\"linha nova:\". "
+        "Sem código de exemplo."
     )
     user = (
+        f"[CÓDIGO ATUAL]\n"
         f"```python\n{snippet.strip()}\n```\n\n"
-        f"Tarefa: {instruction}"
+        f"Tarefa: {instruction}\n\n"
+        f"Devolva o patch começando com @N "
+        f"(linha absoluta no arquivo, a partir de {start_line})."
     )
     return (
         f"<|im_start|>system\n{system}<|im_end|>\n"
@@ -281,43 +292,53 @@ def _try_surgical_path(
     max_tokens: int,
     temperature: float,
     t0: float,
-    bridge=None,          # ← NOVO
+    bridge=None,
+    trace: dict | None = None,
 ) -> "DiffResult | list[DiffHunk] | None":
-    """Tenta resolver símbolo e produzir um único hunk cirúrgico.
+    """Tenta resolver símbolo e produzir patch cirúrgico.
 
-    Retorno:
-      - DiffResult      → erro terminal (symbol_mode='on' e falhou)
-      - list[DiffHunk]  → sucesso; caller continua com apply pipeline
-      - None            → fallback para whole-file (modo 'auto')
+    Ordem:
+      1. resolve símbolo (filtro por arquivo-alvo)
+      2. template determinístico (docstring/comment/rename)
+      3. limite 100 linhas para o Qwen 0.5B
+      4. modelo (prompt @N)
+      5. guard A (regurgitação de template)
+      6. parse_diff (@N) prioritário
+      7. fallback bloco Python (compatibilidade)
     """
-    import ast
+    import ast as _ast
 
-    trace = {
-        "resolved_symbol": None,
-        "infer_raw_len": 0,
-        "infer_raw_preview": "",
-        "outcome": "",
-    }
-    
+    if trace is None:
+        trace = {}
+    trace["path"] = str(path)
+    trace["instruction"] = instruction
+    trace["symbol_mode"] = symbol_mode
+    trace["matches_count"] = 0
+    trace["resolved"] = None
+    trace["resolved_file"] = None
+    trace["resolved_lines"] = None
+    trace["infer_raw_len"] = 0
+    trace["infer_raw_preview"] = ""
+    trace["outcome"] = "start"
+
     try:
         from engine.tools.symbol_indexer import load_or_build as _idx_load_or_build
         from engine.tools.symbol_resolver import (
             resolve, pick_best, source_snippet, format_matches,
         )
     except ImportError:
-        return None   # F5.1 indisponível → fallback silencioso
+        trace["outcome"] = "import_error"
+        return None
 
     try:
         index = _idx_load_or_build(path)
-    except Exception:
+    except Exception as exc:
+        trace["outcome"] = "index_error"
+        trace["error"] = str(exc)
         return None
 
     matches = resolve(instruction, index, scope=path)
 
-    # F5.5c: `load_or_build` retorna o cache completo (multi-arquivo);
-    # `scope` no resolver é só boost, não filtro. Surgical opera em UM
-    # arquivo, então descartar matches de outros arquivos (senão
-    # source_snippet leria linhas erradas do arquivo-alvo).
     try:
         _target_resolved = Path(path).resolve()
     except OSError:
@@ -326,11 +347,25 @@ def _try_surgical_path(
         m for m in matches
         if Path(m.file_path).resolve() == _target_resolved
     ]
+    trace["matches_count"] = len(matches)
+    trace["matches"] = [
+        (m.symbol.name, round(m.score, 2), m.confidence)
+        for m in matches
+    ]
 
     best = pick_best(matches)
 
+    if best is not None:
+        trace["resolved"] = best.symbol.name
+        trace["resolved_file"] = str(best.file_path)
+        trace["resolved_lines"] = (best.symbol.start_line, best.symbol.end_line)
 
     if best is None or best.confidence != "high":
+        if best is None:
+            trace["outcome"] = "no_match"
+        else:
+            trace["outcome"] = f"low_confidence_{best.confidence}"
+
         if symbol_mode == "on":
             if best is None:
                 err_lines = [
@@ -348,9 +383,11 @@ def _try_surgical_path(
                 success=False,
                 errors=err_lines,
                 elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
             )
 
         if best is None and _instruction_looks_symbolic(instruction):
+            trace["outcome"] = "symbol_not_in_target"
             return DiffResult(
                 success=False,
                 errors=[
@@ -360,70 +397,185 @@ def _try_surgical_path(
                     "Ou reescreva a instrução sem referência a símbolo específico.",
                 ],
                 elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
             )
-        return None
         return None
 
     n_lines = best.symbol.end_line - best.symbol.start_line + 1
-    if n_lines > 200:
+    trace["resolved_lines_count"] = n_lines
+
+    snippet = source_snippet(best.symbol, path)
+    trace["snippet_chars"] = len(snippet)
+    if not snippet.strip():
+        trace["outcome"] = "empty_snippet"
+        return None
+
+    # ── Template determinístico (antes do modelo) ─────────────
+    try:
+        from engine.tools.fix_templates import apply_template
+        tpl = apply_template(
+            instruction=instruction,
+            snippet=snippet,
+            symbol_name=best.symbol.name,
+            symbol_kind=best.symbol.kind,
+            start_line=best.symbol.start_line,
+        )
+    except Exception as exc:
+        tpl = None
+        trace["template_error"] = str(exc)
+
+    if tpl is not None:
+        trace["outcome"] = f"ok_template_{tpl.name}"
+        trace["template_description"] = tpl.description
+        snippet_lines = snippet.splitlines()
+        new_lines = tpl.new_code.rstrip("\n").splitlines()
+        trace["hunks_count"] = 1
+        trace["added_lines"] = len(new_lines)
+        trace["removed_lines"] = len(snippet_lines)
+        return [DiffHunk(
+            line=best.symbol.start_line,
+            removed=snippet_lines,
+            added=new_lines,
+        )]
+
+    # ── Limite de tamanho (Qwen 0.5B) ─────────────────────────
+    if n_lines > 100:
+        trace["outcome"] = "symbol_too_large"
         if symbol_mode == "on":
             return DiffResult(
                 success=False,
                 errors=[
-                    f"Símbolo {best.symbol.name} tem {n_lines} linhas (>200). "
-                    "Grande demais para modo cirúrgico — use sem --symbol."
+                    f"Símbolo {best.symbol.name} tem {n_lines} linhas (>100).",
+                    "Cirúrgico não escala para símbolos grandes no Qwen 0.5B.",
+                    "Sugestões:",
+                    f"  • refatore {best.symbol.name} em subfunções < 60 linhas",
+                    "  • ou reformule com template "
+                    "(docstring, comentário no topo, rename)",
+                    "  • ou use `orn fix <arquivo>` sem --symbol (whole-file)",
                 ],
                 elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
             )
         return None
 
-    snippet = source_snippet(best.symbol, path)
-    if not snippet.strip():
-        return None
+    surgical_max = min(1024, max(256, n_lines * 6 + 128))
+    trace["surgical_max_tokens"] = surgical_max
 
-    surgical_max = min(1024, max(384, n_lines * 8))
     prompt = build_prompt_surgical(
         snippet, best.symbol.name, best.symbol.kind, instruction,
+        start_line=best.symbol.start_line,
+        end_line=best.symbol.end_line,
     )
+    trace["prompt_chars"] = len(prompt)
+
     raw, err = _infer_prompt(prompt, surgical_max, temperature, bridge=bridge)
-#    raw, err = _infer_prompt(prompt, surgical_max, temperature)
     if err:
+        trace["outcome"] = "infer_error"
+        trace["infer_error"] = err
         if symbol_mode == "on":
             return DiffResult(
                 success=False,
                 errors=[f"(surgical) {err}"],
                 elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
             )
         return None
 
-    new_code = _extract_python_block(raw)
-    if not new_code:
+    trace["infer_raw_len"] = len(raw or "")
+    trace["infer_raw_preview"] = (raw or "")[:800]
+
+    # ── Guard A: regurgitação de template ─────────────────────
+    if raw:
+        _REP_MARKERS = ("linha antiga", "linha nova", "Devolva o patch")
+        _rep_hit = any(m in raw for m in _REP_MARKERS)
+        if not _rep_hit:
+            _rep_hit = bool(re.search(r"^@[A-Za-z]", raw.strip(), re.MULTILINE))
+        if _rep_hit:
+            trace["outcome"] = "model_regurgitated_template"
+            return DiffResult(
+                success=False,
+                raw_output=raw,
+                errors=[
+                    "Modelo (Qwen 0.5B) copiou o template do prompt em vez "
+                    "de produzir um diff real.",
+                    "Limitação do modelo — não é bug do sistema.",
+                    "Sugestões:",
+                    "  • use templates determinísticos "
+                    "(docstring, comentário no topo, rename)",
+                    "  • para símbolos pequenos, tente reformular a instrução",
+                ],
+                elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
+            )
+
+    # ── parse_diff (@N) prioritário ───────────────────────────
+    diff_hunks = parse_diff(raw, original_content=content)
+    if diff_hunks:
+        s_start = best.symbol.start_line
+        s_end = best.symbol.end_line
+        in_range = all(s_start <= h.line <= s_end for h in diff_hunks)
+        if in_range:
+            trace["outcome"] = "ok_diff_format"
+            trace["hunks_count"] = len(diff_hunks)
+            trace["added_lines"] = sum(len(h.added) for h in diff_hunks)
+            trace["removed_lines"] = sum(len(h.removed) for h in diff_hunks)
+            return diff_hunks
+        trace["outcome"] = "hunk_outside_symbol"
+        trace["hunk_out_of_range"] = [
+            (h.line, s_start, s_end) for h in diff_hunks
+        ]
         if symbol_mode == "on":
             return DiffResult(
                 success=False,
                 raw_output=raw,
-                errors=["Modelo (surgical) não retornou bloco Python reconhecível."],
+                errors=[
+                    f"Modelo gerou @N fora do range do símbolo "
+                    f"({s_start}-{s_end}). Provável alucinação.",
+                    "Use -v para ver o raw.",
+                ],
                 elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
+            )
+        return None
+
+    # ── Fallback: bloco Python ────────────────────────────────
+    trace["diff_format_failed"] = True
+    new_code = _extract_python_block(raw)
+    if not new_code:
+        trace["outcome"] = "no_patch_no_block"
+        if symbol_mode == "on":
+            return DiffResult(
+                success=False,
+                raw_output=raw,
+                errors=[
+                    "Modelo (surgical) não retornou nem patch @N "
+                    "nem bloco Python reconhecível.",
+                    "Use -v para ver o raw.",
+                ],
+                elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
             )
         return None
 
     try:
-        ast.parse(new_code)
+        _ast.parse(new_code)
     except SyntaxError as exc:
+        trace["outcome"] = "syntax_error"
+        trace["syntax_error"] = str(exc)
         if symbol_mode == "on":
             return DiffResult(
                 success=False,
                 raw_output=raw,
                 errors=[f"Modelo retornou código inválido: {exc}"],
                 elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
             )
         return None
 
-    # F5.2 Guard C: output cirúrgico suspeito (perdeu corpo do símbolo).
-    # Heurística: se < 30% do tamanho original, provavelmente o modelo
-    # truncou (ex.: só docstring, corpo sumiu).
     ratio = len(new_code.strip()) / max(1, len(snippet.strip()))
+    trace["output_ratio"] = round(ratio, 3)
     if ratio < 0.30 and n_lines > 3:
+        trace["outcome"] = "guard_c_ratio"
         if symbol_mode == "on":
             return DiffResult(
                 success=False,
@@ -431,15 +583,20 @@ def _try_surgical_path(
                 errors=[
                     f"Modelo retornou apenas {int(ratio*100)}% do tamanho "
                     f"original de '{best.symbol.name}' ({n_lines} linhas). "
-                    "Provável truncamento — tente instrução mais específica "
-                    "ou use --symbol-auto com arquivo maior."
+                    "Provável truncamento — tente instrução mais específica."
                 ],
                 elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
             )
         return None
 
+    trace["outcome"] = "ok_block_format"
     snippet_lines = snippet.splitlines()
     new_lines = new_code.rstrip("\n").splitlines()
+    trace["hunks_count"] = 1
+    trace["added_lines"] = len(new_lines)
+    trace["removed_lines"] = len(snippet_lines)
+
     return [DiffHunk(
         line=best.symbol.start_line,
         removed=snippet_lines,
@@ -566,7 +723,7 @@ def generate_and_apply(
             t0=t0, apply=apply, verify=verify,
         )
 
-    # ── Bridge compartilhado (evita reload entre surgical e fallback) ──
+    # ── Bridge compartilhado ─────────────────────────────────────
     from engine.tools.server_client import is_server_online
     shared_bridge = None
     if not is_server_online():
@@ -578,24 +735,30 @@ def generate_and_apply(
         except Exception:
             shared_bridge = None
 
+    surgical_trace: dict | None = None
+
     try:
         # ── Prioridade 3: surgical ──────────────────────────────
         if symbol_mode in ("auto", "on"):
+            surgical_trace = {}
             surgical = _try_surgical_path(
                 path=path, content=content, instruction=instruction,
                 symbol_mode=symbol_mode, max_tokens=max_tokens,
                 temperature=temperature, t0=t0,
                 bridge=shared_bridge,
+                trace=surgical_trace,
             )
             if isinstance(surgical, DiffResult):
                 return surgical
             if isinstance(surgical, list):
-                return _apply_and_finalize(
+                result = _apply_and_finalize(
                     path=path, content=content, hunks=surgical,
                     raw="[surgical — bloco Python substituído]",
                     t0=t0, apply=apply, verify=False,
                 )
-            # None → fallback whole-file
+                result.surgical_trace = surgical_trace
+                return result
+            # None → fallback (trace preservado para anexar no final)
 
         # ── Prioridade 4: whole-file ─────────────────────────────
         context = ""
@@ -615,17 +778,21 @@ def generate_and_apply(
             prompt, max_tokens, temperature, bridge=shared_bridge,
         )
         if infer_err:
-            return DiffResult(
+            res = DiffResult(
                 success=False,
                 errors=[infer_err],
                 elapsed_s=round(time.monotonic() - t0, 2),
             )
+            res.surgical_trace = surgical_trace
+            return res
 
         hunks = parse_diff(raw, original_content=content)
-        return _apply_and_finalize(
+        result = _apply_and_finalize(
             path=path, content=content, hunks=hunks, raw=raw,
             t0=t0, apply=apply, verify=verify,
         )
+        result.surgical_trace = surgical_trace
+        return result
     finally:
         if shared_bridge is not None:
             try: shared_bridge.shutdown()
