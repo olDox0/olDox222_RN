@@ -110,7 +110,29 @@
 
 ---
 
-## Fase 5 -- Extensoes Vulcan + Plugin API
+
+
+## Fase 6 -- Estabilização e Dívida Técnica
+
+  Objetivo: consolidar F1-F5, zerar dívida acumulada.
+
+  Escopo (ver `docs/planning/vol6_plan.md`):
+
+    [ ] F6.1  Refactor `_run_fix` (147 linhas → 3 funções < 60)
+    [ ] F6.2  Telemetria Windows (`rss_mb`, `lib_bin`)
+    [ ] F6.3  `__pycache__` volta em `doxoade save --apply`
+    [ ] F6.4  MA'AT falsos positivos (kwonlyargs com default)
+    [ ] F6.5  `orn grep` sem cache em `build_dir`
+    [ ] F6.6  F5.10 preventivo (escopo em `_parse_ast_replacements`)
+    [ ] F6.7  Consult/RAG (T6) — depende de `doxoade consult index`
+    [ ] F6.8  `__main__.py` bootstrap dedup (3 arquivos x 200 linhas)
+
+  Critério de conclusão:
+    `doxoade check engine/` sem erros
+    `orn fix` regressão limpa nos 8 cenários de F5
+    `orn-server status` mostra rss_mb > 0
+    `doxoade save --apply` não adiciona .pyc
+## Fase 5 -- Fix Cirúrgico (--symbol/--symbol-auto) [COMPLETO 2026-11-12]
 
   Objetivo: performance e extensibilidade.
 

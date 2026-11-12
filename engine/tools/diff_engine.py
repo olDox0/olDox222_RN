@@ -420,9 +420,11 @@ def _try_surgical_path(
                 ]
             else:
                 err_lines = [
-                    f"Match ambíguo: {best.symbol.name} "
-                    f"(score={best.score:.2f}, confiança={best.confidence})",
-                    "Use --symbol-auto para fallback automático.",
+                    f"Match com confiança apenas '{best.confidence}': "
+                    f"{best.symbol.name} (score={best.score:.2f})",
+                    "Sugestões:",
+                    "  • reformule com o nome exato (ex: 'em validar_output')",
+                    "  • ou reescreva para aumentar a confiança do match",
                 ]
             return DiffResult(
                 success=False,
@@ -444,6 +446,26 @@ def _try_surgical_path(
                 elapsed_s=round(time.monotonic() - t0, 2),
                 surgical_trace=trace,
             )
+
+        # F5.9c: símbolo encontrado mas confiança < high.
+        # Fallback whole-file é perigoso (Qwen 0.5B alucina reescritas
+        # destrutivas). Melhor erro claro.
+        if best is not None:
+            return DiffResult(
+                success=False,
+                errors=[
+                    f"Símbolo '{best.symbol.name}' encontrado, mas "
+                    f"confiança apenas '{best.confidence}' "
+                    f"(score={best.score:.2f}).",
+                    "Fallback whole-file é perigoso no Qwen 0.5B.",
+                    "Sugestões:",
+                    "  • reformule com o nome exato do símbolo",
+                    "  • ou use --symbol para forçar o cirúrgico",
+                ],
+                elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
+            )
+
         return None
 
     n_lines = best.symbol.end_line - best.symbol.start_line + 1
