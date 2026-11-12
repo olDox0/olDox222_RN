@@ -182,30 +182,49 @@ def _parse_ast_replacements(text: str, original_content: str) -> list[DiffHunk]:
         if count > 1:
             return []
 
-    orig_map: dict[str, tuple[int, int]] = {}
-    for node in ast.walk(orig_tree):
+    # F5.9: mapear símbolos + flag is_method (parent é ClassDef).
+    orig_map: dict[str, tuple[int, int, bool]] = {}
+    for parent in ast.walk(orig_tree):
+        if not isinstance(parent, ast.ClassDef):
+            continue
+        for child in parent.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                orig_map[child.name] = (
+                    child.lineno, getattr(child, "end_lineno", child.lineno), True
+                )
+    for node in orig_tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            orig_map[node.name] = (
-                node.lineno, getattr(node, "end_lineno", node.lineno)
-            )
+            if node.name not in orig_map:
+                orig_map[node.name] = (
+                    node.lineno, getattr(node, "end_lineno", node.lineno), False
+                )
 
     orig_lines = original_content.splitlines()
     model_lines = clean_code.splitlines()
     hunks: list[DiffHunk] = []
 
     for node in model_tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if node.name in orig_map:
-                start_l, end_l = orig_map[node.name]
-                new_start = node.lineno - 1
-                new_end = getattr(node, "end_lineno", len(model_lines))
-                new_func_lines = model_lines[new_start:new_end]
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if node.name not in orig_map:
+            continue
 
-                hunks.append(DiffHunk(
-                    line=start_l,
-                    removed=orig_lines[start_l - 1 : end_l],
-                    added=new_func_lines,
-                ))
+        start_l, end_l, is_method = orig_map[node.name]
+        new_start = node.lineno - 1
+        new_end = getattr(node, "end_lineno", len(model_lines))
+        new_func_lines = model_lines[new_start:new_end]
+
+        # ── F5.9 Guard 3: método perdeu indentação ──
+        if is_method and new_func_lines:
+            first = new_func_lines[0]
+            if first and not first.startswith((" ", "\t")):
+                return []
+
+        hunks.append(DiffHunk(
+            line=start_l,
+            removed=orig_lines[start_l - 1 : end_l],
+            added=new_func_lines,
+        ))
     return hunks
 
 def parse_diff(text: str, original_content: str = "") -> list[DiffHunk]:
@@ -622,6 +641,18 @@ def _try_surgical_path(
     trace["hunks_count"] = 1
     trace["added_lines"] = len(new_lines)
     trace["removed_lines"] = len(snippet_lines)
+
+    # F5.9b Guard 3b: método perdeu indent no fallback
+    if best.symbol.kind == "method" and new_lines:
+        if not new_lines[0].startswith((" ", "\t")):
+            trace["outcome"] = "lost_method_indent"
+            return DiffResult(
+                success=False,
+                raw_output=raw,
+                errors=[f"Método `{best.symbol.name}` sem indent. Aplicar quebraria classe."],
+                elapsed_s=round(time.monotonic() - t0, 2),
+                surgical_trace=trace,
+            )
 
     return [DiffHunk(
         line=best.symbol.start_line,

@@ -114,12 +114,12 @@ def _template_docstring(
 # ──────────────────────────────────────────────────────────
 def _extract_comment_text(
     instruction: str, snippet: str, symbol_name: str,
-) -> str:
-    # 1. Texto entre aspas na instrução
+) -> tuple[str, str]:
+    """Retorna (text, source). source ∈ {'quoted', 'docstring', 'todo'}."""
     m = re.search(r"['\"]([^'\"]+)['\"]", instruction)
     if m:
-        return m.group(1).strip()
-    # 2. Primeira linha da docstring existente
+        return m.group(1).strip(), "quoted"
+
     try:
         tree = ast.parse(textwrap.dedent(snippet))
         if tree.body and isinstance(
@@ -130,11 +130,11 @@ def _extract_comment_text(
                 first = doc.strip().splitlines()[0]
                 if len(first) > 60:
                     first = first[:57] + "..."
-                return first
+                return first, "docstring"
     except SyntaxError:
         pass
-    # 3. Fallback
-    return f"TODO: revisar {symbol_name}"
+
+    return f"TODO: revisar {symbol_name}", "todo"
 
 
 def _template_top_comment(
@@ -152,7 +152,10 @@ def _template_top_comment(
 
     first = lines[first_idx]
     indent = " " * (len(first) - len(first.lstrip()))
-    text = _extract_comment_text(instruction, snippet, symbol_name)
+    text, source = _extract_comment_text(instruction, snippet, symbol_name)
+    # F5.9: não duplicar docstring como comentário acima do def
+    if source == "docstring":
+        return None
     comment = f"{indent}# {text}"
 
     if any(comment.strip() in ln for ln in lines[: first_idx + 3]):
