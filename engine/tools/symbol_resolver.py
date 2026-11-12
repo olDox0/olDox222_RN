@@ -48,6 +48,8 @@ _STOPWORDS = frozenset({
     "explique", "explicar", "faça", "fazer",
     "veja", "ver", "olhe", "olhar",
     "atualize", "atualizar", "implemente", "implementar",
+    "ser", "mais", "robusto", "robusta", "correto", "correta",
+    "pode", "deve", "ter", "seu", "sua", "faz", "fazer", "ficar",
     "otimize", "otimizar", "simplifique", "simplificar",
     "divida", "dividir", "extraia", "extrair", "separe", "separar",
     "funcao", "metodo", "classe", "classes",
@@ -208,10 +210,16 @@ def pick_best(
     *,
     ambiguity_margin: float = 0.20,
 ) -> SymbolMatch | None:
-    """Retorna o melhor match SE for claramente superior ao segundo."""
+    """Retorna o melhor match SE for claramente superior ao segundo.
+
+    Exact match (score >= 0.95) NUNCA é ambíguo — retorna direto.
+    Instruções longas geram ruído (5+ matches fracos); exact vence.
+    """
     if not matches:
         return None
     if len(matches) == 1:
+        return matches[0]
+    if matches[0].score >= 0.95:
         return matches[0]
     if (matches[0].score - matches[1].score) >= ambiguity_margin:
         return matches[0]

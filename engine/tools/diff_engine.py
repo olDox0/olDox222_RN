@@ -55,43 +55,34 @@ def build_prompt_surgical(
     start_line: int = 1,
     end_line: int = 0,
 ) -> str:
-    """Prompt cirúrgico: pede APENAS as linhas alteradas no formato @N.
+    """Prompt cirúrgico — formato bloco Python (NÃO @N).
 
-    Formato @N é o mesmo usado por `build_prompt` (whole-file) e por
-    `parse_diff`, então reusa todo o pipeline de aplicação. Vantagem:
-    output proporcional à mudança (5-20 linhas), não ao símbolo
-    (podendo ser 100+ linhas), evitando truncamento do Qwen 0.5B.
+    Qwen 0.5B comprovadamente copia templates @N literalmente em vez de
+    preencher valores. Bloco ```python``` + `_parse_ast_replacements`
+    funciona para símbolos < 100 linhas.
+
+    F5.8: removidos exemplos @N e referências "linha antiga/linha nova".
     """
     if not end_line:
         end_line = start_line + len(snippet.splitlines()) - 1
 
     system = (
-        "Você é um assistente de edição de código cirúrgica. "
-        f"Vou te dar APENAS o {symbol_kind} `{symbol_name}` extraído de um "
-        f"arquivo maior, nas linhas {start_line}-{end_line}.\n\n"
-        "Sua tarefa é editar conforme a instrução.\n\n"
-        "Formato OBRIGATÓRIO — devolva APENAS as linhas alteradas:\n"
-        "@14\n"
-        "-     issues: list[str] = []\n"
-        "+     issues: tuple[str, ...] = ()\n\n"
-        "Regras:\n"
-        "- Use @N onde N é o número da linha NO ARQUIVO COMPLETO, "
-        f"não no snippet (o snippet começa em {start_line}).\n"
-        "- Exemplo: se o snippet começa em 352, use @353 para "
-        "inserir após a primeira linha.\n"
-        "- Use um @N por grupo de mudanças consecutivas.\n"
-        "- Use - para linha removida, + para linha adicionada.\n"
-        "- Mantenha a indentação original.\n"
-        "- NÃO reescreva o bloco inteiro. Só as linhas que mudam.\n"
-        "- Sem explicações. Sem \"linha antiga:\"/\"linha nova:\". "
-        "Sem código de exemplo."
+        "Você é um assistente de edição de código. "
+        f"Vou te dar o {symbol_kind} `{symbol_name}` extraído de um "
+        "arquivo maior. Reescreva-o conforme a instrução.\n\n"
+        "REGRAS OBRIGATÓRIAS:\n"
+        "- Devolva APENAS o bloco Python dentro de ```python ... ```.\n"
+        f"- Mantenha o MESMO nome `{symbol_name}` e assinatura.\n"
+        "- Preserve docstring e type hints quando existirem.\n"
+        "- Sem explicações antes ou depois.\n"
+        "- Sem `print(...)` fora da função.\n"
+        "- Sem `if __name__` ou `# Example usage:`.\n"
+        "- NUNCA duplique a definição.\n"
+        "- O bloco deve ser sintaticamente válido."
     )
     user = (
-        f"[CÓDIGO ATUAL]\n"
         f"```python\n{snippet.strip()}\n```\n\n"
-        f"Tarefa: {instruction}\n\n"
-        f"Devolva o patch começando com @N "
-        f"(linha absoluta no arquivo, a partir de {start_line})."
+        f"Tarefa: {instruction}"
     )
     return (
         f"<|im_start|>system\n{system}<|im_end|>\n"
@@ -150,18 +141,53 @@ def _parse_line_hunks(text: str) -> list[DiffHunk]:
     return hunks
 
 def _parse_ast_replacements(text: str, original_content: str) -> list[DiffHunk]:
-    """Se o modelo reescreveu uma função, usa o AST para localizar e criar o hunk."""
+    """Modelo reescreveu função → localiza via AST e cria o hunk.
+
+    Defesas em camadas:
+      - Guard 0: rejeita output com marcadores de template (@N, linha antiga)
+      - Guard 1: rejeita print() e if __name__ no top-level
+      - Guard 2: rejeita duplicatas de definição (modelo quebrado)
+    """
     clean_code = _clean_model_output(text)
+
+    # ── Guard 0: modelo confundiu formato ──
+    _BAD_MARKERS = (
+        "@N", "@n\n", "linha antiga", "linha nova",
+        "Formato OBRIGATÓRIO", "═══ EXEMPLO", "Devolva o patch",
+    )
+    if any(m in clean_code for m in _BAD_MARKERS):
+        return []
+
     try:
         model_tree = ast.parse(clean_code)
-        orig_tree  = ast.parse(original_content)
+        orig_tree = ast.parse(original_content)
     except SyntaxError:
         return []
+
+    # ── Guard 1: código de teste/exemplo no top-level ──
+    for stmt in model_tree.body:
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            func = stmt.value.func
+            if isinstance(func, ast.Name) and func.id == "print":
+                return []
+        if isinstance(stmt, ast.If):
+            return []
+
+    # ── Guard 2: duplicatas de definição ──
+    model_defs: dict[str, int] = {}
+    for stmt in model_tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            model_defs[stmt.name] = model_defs.get(stmt.name, 0) + 1
+    for name, count in model_defs.items():
+        if count > 1:
+            return []
 
     orig_map: dict[str, tuple[int, int]] = {}
     for node in ast.walk(orig_tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            orig_map[node.name] = (node.lineno, getattr(node, "end_lineno", node.lineno))
+            orig_map[node.name] = (
+                node.lineno, getattr(node, "end_lineno", node.lineno)
+            )
 
     orig_lines = original_content.splitlines()
     model_lines = clean_code.splitlines()
@@ -174,7 +200,7 @@ def _parse_ast_replacements(text: str, original_content: str) -> list[DiffHunk]:
                 new_start = node.lineno - 1
                 new_end = getattr(node, "end_lineno", len(model_lines))
                 new_func_lines = model_lines[new_start:new_end]
-                
+
                 hunks.append(DiffHunk(
                     line=start_l,
                     removed=orig_lines[start_l - 1 : end_l],
@@ -633,7 +659,7 @@ def _apply_and_finalize(
     # F5.2 Guard B: no_op com normalização de trailing whitespace.
     # LLMs costumam reescrever com espaços extras; isso não é mudança real.
     def _norm(lines: list[str]) -> list[str]:
-        return [l.rstrip() for l in lines]
+        return [re.sub(r"\s+", " ", l.strip()) for l in lines]
 
     if all(_norm(h.removed) == _norm(h.added) for h in hunks):
         return DiffResult(

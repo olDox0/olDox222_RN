@@ -1177,6 +1177,11 @@ def _print_surgical_trace(trace: dict) -> None:
     Display.kv("  outcome",         str(trace.get("outcome", "?")))
     Display.kv("  instruction",     str(trace.get("instruction", ""))[:70])
     Display.kv("  matches_count",   str(trace.get("matches_count", 0)))
+    _ms = trace.get("matches") or []
+    if _ms:
+        Display.info("  matches:")
+        for _n, _sc, _cf in _ms[:5]:
+            Display.kv(f"    {_n}", f"score={_sc} conf={_cf}")
     resolved = trace.get("resolved")
     if resolved:
         rfile = trace.get("resolved_file", "?")
@@ -1258,6 +1263,11 @@ def fix(target, instruction, apply, dry_run, consult, verbose,
         if verbose and result.metadata.get("surgical_trace"):
             _print_surgical_trace(result.metadata["surgical_trace"])
         raise SystemExit(1)
+
+    if result.metadata.get("no_op"):
+        Display.info("O código já corresponde à sugestão do modelo — nada a aplicar.")
+        return
+
 
     Display.separator()
     print(result.output)
