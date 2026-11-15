@@ -400,6 +400,27 @@
 
   .bubble ul { padding-left: 20px; margin: 6px 0; }
   .bubble li { margin: 2px 0; line-height: 1.6; }
+
+  /* ── Indicador Thinking ── */
+  .thinking-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+    font-style: italic;
+    font-family: var(--mono);
+  }
+  .thinking-indicator .dots::after {
+    content: '';
+    animation: ellipsis 1.5s infinite steps(4, end);
+  }
+  @keyframes ellipsis {
+    0% { content: ''; }
+    25% { content: '.'; }
+    50% { content: '..'; }
+    75% { content: '...'; }
+  }
+
 </style>
 </head>
 <body>
@@ -412,11 +433,23 @@
       <div class="logo-sub">Qwen2.5-Coder · local · N2808</div>
     </div>
   </div>
-  <div class="server-status">
-    <div class="status-dot" id="dot"></div>
-    <span id="statusText">verificando...</span>
+  <div style="display:flex; align-items:center; gap:15px;">
+    <div id="sandbox-badge" style="display:none; align-items:center; gap:6px; font-family:monospace; font-size:11px; color:#a8e6a8;">
+      <span style="width:8px;height:8px;border-radius:50%;background:#3dd68c;display:inline-block;"></span>
+      <span>sandbox</span>
+    </div>
+    <button id="debug-btn" style="background:transparent; border:1px solid #5e5c5e; color:#ffbe78; cursor:pointer; padding:4px 8px; border-radius:4px; font-size:12px; font-family:monospace;">🐞 Debug</button>
+    <div class="server-status">
+      <div class="status-dot" id="dot"></div>
+      <span id="statusText">verificando...</span>
+    </div>
   </div>
 </header>
+
+<div id="debug-console" style="display:none; background:#111; border-bottom:1px solid #333; padding:10px; font-family:monospace; font-size:11px; color:#3dd68c; max-height:150px; overflow-y:auto;">
+  <div style="color:#999; margin-bottom:5px;">🔍 ORN Debug Console (Ctrl+Shift+D para fechar)</div>
+  <div id="debug-logs"></div>
+</div>
 
 <div id="chat">
   <div class="empty-state" id="emptyState">
@@ -442,6 +475,40 @@
 </footer>
 
 <script>
+
+function logDebug(msg, type = 'info') {
+  const color = type === 'error' ? '#ef4444' : (type === 'chunk' ? '#a8e6a8' : '#3dd68c');
+  const time = new Date().toLocaleTimeString();
+  console.log(`[ORN-${type.toUpperCase()}] ${msg}`);
+  const logs = document.getElementById('debug-logs');
+  if (logs) {
+    const div = document.createElement('div');
+    div.style.color = color;
+    div.textContent = `[${time}] ${msg}`;
+    logs.appendChild(div);
+    logs.parentElement.scrollTop = logs.parentElement.scrollHeight;
+  }
+}
+
+// Captura QUALQUER erro de JavaScript na tela
+window.onerror = function(message, source, lineno, colno, error) {
+  logDebug(`JS FATAL: ${message} (line ${lineno})`, 'error');
+  return false;
+};
+
+document.getElementById('debug-btn').addEventListener('click', () => {
+  const c = document.getElementById('debug-console');
+  c.style.display = c.style.display === 'none' ? 'block' : 'none';
+});
+
+// Atalho para abrir/fechar
+document.addEventListener('keydown', e => {
+  if (e.altKey && e.shiftKey && e.key === 'D') {
+    const c = document.getElementById('debug-console');
+    c.style.display = c.style.display === 'none' ? 'block' : 'none';
+  }
+});
+
 const chat      = document.getElementById('chat');
 const empty     = document.getElementById('emptyState');
 const input     = document.getElementById('promptInput');
@@ -503,8 +570,22 @@ async function checkStatus() {
     statusTxt.textContent = 'servidor offline';
   }
 }
-checkStatus();
-setInterval(checkStatus, 10000);
+async function checkSandbox() {
+  try {
+    const r = await fetch('/sandbox', { signal: AbortSignal.timeout(2000) });
+    const s = await r.json();
+    const badge = document.getElementById('sandbox-badge');
+    if (s.online) {
+      badge.style.display = 'flex';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch {
+    document.getElementById('sandbox-badge').style.display = 'none';
+  }
+}
+checkSandbox();
+setInterval(checkSandbox, 30000);
 
 // ── Markdown render ───────────────────────────────────────────
 function renderMarkdown(text) {
@@ -610,30 +691,38 @@ async function sendPrompt() {
   input.value = '';
   input.style.height = '48px';
 
-  // Mensagem do usuário
   appendMsg('user', escHtml(prompt));
+  logDebug(`Enviando prompt: "${prompt}" (len=${prompt.length})`, 'info');
 
-  // Bubble do modelo — aparece IMEDIATAMENTE, vazia, com cursor
   if (empty.style.display !== 'none') empty.style.display = 'none';
   const modelDiv = document.createElement('div');
   modelDiv.className = 'msg model';
   modelDiv.innerHTML = `
     <div class="avatar">ORN</div>
-    <div class="bubble" id="active-bubble">
-      <span id="stream-text"></span><span class="cursor" id="stream-cursor"></span>
+    <div class="bubble">
+      <span class="stream-text"></span><span class="cursor stream-cursor"></span>
+      <div class="validation-status" style="display:none; margin-top:8px; font-family:monospace; font-size:11px;"></div>
+      <div class="validated-block" style="display:none; margin-top:12px; padding:10px; background:#001404; border-left:3px solid #3dd68c; border-radius:6px; font-family:monospace; font-size:12px; color:#a8e6a8; white-space:pre-wrap;"></div>
     </div>`;
   chat.appendChild(modelDiv);
   scrollBottom();
 
-  const streamText   = document.getElementById('stream-text');
-  const streamCursor = document.getElementById('stream-cursor');
-  const bubble       = document.getElementById('active-bubble');
+  const streamText    = modelDiv.querySelector('.stream-text');
+  const streamCursor  = modelDiv.querySelector('.stream-cursor');
+  const bubble        = modelDiv.querySelector('.bubble');
+  const valStatus     = modelDiv.querySelector('.validation-status');
+  const validatedBlk  = modelDiv.querySelector('.validated-block');
 
+  streamText.textContent = "carregando...";
   setStatus('streaming');
   statusTxt.textContent = 'gerando...';
 
   const t0 = Date.now();
   let full = '';
+  let finalOutput = '';
+  let llmDone = false;
+  let changed = false;
+  let validatedCode = '';
 
   try {
     const res = await fetch('/ask_stream', {
@@ -641,10 +730,10 @@ async function sendPrompt() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt }),
     });
-
+    logDebug(`Fetch HTTP status: ${res.status}`, 'info');
     if (!res.body) throw new Error('stream indisponível');
 
-    const reader  = res.body.getReader();
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
 
@@ -654,55 +743,86 @@ async function sendPrompt() {
       buf += decoder.decode(value, { stream: true });
 
       while (buf.includes('\n')) {
-        const idx  = buf.indexOf('\n');
+        const idx = buf.indexOf('\n');
         const line = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
         if (!line) continue;
 
         let ev;
-        try { ev = JSON.parse(line); } catch { continue; }
+        try { ev = JSON.parse(line); }
+        catch { continue; }
 
+        if (ev.event === 'start') {
+          logDebug(`[START] rid=${ev.request_id}`, 'info');
+        }
         if (ev.event === 'chunk' && ev.delta) {
           full += ev.delta;
-          // Durante streaming: texto puro (rápido, sem parse de MD)
           streamText.textContent = full;
           scrollBottom();
         }
-
+        if (ev.event === 'llm_done') {
+          llmDone = true;
+          finalOutput = ev.output || full;
+          logDebug(`[LLM_DONE] output=${finalOutput.length}c`, 'info');
+          if (document.getElementById('sandbox-badge').style.display !== 'none') {
+            streamCursor.remove();
+            valStatus.style.display = 'block';
+            valStatus.style.color = '#ffbe78';
+            valStatus.textContent = '⏳ Validando no Alpine...';
+          }
+        }
+        if (ev.event === 'validated') {
+          changed = !!ev.changed;
+          finalOutput = ev.output || finalOutput;
+          logDebug(`[VALIDATED] changed=${changed} len=${finalOutput.length}`, 'info');
+          if (changed) {
+            valStatus.style.color = '#3dd68c';
+            valStatus.textContent = '✅ Corrigido pelo sandbox';
+            // Extrai o bloco de código corrigido (o hook devolve texto com ```c ... ```)
+            const m = finalOutput.match(/```(?:c|python)?\s*\n([\s\S]*?)```/);
+            validatedCode = m ? m[1].trim() : finalOutput.trim();
+          } else {
+            valStatus.style.color = '#3dd68c';
+            valStatus.textContent = '✅ Validado no Alpine';
+          }
+        }
         if (ev.event === 'done') {
-          full = ev.output || full;
+          finalOutput = ev.output || finalOutput || full;
+          logDebug(`[DONE] output=${finalOutput.length}c`, 'info');
           break outer;
         }
-
         if (ev.event === 'error') {
+          logDebug(`[ERROR] ${ev.error}`, 'error');
           throw new Error(ev.error || 'erro no stream');
         }
       }
     }
 
-    // Fim do stream: renderiza markdown completo
     streamCursor.remove();
-    streamText.innerHTML = renderMarkdown(full);
+    valStatus.style.display = 'none';
+
+    if (changed && validatedCode) {
+      // Bloco de código corrigido: stream original + bloco verde
+      streamText.innerHTML = renderMarkdown(full);
+      validatedBlk.style.display = 'block';
+      validatedBlk.textContent = validatedCode;
+    } else {
+      // Sem correção: renderiza texto completo (original + aviso se houver)
+      streamText.innerHTML = renderMarkdown(finalOutput);
+    }
 
   } catch (err) {
-    // Fallback: chama /ask síncrono
-    streamCursor.remove();
-    try {
-      const fb   = await fetch('/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
-      });
-      const data = await fb.json();
-      if (data.error) throw new Error(data.error);
-      full = data.output || '';
-      streamText.innerHTML = renderMarkdown(full);
-    } catch (fb_err) {
-      streamText.innerHTML = `<span style="color:#ef4444">⚠ ${escHtml(fb_err.message || err.message)}</span>`;
+    logDebug(`Erro fatal: ${err.message}`, 'error');
+    const errSpan = document.createElement('span');
+    errSpan.style.color = '#ef4444';
+    errSpan.textContent = `⚠ ${err.message || err}`;
+    if (streamText) {
+      streamText.innerHTML = '';
+      streamText.appendChild(errSpan);
     }
+    if (streamCursor) streamCursor.remove();
   }
 
-  // Meta linha (tempo)
   const elapsed = ((Date.now() - t0) / 1000).toFixed(2);
   const meta = document.createElement('div');
   meta.className = 'meta';
@@ -713,6 +833,7 @@ async function sendPrompt() {
   sendBtn.disabled = false;
   setStatus('online');
   checkStatus();
+  checkSandbox();
   scrollBottom();
   input.focus();
 }

@@ -112,7 +112,7 @@ int orn_init(const char* model_path, int n_ctx, int n_threads)
     g_batch_ready = 1;
 
     int32_t n_vocab = llama_vocab_n_tokens(g_vocab);
-    llama_sampler_chain_add(g_smpl, llama_sampler_init_penalties(n_vocab, 64, 1.15f, 0.0f, 0.0f));
+    llama_sampler_chain_add(g_smpl, llama_sampler_init_penalties(n_vocab, 64, 1.30f, 0.0f, 0.0f)); // 1.15f repeat_penalty
     llama_sampler_chain_add(g_smpl, llama_sampler_init_min_p(0.05f, 1));
     llama_sampler_chain_add(g_smpl, llama_sampler_init_temp(0.40f));
     llama_sampler_chain_add(g_smpl, llama_sampler_init_dist((uint32_t)time(NULL)));
@@ -185,6 +185,7 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
             0,
             true
         );
+        
         if (n > 0 && out_pos + n < output_size - 1) {
             memcpy(output + out_pos, piece, n);
             out_pos += n;
@@ -222,12 +223,13 @@ int orn_infer_stream(const char* prompt, int max_tokens,
         g_vocab, prompt, (int)strlen(prompt),
         prompt_tokens, ORN_MAX_PROMPT_TOKENS, true, true
     );
+
     if (n_tokens <= 0) return -3;
 
     orn_reuse_info reuse = orn_analyze_reuse(
         g_history_tokens, g_history_len, prompt_tokens, n_tokens
     );
-    int n_past = reuse.reused_tokens;
+    int n_past = 0; // Força o recálculo total do contexto
     struct llama_batch *batch = &g_batch;
 
     for (int i = n_past; i < n_tokens; i += g_batch_size) {
@@ -252,8 +254,12 @@ int orn_infer_stream(const char* prompt, int max_tokens,
         llama_sampler_accept(g_smpl, tok);
 
         int n = llama_token_to_piece(g_vocab, tok, piece, sizeof(piece) - 1, 0, true);
+        
         if (n > 0) {
             piece[n] = '\0';
+            if (strstr(piece, "stopgen") != NULL || strstr(piece, "| stopgen |") != NULL) {
+                break;
+            }
             if (callback(piece, n, user_data) != 0) break;
         }
 
@@ -269,9 +275,14 @@ int orn_infer_stream(const char* prompt, int max_tokens,
 
     int total = n_tokens + n_generated;
     if (total > ORN_MAX_PROMPT_TOKENS) total = ORN_MAX_PROMPT_TOKENS;
+    
+    // Copia o prompt
     memcpy(g_history_tokens, prompt_tokens,
            (n_tokens < ORN_MAX_PROMPT_TOKENS ? n_tokens : ORN_MAX_PROMPT_TOKENS)
            * sizeof(llama_token));
-    g_history_len = total;
+    
+    // CORREÇÃO: Só atualiza o tamanho para n_tokens (já que é só isso que está no array).
+    // Se quiser salvar a resposta gerada também, você precisaria copiar as variáveis 'tok' do loop.
+    g_history_len = n_tokens; 
     return 0;
 }

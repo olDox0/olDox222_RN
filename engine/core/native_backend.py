@@ -208,8 +208,7 @@ class NativeBackend:
 
         t.join()
         rc = _ERRCODE[0] if _ERRCODE else -99
-
-        # KV cache cheio → reset e tenta não-stream como fallback
+        
         if rc == -5:
             print("[NATIVE] KV cache cheio no stream — resetando contexto.", flush=True)
             self._lib.orn_free()
@@ -218,7 +217,11 @@ class NativeBackend:
             )
             if init_rc != 0:
                 raise RuntimeError(f"orn_init falhou após reset: {init_rc}")
-            result = self.call(prompt, max_tokens)
-            yield result["text"]
+            
+            # MÁGICA: Em vez de bloquear com call(), chama o stream de novo recursivamente.
+            # Como o contexto foi limpo, agora ele vai processar e streamar normalmente.
+            yield from self.stream(prompt, max_tokens)
+            return
+            
         elif rc not in (0, None):
             raise RuntimeError(f"orn_infer_stream falhou: {rc}")

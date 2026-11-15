@@ -283,6 +283,14 @@ class DoxoBoard:
             "by_role":       counts,
         }
 
+    def post_code_snippet(self, code: str, lang: str) -> None:
+        """Armazena o último bloco de código gerado na sessão."""
+        self._last_code = code
+        self._last_code_lang = lang
+
+    def get_code_snippet(self) -> tuple[str, str]:
+        """Retorna o último código gerado e sua linguagem."""
+        return getattr(self, "_last_code", ""), getattr(self, "_last_code_lang", "")
 
 # ---------------------------------------------------------------------------
 # Rótulos legíveis para o bloco de síntese

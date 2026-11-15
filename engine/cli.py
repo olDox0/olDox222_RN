@@ -1698,11 +1698,27 @@ def web() -> None:
 
 @web.command("start")
 @click.option("--no-browser", is_flag=True, default=False,
-              help="Nao abre o browser automaticamente.")
-def web_start(no_browser: bool) -> None:
-    """Inicia a interface web e abre o browser."""
-    from engine.web.web_server import WebCLI   # noqa
-    WebCLI().run(["start"] + (["--no-browser"] if no_browser else []))
+              help="Não abre o navegador automaticamente.")
+@click.option("--embedded", is_flag=True, default=False,
+              help="Força inferência embarcada (sem orn-server).")
+@click.option("--proxy", is_flag=True, default=False,
+              help="Força uso de orn-server externo na porta 8371.")
+@click.option("--port", type=int, default=8372, show_default=True,
+              help="Porta HTTP do servidor web.")
+@click.option("--bg", is_flag=True, default=False,
+              help="Inicia em background (log em web_server.log).")
+def web_start(no_browser: bool, embedded: bool, proxy: bool, port: int, bg: bool) -> None:
+    from engine.web.web_server import WebCLI
+    args = ["start", "--port", str(port)]
+    if no_browser:
+        args.append("--no-browser")
+    if embedded:
+        args.append("--embedded")
+    if proxy:
+        args.append("--proxy")
+    if bg:
+        args.append("--bg")
+    WebCLI().run(args)
 
 
 @web.command("stop")
@@ -2804,3 +2820,362 @@ def symbol_cache(show_flag, clear_flag, rebuild_flag, cache_path):
             Display.kv(f"  {fp}", f"{len(syms)} símbolo(s)")
         if len(index) > 10:
             Display.info(f"  ... + {len(index) - 10} arquivo(s)")
+
+@cli.command()
+def preflight() -> None:
+    """Verifica o ambiente completo do ORN antes de rodar."""
+    from engine.tools.preflight import run_preflight
+    success = run_preflight()
+    if not success:
+        raise SystemExit(1)
+
+@cli.group()
+def sandbox() -> None:
+    """Gerencia o sandbox isolado para execução de código."""
+    pass
+
+@sandbox.command("install")
+@click.option("--version", "-v", default="v3.21", show_default=True,
+              help="Versão do Alpine a baixar.")
+def sandbox_install(version: str) -> None:
+    """Baixa kernel, initramfs e modloop do Alpine para o sandbox QEMU."""
+    from engine.tools.qemu_sandbox import QemuSandbox
+    Display.section("SANDBOX INSTALL", f"Alpine {version}")
+    qs = QemuSandbox()
+    if qs.install(version):
+        Display.success("Alpine pronto para uso no QEMU sandbox.")
+    else:
+        Display.error("Falha na instalação. Verifique a conexão.")
+        raise SystemExit(1)
+
+@sandbox.command("test")
+def sandbox_test() -> None:
+    """Roda um 'Hello, World' em C via QEMU daemon."""
+    from engine.tools.qemu_daemon import QemuDaemon
+
+    Display.section("SANDBOX TEST", "Alpine + QEMU + GCC")
+    daemon = QemuDaemon()
+    if not daemon.is_running():
+        Display.error("Daemon offline.")
+        Display.info("Inicie com: orn sandbox daemon start")
+        raise SystemExit(1)
+
+    code = """
+#include <stdio.h>
+int main(int argc, char **argv) {
+    printf("Hello do Alpine QEMU!\\n");
+    printf("Argc: %d\\n", argc);
+    if (argc > 1) printf("Argv[1]: %s\\n", argv[1]);
+    return 0;
+}
+"""
+    Display.info("Compilando via daemon...")
+    result = daemon.run(code, args=["teste123"], timeout=90)
+
+    if result.success:
+        Display.success("Compilação e execução OK")
+        print(result.stdout)
+    else:
+        Display.error(f"Falha: {result.stderr}")
+        Display.info("Saída bruta:")
+        print(result.stdout[:2000])
+        raise SystemExit(1)
+        
+@sandbox.command("daemon")
+@click.argument("action",
+                type=click.Choice(["start", "stop", "status", "restart"]),
+                default="status")
+@click.option("--timeout", "-t", type=int, default=180, show_default=True,
+              help="Segundos de espera no boot do Alpine.")
+def sandbox_daemon(action: str, timeout: int) -> None:
+    """Gerencia o QEMU daemon persistente."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    d = QemuDaemon()
+    Display.section("SANDBOX DAEMON", action)
+
+    if action == "start":
+        if d.start(timeout=timeout):
+            st = d.status()
+            Display.success(st.summary())
+        else:
+            Display.error("Falha ao iniciar. Veja: orn sandbox probe -w serial")
+            raise SystemExit(1)
+
+    elif action == "stop":
+        d.stop()
+        Display.success("Daemon parado.")
+
+    elif action == "restart":
+        d.stop()
+        time.sleep(1)
+        if d.start(timeout=timeout):
+            st = d.status()
+            Display.success(st.summary())
+        else:
+            raise SystemExit(1)
+
+    else:  # status
+        st = d.status()
+        if st.online:
+            Display.success(st.summary())
+        else:
+            Display.warn(st.summary())
+            Display.info(f"PID file:   {st.pid_file_exists}")
+            Display.info(f"PID:        {st.pid}")
+            Display.info(f"PID vivo:   {st.pid_alive}")
+            Display.info(f"PORT file:  {st.port_file_exists}")
+            Display.info(f"PORT:       {st.port}")
+            Display.info(f"Porta resp: {st.port_responsive}")
+
+
+@sandbox.command("logs")
+@click.option("-n", "n", type=int, default=60, show_default=True)
+def sandbox_logs(n: int) -> None:
+    """Mostra o final do log do daemon QEMU."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    Display.section("DAEMON LOGS", f"últimas {n} linhas")
+    print(QemuDaemon().logs(n))
+
+
+@sandbox.command("test")
+def sandbox_test() -> None:
+    """Roda Hello World em C via QEMU daemon."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    Display.section("SANDBOX TEST", "Alpine + QEMU + GCC")
+
+    d = QemuDaemon()
+    st = d.status()
+    if not st.online:
+        Display.error(f"Daemon offline: {st.summary()}")
+        Display.info("Inicie com: orn sandbox daemon start")
+        Display.info("Se já iniciou, veja: orn sandbox logs")
+        raise SystemExit(1)
+
+    code = (
+        '#include <stdio.h>\n'
+        'int main(int argc, char **argv) {\n'
+        '    printf("Hello do Alpine QEMU!\\n");\n'
+        '    printf("Argc: %d\\n", argc);\n'
+        '    if (argc > 1) printf("Argv[1]: %s\\n", argv[1]);\n'
+        '    return 0;\n'
+        '}\n'
+    )
+
+    Display.info(f"Daemon: {st.summary()}")
+    Display.info("Compilando via daemon (pode demorar na 1ª vez por causa do apk add gcc)...")
+    result = d.run(code, args=["teste123"], timeout=120)
+
+    if result.success:
+        Display.success("Compilação e execução OK")
+        print(result.stdout)
+        if result.stderr.strip():
+            Display.warn("Saída do gcc:")
+            print(result.stderr)
+    else:
+        Display.error(f"Falha: {result.stderr}")
+        Display.info("Saída bruta (últimos 2000 chars):")
+        print(result.stdout)
+        raise SystemExit(1)
+
+@sandbox.command("doctor")
+def sandbox_doctor() -> None:
+    """Diagnóstico completo do sandbox QEMU."""
+    from engine.tools.qemu_daemon import QemuDaemon, PID_FILE, PORT_FILE, LOG_FILE
+    from engine.tools.qemu_sandbox import QemuSandbox
+
+    Display.section("SANDBOX DOCTOR", "diagnóstico")
+    qs = QemuSandbox()
+    d = QemuDaemon()
+
+    Display.info("1. QEMU disponível:")
+    Display.kv("  exe", qs.qemu_exe or "(não encontrado)")
+    Display.kv("  existe", str(bool(qs.qemu_exe and os.path.exists(qs.qemu_exe))))
+
+    Display.info("2. Arquivos do Alpine:")
+    for f in ("vmlinuz-virt", "initramfs-virt", "modloop-virt"):
+        p = Path("data/sandbox/alpine") / f
+        Display.kv(f"  {f}", f"{p.stat().st_size//1024} KB" if p.exists() else "AUSENTE")
+
+    Display.info("3. Estado do daemon:")
+    st = d.status()
+    Display.kv("  pid_file", str(st.pid_file_exists))
+    Display.kv("  pid", str(st.pid))
+    Display.kv("  pid_alive", str(st.pid_alive))
+    Display.kv("  port_file", str(st.port_file_exists))
+    Display.kv("  port", str(st.port))
+    Display.kv("  port_responsive", str(st.port_responsive))
+    Display.kv("  online", str(st.online))
+
+    Display.info("4. Últimas linhas do log:")
+    print(d.logs(30))
+
+@sandbox.command("bootstrap")
+def sandbox_bootstrap() -> None:
+    """Instala gcc, musl-dev, python3 e py3-pip no Alpine (uma vez só)."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    Display.section("SANDBOX BOOTSTRAP", "instalação de pacotes")
+    d = QemuDaemon()
+    if not d.is_running():
+        Display.error("Daemon offline. Rode 'orn sandbox daemon start'.")
+        raise SystemExit(1)
+    if d.bootstrap():
+        Display.success("Pacotes instalados.")
+    else:
+        Display.error("Falha no bootstrap.")
+        raise SystemExit(1)
+
+
+@sandbox.command("shell")
+@click.argument("cmd", nargs=-1, required=True)
+def sandbox_shell(cmd: tuple[str, ...]) -> None:
+    """Executa um comando dentro do Alpine para diagnóstico."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    d = QemuDaemon()
+    if not d.is_running():
+        Display.error("Daemon offline.")
+        raise SystemExit(1)
+    out = d.shell(" ".join(cmd), timeout=30)
+    print(out)
+
+
+@sandbox.command("check")
+def sandbox_check() -> None:
+    """Verifica o estado dos pacotes dentro do Alpine."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    Display.section("SANDBOX CHECK", "estado do Alpine")
+    d = QemuDaemon()
+    if not d.is_running():
+        Display.error("Daemon offline. Rode 'orn sandbox daemon start'.")
+        raise SystemExit(1)
+
+    checks = [
+        ("Kernel",         "uname -r"),
+        ("Repositórios",   "cat /etc/apk/repositories 2>/dev/null | tr '\\n' ' '"),
+        ("gcc",            "which gcc 2>/dev/null || echo AUSENTE"),
+        ("musl-dev",       "apk info -e musl-dev >/dev/null 2>&1 && echo OK || echo AUSENTE"),
+        ("python3",        "which python3 2>/dev/null || echo AUSENTE"),
+        ("py3-pip",        "apk info -e py3-pip >/dev/null 2>&1 && echo OK || echo AUSENTE"),
+        ("Espaço /",       "df -h / | tail -1"),
+        ("Bootstrap flag", "test -f /root/.orn_ready && echo OK || echo AUSENTE"),
+    ]
+    for label, cmd in checks:
+        out = d.shell(cmd, timeout=15).strip()
+        Display.kv(label, out[:220] or "(vazio)")
+
+@sandbox.command("probe")
+@click.option("--which", "-w",
+              type=click.Choice(["all", "serial", "trace", "qemu", "daemon"]),
+              default="all", show_default=True,
+              help="Qual fonte de log mostrar.")
+@click.option("-n", type=int, default=40, show_default=True,
+              help="Quantas linhas por fonte.")
+def sandbox_probe(which: str, n: int) -> None:
+    """Mostra a caixa preta completa: serial, trace, qemu e daemon."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    d = QemuDaemon()
+    Display.section("SANDBOX PROBE", "caixa preta")
+
+    st = d.status()
+    Display.info("Estado:")
+    Display.kv("  pid_file",   str(st.pid_file_exists))
+    Display.kv("  pid",        str(st.pid))
+    Display.kv("  pid_alive",  str(st.pid_alive))
+    Display.kv("  port",       str(st.port))
+    Display.kv("  port_resp",  str(st.port_responsive))
+    Display.kv("  online",     str(st.online))
+
+    sources = ["serial", "trace", "qemu", "daemon"] if which == "all" else [which]
+    titles = {
+        "serial": "serial.log (Alpine ttyS0)",
+        "trace":  "qemu_trace.log (eventos do QEMU)",
+        "qemu":   "qemu_daemon.log (stdout/stderr do QEMU)",
+        "daemon": "daemon.log (ações do Python)",
+    }
+    for src in sources:
+        Display.separator()
+        Display.info(f"=== {titles[src]} (últimas {n} linhas) ===")
+        print(d.logs(n, src))
+
+@sandbox.command("logs")
+@click.option("-n", "n", type=int, default=60, show_default=True)
+@click.option("--which", "-w",
+              type=click.Choice(["all", "serial", "trace", "qemu", "daemon"]),
+              default="daemon", show_default=True)
+def sandbox_logs(n: int, which: str) -> None:
+    """Mostra logs de uma fonte específica."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    d = QemuDaemon()
+    sources = ["serial", "trace", "qemu", "daemon"] if which == "all" else [which]
+    for src in sources:
+        Display.section("LOG", src)
+        print(d.logs(n, src))
+
+@sandbox.command("forge")
+@click.option("--size", "-s", type=int, default=512, show_default=True,
+              help="Tamanho do disco persistente em MB.")
+def sandbox_forge(size: int) -> None:
+    """Cria o disco persistente alpine.img.qcow2 (para cache de gcc)."""
+    from engine.tools.disk_forge import DiskForge
+    from engine.tools.qemu_daemon import DISK_FILE
+    Display.section("SANDBOX FORGE", "disco persistente")
+    if DiskForge.exists(DISK_FILE):
+        Display.warn(f"Já existe: {DISK_FILE} ({DISK_FILE.stat().st_size // 1024} KB em disco)")
+        Display.info("Use 'orn sandbox wipe' para recriar do zero.")
+        return
+    try:
+        DiskForge.forge_qcow2(DISK_FILE, size_mb=size)
+        Display.success(f"Criado: {DISK_FILE}")
+        Display.info("Próximo 'orn sandbox daemon restart' vai anexar o disco.")
+    except Exception as exc:
+        Display.error(f"Falha: {exc}")
+        raise SystemExit(1)
+
+
+@sandbox.command("wipe")
+@click.confirmation_option(prompt="Isso apaga o cache de gcc. Continuar?")
+def sandbox_wipe() -> None:
+    """Remove o disco persistente (reset completo do sandbox)."""
+    from engine.tools.disk_forge import DiskForge
+    from engine.tools.qemu_daemon import DISK_FILE, QemuDaemon
+    Display.section("SANDBOX WIPE", "removendo disco")
+    d = QemuDaemon()
+    if d.is_running():
+        Display.info("Parando daemon primeiro...")
+        d.stop()
+    if DiskForge.wipe(DISK_FILE):
+        Display.success(f"Removido: {DISK_FILE}")
+    else:
+        Display.warn("Disco não existia.")
+
+@sandbox.command("test-python")
+def sandbox_test_python() -> None:
+    """Executa Python dentro do Alpine."""
+    from engine.tools.qemu_daemon import QemuDaemon
+    Display.section("SANDBOX TEST-PYTHON", "Alpine + Python 3")
+
+    d = QemuDaemon()
+    if not d.is_running():
+        Display.error("Daemon offline. Rode 'orn sandbox daemon start'.")
+        raise SystemExit(1)
+
+    code = (
+        "import sys, platform\n"
+        "print('Hello do Alpine Python!')\n"
+        "print(f'Version: {sys.version.split()[0]}')\n"
+        "print(f'Platform: {platform.platform()}')\n"
+        "print(f'Args: {sys.argv}')\n"
+    )
+
+    Display.info("Executando no Alpine...")
+    res = d.run(code, args=["teste123"], lang="python", timeout=30)
+
+    if res.success:
+        Display.success("Python OK")
+        print(res.stdout)
+        if res.stderr.strip():
+            Display.warn("stderr:")
+            print(res.stderr)
+    else:
+        Display.error(f"Falhou (exit={res.exit_code})")
+        print(res.stderr or res.stdout)
+        raise SystemExit(1)

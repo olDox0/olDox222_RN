@@ -136,3 +136,19 @@ def _parse_ast_replacements(text, original_content, target_name=None):
 | 8 | F6.7 (Consult/RAG) | Alto (próxima fronteira) | Sessão |
 
 **F6.1-F6.5 são 1 sessão.** F6.7 é sessão própria (depende de DB).
+
+---
+
+## F6.x — Sandbox Persistente (adiado)
+
+**Problema:** Alpine netboot `-virt` só tem `squashfs`/`tmpfs` built-in.
+`ext4`, `ext2`, `vfat` não estão no kernel netboot.
+
+**Solução:** migrar para Alpine ISO (`alpine-virt-3.21-x86_64.iso`).
+`setup-disk /dev/vdb` instala Alpine completo no qcow2.
+Boots subsequentes: `-boot c` direto do qcow2 (sem kernel/initramfs externos).
+
+**Impacto:** `daemon restart` não perde `gcc`. `bootstrap` vira no-op.
+**Esforço:** 1-2 sessões (setup interativo, precisa de automatização com `setup-disk -m sys`).
+**Status:** adiado — daemon já é persistente entre chamadas (o que importa).
+

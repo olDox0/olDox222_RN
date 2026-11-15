@@ -41,6 +41,7 @@ def build_prompt(file_content: str, instruction: str, context: str = "") -> str:
     user_parts.append(f"Código:\n```python\n{file_content.strip()}\n```")
     user_parts.append(f"Tarefa: {instruction}")
     user = "\n\n".join(user_parts)
+
     return (
         f"<|im_start|>system\n{system}<|im_end|>\n"
         f"<|im_start|>user\n{user}<|im_end|>\n"

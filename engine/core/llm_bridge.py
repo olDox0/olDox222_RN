@@ -34,14 +34,19 @@ from collections import deque
 import time
 import os
 import json
+import logging
 
-from typing                   import Any
-from pathlib                  import Path
-from dataclasses              import dataclass
+from typing      import Any
+from pathlib     import Path
+from dataclasses import dataclass
+
 from engine.core.cpu_affinity import apply_process_affinity
 from engine.telemetry.runtime import record_direct  # noqa: PLC0415
 #from engine.core.prompt_utils import pitstop        # noqa: PLC0415
 from engine.core.prompt_utils import clean_prompt, enforce_hard_limit  # noqa: PLC0415
+
+logger = logging.getLogger("orn.bridge")
+
 # ---------------------------------------------------------------------------
 # Configuração de memória
 # ---------------------------------------------------------------------------
@@ -86,7 +91,7 @@ class BridgeConfig:
     temperature:    float = 0.15  # 0.40
     top_p:          float = 0.85  # 0.80
     top_k:          int   = 20    # 25
-    repeat_penalty: float = 1.20  # 1.15
+    repeat_penalty: float = 1.35  # 1.15
     min_p:          float =  0.05       #min_p:          float =  0.05 ou None
     # Menemonização de repetições (com pruning LRU)
     repetition_memo_enabled: bool = True
@@ -104,7 +109,8 @@ class BridgeConfig:
     flash_attn: bool = True             # flash_attn: True | None = None
     system_prompt: str = (
         "Você é o assistente de código ORN. Responda estritamente em português do Brasil (pt-BR), "
-        "de forma concisa, técnica e direta."
+        "de forma concisa, técnica e direta. "
+        "Sempre que terminar de gerar um bloco de código, adicione a string '| stopgen |' no final."
     )
     @staticmethod
     def _normalize_optional_text(value: str | None) -> str | None:
@@ -663,6 +669,53 @@ class SiCDoxBridge:
         except Exception:
             pass
         return text
+
+    def stream_ask(self, prompt: str, max_tokens: int | None = None) -> Iterator[str]:
+        logger.debug(f"[BRIDGE] stream_ask START | prompt_len={len(prompt)}")
+        if not prompt:
+            raise ValueError("prompt não pode ser vazio.")
+        max_tokens = max_tokens or self._cfg.max_tokens
+        self._ensure_loaded()
+
+        if self._native is not None and self._native._ready:
+            self._ctx.push("user", prompt)
+            native_prompt = self._build_prompt()
+            pieces: list[str] = []
+            accumulated = ""
+            
+            try:
+                for piece in self._native.stream(native_prompt, max_tokens):
+                    if piece:
+                        accumulated += piece
+                        
+                        # 1. Verifica o STOPGEN
+                        if "| stopgen |" in accumulated:
+                            accumulated = accumulated.replace("| stopgen |", "").strip()
+                            yield accumulated
+                            break
+                            
+                        # 2. Anti-Loop de N-gram (se repetir a mesma frase 3x)
+                        if accumulated.count("O exemplo main do código") > 2 or accumulated.count("Note que este exemplo") > 2:
+                            logger.warning("[BRIDGE] Loop detectado! Abortando geração.")
+                            yield "\n\n[Sistema: Geração interrompida para evitar loop infinito]"
+                            break
+                            
+                        pieces.append(piece)
+                        yield piece
+                        
+            except Exception as exc:
+                self._ctx.clear()
+                raise RuntimeError(f"Backend nativo falhou: {exc}")
+            
+            text = "".join(pieces).replace("| stopgen |", "").strip()
+            if text:
+                self._ctx.push("assistant", text)
+                self._memo_put(prompt, text)
+            return
+
+        # fallback final (não deve chegar aqui se o modelo carregou)
+        yield self.ask(prompt, max_tokens=max_tokens)
+
     def _log_runtime(self, data: dict):
         path = Path("telemetry/direct_runtime.jsonl")
         with path.open("a", encoding="utf8") as f:
@@ -894,13 +947,8 @@ class SiCDoxBridge:
         return prompt
         
     def _call_engine(self, prompt: str | list[int], max_tokens: int) -> dict:
-        """Chama o motor de inferência (C Nativo ou Python), garantindo estabilidade."""
-        
         is_tokens = isinstance(prompt, list)
-        
-        # === 1. CAMINHO C NATIVO (Ultra Rápido) ===
         if self._native is not None and self._native._ready:
-            # O nativo precisa de String bruta. Se veio tokens, pegamos a string original.
             if is_tokens:
                 if self._llm is not None:
                     prompt_str = self._llm.detokenize(prompt).decode("utf-8", errors="ignore")
@@ -908,32 +956,21 @@ class SiCDoxBridge:
                     prompt_str = self._build_prompt()
             else:
                 prompt_str = prompt
-                
             return self._native.call(prompt_str, max_tokens)
-            
-        # === 2. CAMINHO PYTHON LENTO (Fallback Seguro) ===
+
         if self._llm is None:
             raise RuntimeError("Nenhum modelo carregado.")
-            
-        # Conta tamanho do prompt pra proteger o Context Window
         if is_tokens:
             prompt_size = len(prompt)
         else:
             prompt_size = len(prompt.split()) * 2
-            
-        # Limite que podemos pedir pro LLM: Contexto Total menos o tamanho do prompt
         safe_max_tokens = self._cfg.n_ctx - prompt_size - 10 
         final_max_tokens = min(max_tokens, max(1, safe_max_tokens))
-
-        # Inteligência de Stop Tokens: Se o prompt abriu um código markdown, espera fechar.
         stop_tokens = ["<|im_end|>", "</s>"]
         if not is_tokens and prompt.count("```") % 2 == 1:
             stop_tokens.extend(["\n```\n", "\n``` "])
-
         import time
         t0 = time.perf_counter()
-        
-        # Inferência
         resp = self._llm(
             prompt,
             max_tokens=final_max_tokens,
@@ -945,9 +982,7 @@ class SiCDoxBridge:
             stop=stop_tokens,
             echo=False,
         )
-        
         llm_ms = (time.perf_counter() - t0) * 1000.0
-        
         return {
             "text": resp["choices"][0]["text"],
             "usage": resp.get("usage", {}),

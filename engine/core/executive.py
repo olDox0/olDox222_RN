@@ -239,14 +239,27 @@ class SiCDoxExecutive:
 
             # 4. Síntese compacta da lousa + Consult hint
             synthesis = board.build_synthesis_block(compact=True)
+            system_parts = []
+            
+            # NOVO: Injeção do Código Atual (Scratchpad)
+            last_code, last_lang = board.get_code_snippet()
+            if last_code:
+                # Limita o código a ~1500 chars para não estourar o contexto
+                code_preview = last_code[:1500] + ("\n[...]" if len(last_code) > 1500 else "")
+                system_parts.append(
+                    f"[CÓDIGO ATUAL NO WORKSPACE ({last_lang})]\n"
+                    f"```{last_lang}\n{code_preview}\n```\n"
+                    "Modifique o código acima conforme a solicitação do usuário. "
+                    "Se precisar alterar, devolva APENAS o bloco de código completo modificado."
+                )
+                
             if synthesis and len(synthesis) > 240:
                 synthesis = synthesis[:240].rsplit(" ", 1)[0] + " […]"
-
-            system_parts = []
             if synthesis:
                 system_parts.append(synthesis)
             if context.get("consult_hint"):
                 system_parts.append(context["consult_hint"])
+                
             system_hint = "\n\n".join(system_parts) if system_parts else None
 
             # 5. Submissão ÚNICA à fila de inferência
@@ -279,6 +292,14 @@ class SiCDoxExecutive:
                 max_retries=1,
                 run_isolated=True,
             )
+
+            import re
+            code_matches = re.findall(r"```(\w*)\n(.*?)```", output, re.DOTALL)
+            if code_matches:
+                # Pega o maior bloco de código (geralmente o principal)
+                best_match = max(code_matches, key=lambda x: len(x[1]))
+                lang, code = best_match
+                board.post_code_snippet(code.strip(), lang or "text")
 
             valid, motivo = validator.validar_output(output)
             if not valid:
