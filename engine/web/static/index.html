@@ -444,6 +444,10 @@
       <span id="statusText">verificando...</span>
     </div>
   </div>
+  <label class="consult-toggle" style="display:flex;align-items:center;gap:6px;font-family:monospace;font-size:11px;color:#ffbe78;">
+    <input type="checkbox" id="consult-toggle" checked>
+    <span>consult</span>
+  </label>
 </header>
 
 <div id="debug-console" style="display:none; background:#111; border-bottom:1px solid #333; padding:10px; font-family:monospace; font-size:11px; color:#3dd68c; max-height:150px; overflow-y:auto;">
@@ -475,6 +479,22 @@
 </footer>
 
 <script>
+
+function showSourcePopover(s) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  ov.onclick = (e) => { if (e.target === ov) ov.remove(); };
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#19171a;border:1px solid #5e5c5e;border-radius:13px;padding:24px;max-width:800px;max-height:80vh;overflow:auto;color:#ffbe78;font-family:monospace;font-size:13px;';
+  card.innerHTML = `
+    <div style="color:#3dd68c;font-weight:bold;margin-bottom:8px;">${escHtml(s.title)}</div>
+    <div style="color:#999;font-size:11px;margin-bottom:12px;">${escHtml(s.path)} · ${escHtml(s.category)}</div>
+    <pre style="white-space:pre-wrap;word-break:break-word;">${escHtml(s.snippet)}</pre>
+    <div style="margin-top:12px;text-align:right;"><button onclick="this.closest('div').parentElement.remove()" style="background:#2f2e30;border:1px solid #5e5c5e;color:#ffbe78;padding:6px 14px;border-radius:6px;cursor:pointer;">Fechar</button></div>
+  `;
+  ov.appendChild(card);
+  document.body.appendChild(ov);
+}
 
 function logDebug(msg, type = 'info') {
   const color = type === 'error' ? '#ef4444' : (type === 'chunk' ? '#a8e6a8' : '#3dd68c');
@@ -794,6 +814,25 @@ async function sendPrompt() {
         if (ev.event === 'error') {
           logDebug(`[ERROR] ${ev.error}`, 'error');
           throw new Error(ev.error || 'erro no stream');
+        }
+        // No sendPrompt, adicionar handler para 'sources':
+        if (ev.event === 'sources' && ev.sources && ev.sources.length) {
+          const sourcesDiv = document.createElement('div');
+          sourcesDiv.className = 'sources-row';
+          sourcesDiv.style.cssText = 'margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;';
+          for (const s of ev.sources) {
+            const badge = document.createElement('a');
+            badge.className = 'source-badge';
+            badge.textContent = s.title || s.path;
+            badge.href = '#';
+            badge.title = s.snippet;
+            badge.onclick = (e) => {
+              e.preventDefault();
+              showSourcePopover(s);
+            };
+            sourcesDiv.appendChild(badge);
+          }
+          bubble.appendChild(sourcesDiv);
         }
       }
     }

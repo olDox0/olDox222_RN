@@ -3179,3 +3179,24 @@ def sandbox_test_python() -> None:
         Display.error(f"Falhou (exit={res.exit_code})")
         print(res.stderr or res.stdout)
         raise SystemExit(1)
+
+@sandbox.command("test-consult")
+def sandbox_test_consult() -> None:
+    """Testa ConsultBridge + injeção de contexto."""
+    from engine.tools.consult_bridge import ConsultBridge
+    Display.section("CONSULT TEST", "RAG + fontes")
+    cb = ConsultBridge()
+    if not cb.is_available():
+        Display.error(f"DB não encontrado: {cb.db_path}")
+        Display.info("No projeto doxoade: doxoade consult index")
+        raise SystemExit(1)
+    q = "como usar context manager em python"
+    results = cb.search(q, limit=3)
+    if not results:
+        Display.warn(f"Sem resultados para: {q!r}")
+        return
+    Display.success(f"{len(results)} fonte(s) para {q!r}")
+    for i, r in enumerate(results, 1):
+        Display.kv(f"[{i}]", f"{r.title}")
+        Display.kv("  path", r.path)
+        Display.kv("  snippet", r.snippet[:100])

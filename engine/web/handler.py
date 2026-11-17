@@ -7,7 +7,7 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
-
+from engine.api.events import SourceRef
 from engine.api import StreamEvent, to_ndjson
 from engine.web import auto_search
 from engine.web.stream_cache import StreamCache
@@ -99,6 +99,47 @@ class ORNHandler(BaseHTTPRequestHandler):
             "source_url": source_url or None,
         })
 
+        consult_results: list = []
+        use_consult = bool(req.get("consult", True)) if isinstance(req, dict) else True
+
+        if use_consult:
+            try:
+                from engine.tools.consult_bridge import ConsultBridge
+
+                cb = ConsultBridge()
+                if cb.is_available():
+                    consult_results = cb.search(prompt, limit=3) or []
+                    if consult_results:
+                        self._write_event(StreamEvent(
+                            kind="sources",
+                            request_id=rid,
+                            sources=[
+                                SourceRef(
+                                    kind="sources",
+                                    path=r.path,
+                                    title=r.title,
+                                    snippet=r.snippet[:300],
+                                    category=getattr(r, "category", ""),
+                                    rank=getattr(r, "rank", 0.0),
+                                )
+                                for r in consult_results
+                            ],
+                        ))
+            except Exception as exc:
+                logger.warning(f"[CONSULT] {exc}")
+
+        if consult_results:
+            ctx_lines = ["[CONTEXTO RECUPERADO]"]
+            for i, r in enumerate(consult_results, 1):
+                ctx_lines.append(f"[{i}] {r.title} — {r.path}")
+                ctx_lines.append(r.snippet[:500])
+                ctx_lines.append("")
+            consult_ctx = "\n".join(ctx_lines)
+        else:
+            consult_ctx = ""
+
+        full_prompt = f"{consult_ctx}\n[TASK]\n{prompt}" if consult_ctx else prompt
+
     # ── /ask_stream (NDJSON) ────────────────────────────
     def _handle_ask_stream(self):
         req = self._read_json()
@@ -128,8 +169,49 @@ class ORNHandler(BaseHTTPRequestHandler):
             llm_done_ev: StreamEvent | None = None
             chunk_count = 0
 
+            # ── 0. Consult/RAG ──
+            consult_results: list = []
+            use_consult = bool(req.get("consult", True))
+
+            if use_consult:
+                try:
+                    from engine.tools.consult_bridge import ConsultBridge
+                    from engine.api.events import SourceRef
+
+                    cb = ConsultBridge()
+                    if cb.is_available():
+                        consult_results = cb.search(prompt, limit=3) or []
+                        if consult_results:
+                            self._write_event(StreamEvent(
+                                kind="sources",
+                                request_id=rid,
+                                sources=[
+                                    SourceRef(
+                                        kind="sources",
+                                        path=r.path,
+                                        title=r.title,
+                                        snippet=r.snippet[:300],
+                                        category=getattr(r, "category", ""),
+                                        rank=getattr(r, "rank", 0.0),
+                                    )
+                                    for r in consult_results
+                                ],
+                            ))
+                except Exception as exc:
+                    logger.warning(f"[CONSULT-STREAM] {exc}")
+
+            if consult_results:
+                ctx_lines = ["[CONTEXTO RECUPERADO]"]
+                for i, r in enumerate(consult_results, 1):
+                    ctx_lines.append(f"[{i}] {r.title} — {r.path}")
+                    ctx_lines.append(r.snippet[:500])
+                    ctx_lines.append("")
+                full_prompt = "\n".join(ctx_lines) + "\n[TASK]\n" + prompt
+            else:
+                full_prompt = prompt
+
             # ── 1. Stream do LLM ──
-            for ev in self.facade.ask_stream(prompt, max_tokens=max_tokens):
+            for ev in self.facade.ask_stream(full_prompt, max_tokens=max_tokens):
                 ev.request_id = rid
                 if ev.kind == "chunk":
                     acc.append(ev.delta)

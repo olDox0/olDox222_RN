@@ -573,8 +573,8 @@ class QemuDaemon:
             print("  [ERRO] socket fechado. Reinicie o daemon.")
             return False
 
-        # ── 1. Config repos no tmpfs ──
-        print("  [..] Configurando repos no tmpfs...")
+        # ── 1. Repos no tmpfs ──
+        print("  [..] Configurando repos...")
         self.shell(
             "echo 'http://dl-cdn.alpinelinux.org/alpine/v3.21/main' > /etc/apk/repositories",
             timeout=10,
@@ -584,193 +584,46 @@ class QemuDaemon:
             timeout=10,
         )
 
-        # ── 2. Instala e2fsprogs no tmpfs ──
-        has_mkfs = self.shell("which mkfs.ext2 >/dev/null 2>&1 && echo Y || echo N", timeout=10)
-        if "Y" not in has_mkfs:
-            print("  [..] Instalando e2fsprogs (mkfs.ext2)...")
-            for attempt in range(3):
-                r = self.shell("apk add --no-cache e2fsprogs 2>&1 | tail -4", timeout=120)
-                if "OK:" in r and "MiB in" in r:
-                    print(f"  [OK] e2fsprogs instalado (tentativa {attempt+1})")
-                    break
-                print(f"  [!]  falhou retry {attempt+1}/3")
-                time.sleep(2)
-            else:
-                print("  [ERRO] e2fsprogs falhou.")
-                return False
+        # ── 2. Early-return se já foi bootstrapped (tmpfs flag) ──
+        flag = self.shell("test -f /root/.orn_ready && echo Y || echo N", timeout=10)
+        if "Y" in flag:
+            print("  [OK] Bootstrap em cache (/root/.orn_ready existe).")
+            return True
 
-        # ── 3. Diagnóstico + monta /dev/vdb em /mnt/persist ──
-        persist_ok = False
-        if DISK_FILE.exists():
-            print("  [..] Diagnóstico de dispositivos...")
-            for cmd in ["ls /dev/vd*", "cat /proc/partitions"]:
-                r = self.shell(cmd + " 2>&1", timeout=10)
-                print(f"      $ {cmd}")
-                for line in r.splitlines()[:6]:
-                    if line.strip() and not line.strip().startswith("M_"):
-                        print(f"        {line[:120]}")
-
-            print("  [..] Montando /dev/vdb em /mnt/persist...")
-            self.shell("mkdir -p /mnt/persist", timeout=10)
-            r = self.shell("test -b /dev/vdb && echo VDB_OK || echo VDB_NO", timeout=10)
-            if "VDB_NO" in r:
-                print("  [!]  /dev/vdb NÃO existe — QEMU não anexou o disco")
-                print("  [..] Continuando com tmpfs (sem persistência)")
-            else:
-                print("  [OK] /dev/vdb detectado")
-                # 3a. Carrega módulos do kernel (ext4, ext2)
-                print("  [..] Carregando módulos do kernel (ext4)...")
-                self.shell("modprobe ext4 2>&1; modprobe ext2 2>&1; modprobe ext2 2>&1; echo MODPROBE_DONE", timeout=15)
-                r = self.shell("cat /proc/filesystems | grep -E 'ext[234]' || echo NO_EXT", timeout=10)
-                if "NO_EXT" in r:
-                    print("  [!]  ext4 não disponível no kernel — usando FAT32")
-                else:
-                    print(f"  [OK] {r.strip().splitlines()[0][:80]}")
-
-                # 3b. Tenta mount ext4/ext2 (com modprobe feito)
-                for fstype in ["ext4", "ext2"]:
-                    r = self.shell(
-                        f"mount -t {fstype} /dev/vdb /mnt/persist 2>&1; "
-                        f"mountpoint -q /mnt/persist && echo M_OK || echo M_NO",
-                        timeout=15,
-                    )
-                    if "M_OK" in r:
-                        persist_ok = True
-                        print(f"  [OK] /mnt/persist montado ({fstype})")
-                        break
-                    else:
-                        # Captura erro real do mount
-                        err_line = [l for l in r.splitlines() if l.strip() and "M_NO" not in l and "M_" not in l]
-                        if err_line:
-                            print(f"  [!]  mount {fstype}: {err_line[0][:150]}")
-
-                # 3c. Se não montou, formata com mke2fs (já funciona)
-                if not persist_ok:
-                    print("  [..] Formatando /dev/vdb como ext4...")
-                    mk = self.shell(
-                        "mke2fs -t ext4 -F /dev/vdb 2>&1 | tail -3; echo RC=$?",
-                        timeout=120,
-                    )
-                    print(f"  [..] mke2fs: {mk.strip()[-300:]}")
-                    for fstype in ["ext4", "ext2"]:
-                        r = self.shell(
-                            f"mount -t {fstype} /dev/vdb /mnt/persist 2>&1; "
-                            f"mountpoint -q /mnt/persist && echo M_OK || echo M_NO",
-                            timeout=15,
-                        )
-                        if "M_OK" in r:
-                            persist_ok = True
-                            print(f"  [OK] /mnt/persist montado ({fstype})")
-                            break
-                        else:
-                            err_line = [l for l in r.splitlines() if l.strip() and "M_NO" not in l and "M_" not in l]
-                            if err_line:
-                                print(f"  [!]  mount {fstype}: {err_line[0][:150]}")
-
-                # 3d. Fallback: FAT32 (sempre funciona, mas sem symlinks)
-                if not persist_ok:
-                    print("  [..] Fallback: formatando como FAT32...")
-                    self.shell("mkfs.vfat -F 32 /dev/vdb 2>&1 | tail -2; echo RC=$?", timeout=60)
-                    r = self.shell(
-                        "mount -t vfat /dev/vdb /mnt/persist 2>&1; "
-                        "mountpoint -q /mnt/persist && echo M_OK || echo M_NO",
-                        timeout=15,
-                    )
-                    if "M_OK" in r:
-                        persist_ok = True
-                        print("  [OK] /mnt/persist montado (vfat) — sem symlinks")
-                    else:
-                        err_line = [l for l in r.splitlines() if l.strip() and "M_NO" not in l and "M_" not in l]
-                        if err_line:
-                            print(f"  [!]  mount vfat: {err_line[0][:150]}")
-
-                if not persist_ok:
-                    print("  [!]  Nenhum fs funcionou. Diagnóstico final:")
-                    r = self.shell("cat /proc/filesystems | head -20", timeout=10)
-                    for line in r.splitlines()[:20]:
-                        print(f"      {line[:120]}")
-                    print("  [..] Continuando com tmpfs (sem persistência)")
-
-        # ── 4. Early-return se já bootstrapped ──
-        if persist_ok:
-            check = self.shell("test -f /persist/.orn_ready && echo Y || echo N", timeout=10)
-            if "Y" in check:
-                print("  [OK] Bootstrap em cache (/persist/.orn_ready existe).")
-                self.shell("touch /root/.orn_ready", timeout=5)
-                return True
-
-        # ── 5. Prepara estrutura em /persist (cada mkdir separado) ──
-        if persist_ok:
-            print("  [..] Criando estrutura em /persist...")
-            for d in ["etc/apk/keys", "lib/apk/db", "var/cache/apk"]:
-                path = f"/persist/{d}"
-                self.shell(f"mkdir -p {path}", timeout=10)
-            # Diagnóstico
-            r = self.shell("ls -la /persist/ 2>&1", timeout=10)
-            print(f"  [..] ls /persist/:")
-            for line in r.splitlines()[:8]:
-                print(f"      {line}")
-
-            # Copia keys do tmpfs
-            print("  [..] Copiando keys do tmpfs...")
-            self.shell("cp -a /etc/apk/keys/* /persist/etc/apk/keys/ 2>/dev/null || true", timeout=10)
-            r = self.shell("ls /persist/etc/apk/keys/ 2>&1 | wc -l", timeout=10)
-            n_keys = r.strip().splitlines()[-1] if r else "?"
-            print(f"  [..] keys copiadas: {n_keys}")
-
-            # Copia DB installed do tmpfs
-            print("  [..] Copiando DB apk do tmpfs...")
-            self.shell("cp -a /lib/apk/db/* /persist/lib/apk/db/ 2>/dev/null || true", timeout=10)
-            r = self.shell("ls /persist/lib/apk/db/ 2>&1 | wc -l", timeout=10)
-            n_db = r.strip().splitlines()[-1] if r else "?"
-            print(f"  [..] DB arquivos: {n_db}")
-
-            # Repos do persist
-            self.shell(
-                "echo 'http://dl-cdn.alpinelinux.org/alpine/v3.21/main' > /persist/etc/apk/repositories",
-                timeout=10,
-            )
-            self.shell(
-                "echo 'http://dl-cdn.alpinelinux.org/alpine/v3.21/community' >> /persist/etc/apk/repositories",
-                timeout=10,
-            )
-
-        # ── 6. apk add ──
-        print(f"  [..] apk add (root={'/persist' if persist_ok else '/'})...")
-        if persist_ok:
-            # Usa keys e repos do TMPFS, root = /persist (onde instalar)
-            apk_add_cmd = (
-                "apk --root /persist "
-                "--keys-dir /etc/apk/keys "
-                "--repositories-file /etc/apk/repositories "
-                "--no-cache add gcc musl-dev python3 py3-pip 2>&1 | tail -20"
-            )
-        else:
-            apk_add_cmd = "apk add --no-cache gcc musl-dev python3 py3-pip 2>&1 | tail -15"
-
-        add_ok = False
-        last_out = ""
+        # ── 3. apk update com retry ──
+        print("  [..] apk update (até 3 tentativas)...")
         for attempt in range(3):
-            last_out = self.shell(apk_add_cmd, timeout=600)
-            if "OK:" in last_out and "MiB in" in last_out:
-                add_ok = True
-                print(f"  [OK] apk add (tentativa {attempt+1}/3)")
-                print(last_out[-400:])
+            upd = self.shell("apk update 2>&1 | tail -5", timeout=120)
+            if "v3.21." in upd and "temporary error" not in upd.lower():
+                print(f"  [OK] apk update (tentativa {attempt+1}/3)")
                 break
-            print(f"  [!]  falhou (tentativa {attempt+1}/3):")
-            for line in last_out.splitlines()[-8:]:
-                print(f"      | {line[:150]}")
-            time.sleep(3)
-
-        if not add_ok:
-            print(f"  [ERRO] apk add falhou 3x. Saída completa:")
-            print(last_out[-1500:])
+            print(f"  [!]  falhou (tentativa {attempt+1}/3)")
+            time.sleep(2)
+        else:
+            print("  [ERRO] apk update falhou 3x.")
             return False
 
-        # ── 7. Flags de conclusão ──
-        if persist_ok:
-            self.shell("touch /persist/.orn_ready", timeout=5)
-            print("  [OK] Bootstrap persistente concluído (/persist/.orn_ready).")
+        # ── 4. apk add com retry ──
+        print("  [..] apk add gcc musl-dev python3 py3-pip (2-4 min)...")
+        add = ""
+        add_ok = False
+        for attempt in range(3):
+            add = self.shell(
+                "apk add --no-cache gcc musl-dev python3 py3-pip 2>&1 | tail -8",
+                timeout=600,
+            )
+            if "OK:" in add and "MiB in" in add:
+                add_ok = True
+                print(f"  [OK] apk add (tentativa {attempt+1}/3)")
+                print(add[-400:])
+                break
+            print(f"  [!]  falhou (tentativa {attempt+1}/3): {add[-150:]}")
+            time.sleep(3)
+        if not add_ok:
+            print(f"  [ERRO] apk add falhou 3x.")
+            return False
+
+        # ── 5. Flag ──
         self.shell("touch /root/.orn_ready", timeout=5)
         print("  [OK] Bootstrap concluído.")
         return True

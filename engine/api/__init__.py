@@ -5,6 +5,7 @@ Imports são lazy (PEP 562) para evitar RuntimeWarning quando o módulo é
 executado com `python -m engine.api.events`.
 """
 from __future__ import annotations
+from engine.api.events import EventKind, SourceRef, StreamEvent
 
 _LAZY = {
     "StreamEvent":           ("engine.api.events", "StreamEvent"),
@@ -14,8 +15,13 @@ _LAZY = {
     "InferenceFacade":       ("engine.api.facade", "InferenceFacade"),
 }
 
-__all__ = list(_LAZY)
-
+#__all__ = list(_LAZY)
+__all__ = [
+    "EventKind",
+    "SourceRef",
+    "StreamEvent",
+    "to_ndjson",
+]
 
 def __getattr__(name: str):
     target = _LAZY.get(name)

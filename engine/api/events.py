@@ -13,26 +13,46 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator, Literal
 
-EventKind = Literal["start", "chunk", "llm_done", "validated", "done", "error"]
+EventKind = Literal["start", "sources", "chunk", "llm_done", "validated", "done", "error"]
+
+@dataclass(slots=True)
+class SourceRef:
+    kind:        EventKind = "sources"
+    path:        str       = ""
+    title:       str       = ""
+    snippet:     str       = ""
+    category:    str       = ""
+    rank:        float     = 0.0
+    request_id:  str       = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "path":     self.path,
+            "title":    self.title,
+            "snippet":  self.snippet,
+            "category": self.category,
+            "rank":     self.rank,
+        }
 
 @dataclass(slots=True)
 class StreamEvent:
     kind:       EventKind
-    delta:      str       = ""
-    output:     str       = ""
-    elapsed_s:  float     = 0.0
-    error:      str       = ""
-    request_id: str       = ""
-    chunk_idx:  int       = -1
-    model:      str       = ""
-    max_tokens: int       = 0
-    changed:    bool      = False
+    delta:      str     = ""
+    output:     str     = ""
+    elapsed_s:  float   = 0.0
+    error:      str     = ""
+    request_id: str     = ""
+    chunk_idx:  int     = -1
+    model:      str     = ""
+    max_tokens: int     = 0
+    changed:    bool    = False
+    sources:    list    = field(default_factory=list)   # ← novo
 
     def to_dict(self) -> dict:
-        d: dict = {"event": self.kind}
+        d = {"event": self.kind}
         if self.kind == "start":
             if self.request_id:  d["request_id"] = self.request_id
             if self.model:       d["model"]      = self.model
@@ -56,6 +76,17 @@ class StreamEvent:
         elif self.kind == "error":
             d["error"] = self.error
             if self.request_id: d["request_id"] = self.request_id
+        if self.sources:
+            d["sources"] = [
+                {
+                    "path":     s.path,
+                    "title":    s.title,
+                    "snippet":  s.snippet,
+                    "category": s.category,
+                    "rank":     s.rank,
+                }
+                for s in self.sources
+            ]
         return d
 
     @classmethod
