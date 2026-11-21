@@ -680,37 +680,81 @@ class SiCDoxBridge:
         if self._native is not None and self._native._ready:
             self._ctx.push("user", prompt)
             native_prompt = self._build_prompt()
+
             pieces: list[str] = []
             accumulated = ""
-            
+            pending = ""
+            stop_marker = "| stopgen"
+
             try:
                 for piece in self._native.stream(native_prompt, max_tokens):
-                    if piece:
-                        accumulated += piece
-                        
-                        # 1. Verifica o STOPGEN
-                        if "| stopgen |" in accumulated:
-                            accumulated = accumulated.replace("| stopgen |", "").strip()
-                            yield accumulated
-                            break
-                            
-                        # 2. Anti-Loop de N-gram (se repetir a mesma frase 3x)
-                        if accumulated.count("O exemplo main do código") > 2 or accumulated.count("Note que este exemplo") > 2:
-                            logger.warning("[BRIDGE] Loop detectado! Abortando geração.")
-                            yield "\n\n[Sistema: Geração interrompida para evitar loop infinito]"
-                            break
-                            
-                        pieces.append(piece)
-                        yield piece
-                        
+                    if not piece:
+                        continue
+
+                    pending += piece
+
+                    # Detecta o marcador mesmo dividido entre tokens.
+                    marker_at = pending.find(stop_marker)
+
+                    if marker_at >= 0:
+                        safe = pending[:marker_at]
+                        if safe:
+                            accumulated += safe
+                            pieces.append(safe)
+                            yield safe
+                        pending = ""
+                        break
+
+                    # Preserva apenas o sufixo que ainda pode
+                    # fazer parte do marcador de término.
+                    keep = 0
+                    limit = min(len(pending), len(stop_marker) - 1)
+
+                    for size in range(1, limit + 1):
+                        if stop_marker.startswith(pending[-size:]):
+                            keep = size
+
+                    if keep:
+                        safe = pending[:-keep]
+                        pending = pending[-keep:]
+                    else:
+                        safe = pending
+                        pending = ""
+
+                    if safe:
+                        accumulated += safe
+                        pieces.append(safe)
+                        yield safe
+
+                    # Proteção contra repetição infinita.
+                    if (
+                        accumulated.count("O exemplo main do código") > 2
+                        or accumulated.count("Note que este exemplo") > 2
+                    ):
+                        logger.warning(
+                            "[BRIDGE] Loop detectado! Abortando geração."
+                        )
+                        break
+
+                # Se o C interromper a geração ao detectar stopgen
+                # dentro de um único token, descarta o prefixo pendente.
+                if pending and not stop_marker.startswith(pending):
+                    accumulated += pending
+                    pieces.append(pending)
+                    yield pending
+
             except Exception as exc:
                 self._ctx.clear()
-                raise RuntimeError(f"Backend nativo falhou: {exc}")
-            
-            text = "".join(pieces).replace("| stopgen |", "").strip()
+                raise RuntimeError(
+                    f"Backend nativo falhou: {exc}"
+                )
+
+            text = "".join(pieces).strip()
+
             if text:
                 self._ctx.push("assistant", text)
                 self._memo_put(prompt, text)
+
             return
 
         # fallback final (não deve chegar aqui se o modelo carregou)

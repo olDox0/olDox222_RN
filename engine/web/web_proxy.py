@@ -34,6 +34,7 @@ def query_infer_raw(payload: bytes, host: str, infer_port: int) -> dict[str, Any
         return None
 
 
+#def stream_infer_events(prompt, max_tokens=128, host="127.0.0.1", port=8371):
 def stream_infer_events(prompt: str, max_tokens: int, host: str, infer_port: int):
     """Fluxo de eventos NDJSON do servidor de inferência (modo stream)."""
     payload = (

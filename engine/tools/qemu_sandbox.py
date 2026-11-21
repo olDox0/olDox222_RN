@@ -55,33 +55,32 @@ class QemuSandbox:
             print(f"  [ERRO] Falha ao acessar o índice do Alpine: {e}")
             return False
 
-        matches = re.findall(r'netboot-(\d+\.\d+\.\d+)/', html)
+        # Localiza o ISO virtual mais recente da release v3.21
+        matches = re.findall(r'href=[\'"]?(alpine-virt-3\.21\.\d+-x86_64\.iso)[\'"]?', html)
         if not matches:
-            print("  [ERRO] Nenhum diretório netboot encontrado.")
+            # Fallback para qualquer alpine-virt da versão
+            matches = re.findall(r'href=[\'"]?(alpine-virt-[0-9\.]+-x86_64\.iso)[\'"]?', html)
+
+        if not matches:
+            print("  [ERRO] Nenhum ISO alpine-virt encontrado.")
             return False
 
-        latest = max(matches, key=lambda v: tuple(map(int, v.split("."))))
-        netboot_dir = f"netboot-{latest}/"
-        print(f"  [OK] Versão mais recente encontrada: {latest}")
+        iso_name = sorted(matches)[-1]
+        print(f"  [OK] ISO virtual localizado: {iso_name}")
 
-        files = ["vmlinuz-virt", "initramfs-virt", "modloop-virt"]
         self.alpine_root.mkdir(parents=True, exist_ok=True)
+        dest = self.alpine_root / "alpine-virt.iso"
+        url = base_url + iso_name
 
-        for fname in files:
-            dest = self.alpine_root / fname
-            if dest.exists():
-                print(f"  [OK] {fname} já existe ({dest.stat().st_size // 1024} KB)")
-                continue
-            url = base_url + netboot_dir + fname
-            print(f"  [..] Baixando {fname}...")
-            try:
-                with urllib.request.urlopen(url, timeout=120) as resp, open(dest, "wb") as f:
-                    shutil.copyfileobj(resp, f)
-                print(f"  [OK] {fname} salvo ({dest.stat().st_size // 1024} KB)")
-            except Exception as e:
-                print(f"  [ERRO] Falha ao baixar {fname}: {e}")
-                return False
-        return True
+        print(f"  [..] Baixando {iso_name} (~60 MB)...")
+        try:
+            with urllib.request.urlopen(url, timeout=180) as resp, open(dest, "wb") as f:
+                shutil.copyfileobj(resp, f)
+            print(f"  [OK] alpine-virt.iso salvo ({dest.stat().st_size // 1024} KB)")
+            return True
+        except Exception as e:
+            print(f"  [ERRO] Falha ao baixar ISO: {e}")
+            return False
 
     def _abs(self, p: Path) -> str:
         """Retorna caminho absoluto com barras normais (QEMU aceita / no Windows)."""

@@ -480,6 +480,20 @@
 
 <script>
 
+// if (ev.event === 'sources' && ev.sources?.length) {
+//   const row = document.createElement('div');
+//   row.style.cssText = 'margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;';
+//   for (const s of ev.sources) {
+//     const b = document.createElement('a');
+//     b.className = 'source-badge';
+//     b.textContent = s.title || s.path;
+//     b.title = s.snippet;
+//     b.onclick = (e) => { e.preventDefault(); showSourcePopover(s); };
+//     row.appendChild(b);
+//   }
+//   bubble.appendChild(row);
+// }
+
 function showSourcePopover(s) {
   const ov = document.createElement('div');
   ov.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';

@@ -20,14 +20,13 @@ EventKind = Literal["start", "sources", "chunk", "llm_done", "validated", "done"
 
 @dataclass(slots=True)
 class SourceRef:
+    category:    str       = ""
     kind:        EventKind = "sources"
     path:        str       = ""
-    title:       str       = ""
-    snippet:     str       = ""
-    category:    str       = ""
     rank:        float     = 0.0
     request_id:  str       = ""
-
+    snippet:     str       = ""
+    title:       str       = ""
     def to_dict(self) -> dict:
         return {
             "path":     self.path,

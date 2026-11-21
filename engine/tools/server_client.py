@@ -79,3 +79,32 @@ def _raw_query(payload: bytes) -> dict[str, Any] | None:
         return resp if isinstance(resp, dict) else None
     except Exception:
         return None
+
+def _sandbox_call(payload: dict, wait: float = 600.0) -> dict:
+    try:
+        with socket.create_connection((HOST, PORT), timeout=5) as s:
+            s.settimeout(wait)
+            s.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            buf = bytearray()
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+        return json.loads(buf.decode("utf-8"))
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def sandbox_run(code, lang="python", args=None, timeout=30, wait=600.0):
+    return _sandbox_call({"sandbox": "run", "code": code, "lang": lang,
+                          "args": args or [], "timeout": timeout}, wait)
+
+
+def sandbox_shell(cmd, timeout=30):
+    return _sandbox_call({"sandbox": "shell", "cmd": cmd, "timeout": timeout},
+                         wait=timeout + 600)
+
+
+def sandbox_status() -> dict:
+    return _sandbox_call({"sandbox": "status"}, wait=30)

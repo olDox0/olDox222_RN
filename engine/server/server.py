@@ -493,6 +493,58 @@ def _handle_status() -> dict[str, Any]:
         "telemetry_hotspots": _telemetry_hotspots(),
     }
 
+# ---------------------------------------------------------------------------
+# Sandbox (QEMU/Alpine) — o server é o único dono do serial
+# ---------------------------------------------------------------------------
+_sandbox = None
+_sandbox_guard = threading.Lock()     # criação do controller
+_sandbox_run_lock = threading.Lock()  # serializa execuções (1 serial)
+
+
+def _get_sandbox():
+    global _sandbox
+    with _sandbox_guard:
+        if _sandbox is None:
+            from engine.tools.sandbox_controller import SandboxController
+            _sandbox = SandboxController()
+        return _sandbox
+
+
+def _handle_sandbox(req: dict[str, Any]) -> dict[str, Any]:
+    action = str(req.get("sandbox", "run"))
+    try:
+        sb = _get_sandbox()
+        if action == "status":
+            st = sb.status()
+            return {"online": st.online, "summary": st.summary(), "error": None}
+        if action == "stop":
+            sb.stop()
+            return {"error": None}
+        if action == "run":
+            code = req.get("code")
+            if not isinstance(code, str) or not code.strip():
+                return {"error": "code vazio"}
+            t0 = time.monotonic()
+            with _sandbox_run_lock:
+                r = sb.run(
+                    code,
+                    args=[str(a) for a in (req.get("args") or [])],
+                    timeout=int(req.get("timeout", 30)),
+                    lang=str(req.get("lang", "python")),
+                )
+            return {
+                "success": r.success, "stdout": r.stdout, "stderr": r.stderr,
+                "exit_code": r.exit_code,
+                "elapsed_s": round(time.monotonic() - t0, 3), "error": None,
+            }
+        if action == "shell":
+            with _sandbox_run_lock:
+                out = sb.shell(str(req.get("cmd", "")),
+                               timeout=float(req.get("timeout", 30)))
+            return {"output": out, "error": None}
+        return {"error": f"ação de sandbox inválida: {action}"}
+    except Exception as exc:
+        return {"error": str(exc), "traceback": traceback.format_exc()}
 
 # ---------------------------------------------------------------------------
 # Handler
@@ -513,6 +565,10 @@ def _handle(conn: socket.socket) -> None:
             return
 
         req_data = json.loads(line)
+
+        if "sandbox" in req_data:
+            resp = _handle_sandbox(req_data)
+            return
 
         if "tokenize" in req_data:
             text = str(req_data["tokenize"])
@@ -652,6 +708,13 @@ def _shutdown() -> None:
         try:
             from doxoade.tools.vulcan.runtime import uninstall_meta_finder
             uninstall_meta_finder()
+        except Exception:
+            pass
+
+    if _sandbox is not None:
+        try:
+            if _sandbox.daemon._sock:
+                _sandbox.daemon._sock.close()
         except Exception:
             pass
 

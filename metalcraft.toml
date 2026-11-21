@@ -31,7 +31,7 @@ version = "1.0.0"
 type = "library"
 
 [compiler]
-engine = "gcc"
+engine = "auto"
 std = "c11"
 opt = "O2"
 shield = true

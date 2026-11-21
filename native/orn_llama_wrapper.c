@@ -229,7 +229,27 @@ int orn_infer_stream(const char* prompt, int max_tokens,
     orn_reuse_info reuse = orn_analyze_reuse(
         g_history_tokens, g_history_len, prompt_tokens, n_tokens
     );
-    int n_past = 0; // Força o recálculo total do contexto
+
+    /* Reutiliza o prefixo comum e remove o restante do KV cache. */
+    int n_past = reuse.reused_tokens;
+
+    llama_memory_t mem = llama_get_memory(g_ctx);
+
+    if (!mem) {
+        fprintf(stderr,
+            "[ORN_NATIVE] stream: memoria KV indisponivel\n");
+        return -8;
+    }
+
+    llama_memory_seq_rm(mem, 0, n_past, -1);
+
+    fprintf(stderr,
+        "[ORN_NATIVE] stream: history=%d reuse=%d new=%d\n",
+        g_history_len,
+        n_past,
+        n_tokens - n_past
+    );
+
     struct llama_batch *batch = &g_batch;
 
     for (int i = n_past; i < n_tokens; i += g_batch_size) {

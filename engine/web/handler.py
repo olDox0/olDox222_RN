@@ -138,7 +138,20 @@ class ORNHandler(BaseHTTPRequestHandler):
         else:
             consult_ctx = ""
 
-        full_prompt = f"{consult_ctx}\n[TASK]\n{prompt}" if consult_ctx else prompt
+        consult_results = []
+        consult_ctx = ""
+        try:
+            from engine.tools.consult_bridge import ConsultBridge
+            cb = ConsultBridge()
+            if cb.is_available():
+                consult_results = cb.search(prompt, limit=3)
+                if consult_results:
+                    consult_ctx = cb.format_context(consult_results, max_chars=1200)
+                    logger.info(f"[CONSULT] {len(consult_results)} fonte(s)")
+        except Exception as exc:
+            logger.warning(f"[CONSULT] {exc}")
+
+        full_prompt = (consult_ctx + "\n[TASK]\n" + prompt) if consult_ctx else prompt
 
     # ── /ask_stream (NDJSON) ────────────────────────────
     def _handle_ask_stream(self):

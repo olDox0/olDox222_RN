@@ -9,7 +9,7 @@ Três fontes de evidência em paralelo:
 from __future__ import annotations
 
 import logging
-import os
+import os, re
 import socket
 import subprocess
 import threading
@@ -81,6 +81,7 @@ class QemuDaemon:
         self.alpine_root = Path(alpine_root).resolve()
         self.qs = QemuSandbox(alpine_root)
         self.log = _setup_logger()
+        self.boot_mode = "disk"
         self._process: Optional[subprocess.Popen] = None
         self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
@@ -131,18 +132,57 @@ class QemuDaemon:
         except Exception:
             return False
 
-    def _port_responds(self, port: int, timeout: float = 1.0) -> bool:
+    def _port_responds(
+        self,
+        port: int,
+        timeout: float = 1.0,
+        expected_pid: Optional[int] = None,
+    ) -> bool:
+        """Verifica a porta sem abrir conexão no canal serial."""
         try:
-            with socket.create_connection((HOST, port), timeout=timeout):
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            for line in result.stdout.splitlines():
+                parts = line.split()
+
+                if len(parts) < 5 or parts[0].upper() != "TCP":
+                    continue
+
+                local_port = parts[1].rsplit(":", 1)[-1]
+                state = parts[3].upper()
+                process_id = parts[4]
+
+                if local_port != str(port):
+                    continue
+
+                if state != "LISTENING":
+                    continue
+
+                if expected_pid is not None and process_id != str(expected_pid):
+                    continue
+
                 return True
-        except OSError:
+
+            return False
+
+        except Exception as exc:
+            self.log.warning("_port_responds: erro verificando porta: %s", exc)
             return False
 
     def status(self) -> DaemonStatus:
         pid = self._read_pid()
         alive = pid is not None and self._pid_alive(pid)
         port = self._read_port()
-        resp = port is not None and self._port_responds(port)
+        resp = (
+            port is not None
+            and pid is not None
+            and self._port_responds(port, expected_pid=pid)
+        )
         return DaemonStatus(
             pid_file_exists=PID_FILE.exists(), pid=pid, pid_alive=alive,
             port_file_exists=PORT_FILE.exists(), port=port, port_responsive=resp,
@@ -210,12 +250,15 @@ class QemuDaemon:
             pid = self._read_pid()
             if pid and self._pid_alive(pid):
                 try:
-                    subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                   capture_output=True, timeout=5)
+                    subprocess.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True,
+                        timeout=5,
+                    )
                 except Exception:
                     pass
             self._clean_state()
-            self._kill_stale_qemu()
+            #self._kill_stale_qemu()
             if attempt < 3:
                 print(f"  [!]  Tentando de novo em 2s...")
                 time.sleep(2)
@@ -241,33 +284,50 @@ class QemuDaemon:
         if not self.qs.is_available():
             self.log.error("_try_boot: qemu ausente")
             return False
-        if not (self.alpine_root / "vmlinuz-virt").exists():
-            self.log.error("_try_boot: alpine ausente")
-            return False
 
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         for f in (SERIAL_FILE, TRACE_FILE):
             f.unlink(missing_ok=True)
 
-        kernel = str(self.alpine_root / "vmlinuz-virt")
-        initrd = str(self.alpine_root / "initramfs-virt")
-        modloop = str(self.alpine_root / "modloop-virt")
+        # Seleciona a mídia de boot. O disco QCOW2 mantém o Alpine instalado.
+        iso_file = self.alpine_root / "alpine-virt.iso"
+        boot_mode = getattr(self, "boot_mode", "disk").lower()
 
-        # ── VOTA AO dl-cdn (linorg.usp.br está 404) ──
+        if boot_mode not in ("disk", "iso"):
+            self.log.error("_try_boot: modo inválido: %s", boot_mode)
+            return False
+
+        if boot_mode == "disk":
+            if not DISK_FILE.is_file():
+                self.log.error("_try_boot: disco persistente ausente: %s", DISK_FILE)
+                return False
+            boot_media = []
+            boot_order = "c"
+        else:
+            if not iso_file.is_file():
+                self.log.error("_try_boot: ISO de recuperação ausente: %s", iso_file)
+                return False
+            boot_media = ["-cdrom", str(iso_file)]
+            boot_order = "d"
+
+        self.log.info("_try_boot: boot_mode=%s", boot_mode)
+        # Detecção de aceleração nativa para Windows com fallback TCG.
+
+        accel_flags = ["-accel", "whpx", "-accel", "tcg"]
+
         cmd = [
-            self.qs.qemu_exe, "-m", "512M",
-            "-kernel", kernel, "-initrd", initrd,
-            "-append",
-            "console=ttyS0,115200 ip=dhcp "
-            "alpine_repo=http://dl-cdn.alpinelinux.org/alpine/v3.21/main "
-            "modloop=/dev/vda "
-            "rootflags=size=400M",
+            self.qs.qemu_exe,
+            *accel_flags,
+            "-m", "512M",
+            "-smp", "2",
+            # "-cdrom", str(iso_file),
+            # "-boot", "d",
+            *boot_media,
+            "-boot", boot_order,
             "-chardev",
             f"socket,id=serial0,host={HOST},port={port},server=on,wait=off,"
             f"logfile={str(SERIAL_FILE.resolve()).replace(chr(92), '/')},logappend=off",
             "-serial", "chardev:serial0",
-            "-drive", f"file={modloop},if=virtio,format=raw,readonly=on",
-            # Disco persistente: mesma sintaxe do modloop (funciona)
             *(["-drive",
                f"file={str(DISK_FILE.resolve()).replace(chr(92), '/')},"
                f"if=virtio,format=qcow2"]
@@ -276,7 +336,8 @@ class QemuDaemon:
             "-d", "guest_errors,cpu_reset",
             "-monitor", "none",
             "-display", "none",
-            "-net", "nic", "-net", "user",
+            "-netdev", "user,id=net0",
+            "-device", "virtio-net-pci,netdev=net0",
             "-no-shutdown",
         ]
         self.log.info("_try_boot: cmd=%s", " ".join(cmd))
@@ -519,7 +580,7 @@ class QemuDaemon:
             except Exception:
                 pass
         self._clean_state()
-        self._kill_stale_qemu()
+        #self._kill_stale_qemu()
         self._process = None
         self.log.info("stop: concluído")
 
@@ -533,12 +594,12 @@ class QemuDaemon:
             return "(socket fechado: daemon offline ou login falhou)"
         with self._lock:
             try:
-                self._drain(self._sock, wait=0.2)
-                marker = f"M_{int(time.time()*1000)}"
-                # \n em vez de && — funciona mesmo se cmd termina com ';', '}', 'fi'
+                self._drain(self._sock, wait=0.1)
+                marker = f"__ORN_{int(time.time()*1000)}__"
                 self._sock.sendall(f"{cmd}\necho {marker}\n".encode())
                 buf = b""
                 deadline = time.time() + timeout
+                marker_bytes = marker.encode()
                 while time.time() < deadline:
                     try:
                         chunk = self._sock.recv(8192)
@@ -547,22 +608,20 @@ class QemuDaemon:
                     if not chunk:
                         break
                     buf += chunk
-                    if marker.encode() in buf:
+                    if marker_bytes in buf:
                         break
                 text = buf.decode("utf-8", errors="replace")
                 cleaned = []
-                for l in text.splitlines():
-                    s = l.strip()
+                for raw_l in text.splitlines():
+                    s = raw_l.strip().replace("\r", "")
                     if not s:
                         continue
-                    if s == cmd.strip() or s == f"echo {marker}" or s == marker:
+                    if marker in s or s == cmd.strip() or f"echo {marker}" in s:
                         continue
-                    if "localhost:~#" in s:
-                        s = s.split("localhost:~#", 1)[-1].strip()
-                        if not s:
-                            continue
+                    if re.search(r"^[a-zA-Z0-9_\-]+:[~/\w]*[#$]", s):
+                        continue
                     cleaned.append(s)
-                return "\n".join(cleaned)
+                return "\n".join(cleaned).strip()
             except Exception as exc:
                 self._sock = None
                 return f"(erro: {exc})"
@@ -570,63 +629,102 @@ class QemuDaemon:
     def bootstrap(self) -> bool:
         if not self._ensure_socket():
             self.log.error("bootstrap: sem socket")
-            print("  [ERRO] socket fechado. Reinicie o daemon.")
+            print("  [ERRO] Socket fechado ou daemon offline. Rode 'orn sandbox daemon start'.")
             return False
 
-        # ── 1. Repos no tmpfs ──
-        print("  [..] Configurando repos...")
-        self.shell(
-            "echo 'http://dl-cdn.alpinelinux.org/alpine/v3.21/main' > /etc/apk/repositories",
-            timeout=10,
-        )
-        self.shell(
-            "echo 'http://dl-cdn.alpinelinux.org/alpine/v3.21/community' >> /etc/apk/repositories",
-            timeout=10,
-        )
+        print("  [1/4] Verificando e ativando rede (eth0)...")
+        # Levanta a interface e obtém IP do QEMU via DHCP
+        self.shell("ip link set eth0 up", timeout=5)
+        dhcp_out = self.shell("udhcpc -i eth0 -q -n -t 5 2>&1", timeout=15)
+        print(f"    | DHCP: {dhcp_out}")
 
-        # ── 2. Early-return se já foi bootstrapped (tmpfs flag) ──
-        flag = self.shell("test -f /root/.orn_ready && echo Y || echo N", timeout=10)
+        ip_out = self.shell("ip -4 addr show eth0 2>&1", timeout=5)
+        print(f"    | IP: {ip_out.strip()}")
+
+        # Configura DNS confiável no resolv.conf
+        self.shell("echo 'nameserver 8.8.8.8' > /etc/resolv.conf", timeout=5)
+
+        # Teste de conectividade real
+        ping_out = self.shell("ping -c 1 -W 2 8.8.8.8 2>&1", timeout=10)
+        net_ok = "1 packets received" in ping_out or "1 received" in ping_out
+        if net_ok:
+            print("    [OK] Conectividade com a internet confirmada.")
+        else:
+            print(f"    [!] Aviso de ping (pode ser ICMP bloqueado pelo firewall host): {ping_out}")
+
+        # Resolve o IP do CDN pelo host e injeta no /etc/hosts do Alpine
+        try:
+            cdn_ip = socket.gethostbyname("dl-cdn.alpinelinux.org")
+        except Exception:
+            cdn_ip = "151.101.18.132"
+
+        print(f"  [2/4] Configurando DNS local ({cdn_ip}) e repositórios...")
+        self.shell(f"echo '{cdn_ip} dl-cdn.alpinelinux.org' >> /etc/hosts", timeout=5)
+
+        repo_cmds = (
+            "mkdir -p /etc/apk && "
+            "echo 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' > /etc/apk/repositories && "
+            "echo 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> /etc/apk/repositories"
+        )
+        self.shell(repo_cmds, timeout=10)
+
+        # Configuração dos Repositórios Oficiais
+        print("  [2/4] Configurando repositórios em /etc/apk/repositories...")
+        repo_cmds = (
+            "mkdir -p /etc/apk"
+        )
+        self.shell(
+            "echo 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main' > /etc/apk/repositories",
+            timeout=10,
+        )
+        self.shell(
+            "echo 'https://dl-cdn.alpinelinux.org/alpine/v3.24/community' >> /etc/apk/repositories",
+            timeout=10,
+        )
+        self.shell(repo_cmds, timeout=10)
+        repos = self.shell("cat /etc/apk/repositories 2>&1", timeout=5)
+        print(f"    | Repositórios ativos:\n{repos}")
+
+        # Verificar se já temos o bootstrap flag gravado
+        flag = self.shell("test -f /root/.orn_ready && echo Y || echo N", timeout=5)
         if "Y" in flag:
-            print("  [OK] Bootstrap em cache (/root/.orn_ready existe).")
+            print("  [OK] Bootstrap já instalado anteriormente (/root/.orn_ready presente).")
             return True
 
-        # ── 3. apk update com retry ──
-        print("  [..] apk update (até 3 tentativas)...")
-        for attempt in range(3):
-            upd = self.shell("apk update 2>&1 | tail -5", timeout=120)
-            if "v3.21." in upd and "temporary error" not in upd.lower():
-                print(f"  [OK] apk update (tentativa {attempt+1}/3)")
+        # Atualização do índice de pacotes com saída transparente
+        print("  [3/4] Atualizando índices (apk update)...")
+        upd = ""
+        upd_ok = False
+        for attempt in range(1, 4):
+            upd = self.shell("apk update --verbose 2>&1", timeout=60)
+            print(f"    | Tentativa {attempt}/3:")
+            for line in upd.splitlines():
+                print(f"      {line}")
+            if "OK:" in upd or "packages" in upd:
+                upd_ok = True
+                print(f"    [OK] Índices do Alpine atualizados.")
                 break
-            print(f"  [!]  falhou (tentativa {attempt+1}/3)")
             time.sleep(2)
+
+        if not upd_ok:
+            print("  [ERRO] 'apk update' falhou 3 vezes. Verifique a saída acima.")
+            return False
+
+        # Instalação do GCC, musl-dev, Python 3 e Pip
+        print("  [4/4] Instalando gcc, musl-dev, python3, py3-pip...")
+        inst = self.shell(
+            "apk add --no-cache gcc musl-dev python3 py3-pip 2>&1",
+            timeout=300,
+        )
+        print(f"    | Saída do instalador:\n{inst}")
+
+        if "OK:" in inst or "100%" in inst:
+            self.shell("touch /root/.orn_ready", timeout=5)
+            print("  [OK] Bootstrap concluído com sucesso!")
+            return True
         else:
-            print("  [ERRO] apk update falhou 3x.")
+            print("  [ERRO] Falha na instalação de pacotes. Veja a saída do instalador acima.")
             return False
-
-        # ── 4. apk add com retry ──
-        print("  [..] apk add gcc musl-dev python3 py3-pip (2-4 min)...")
-        add = ""
-        add_ok = False
-        for attempt in range(3):
-            add = self.shell(
-                "apk add --no-cache gcc musl-dev python3 py3-pip 2>&1 | tail -8",
-                timeout=600,
-            )
-            if "OK:" in add and "MiB in" in add:
-                add_ok = True
-                print(f"  [OK] apk add (tentativa {attempt+1}/3)")
-                print(add[-400:])
-                break
-            print(f"  [!]  falhou (tentativa {attempt+1}/3): {add[-150:]}")
-            time.sleep(3)
-        if not add_ok:
-            print(f"  [ERRO] apk add falhou 3x.")
-            return False
-
-        # ── 5. Flag ──
-        self.shell("touch /root/.orn_ready", timeout=5)
-        print("  [OK] Bootstrap concluído.")
-        return True
 
     @staticmethod
     def _clean_output(text: str) -> str:
@@ -677,41 +775,37 @@ class QemuDaemon:
                timeout: int) -> SandboxResult:
         if not self._ensure_socket():
             return SandboxResult(False, "", "Daemon offline ou socket morto", -2)
-        probe = self.shell("test -f /root/.orn_ready && echo Y || echo N", timeout=10)
-        if "Y" not in probe:
-            return SandboxResult(False, "",
-                "Bootstrap não executado. Rode 'orn sandbox bootstrap' primeiro.", -2)
 
         args = args or []
-        args_str = " ".join(args)
+        import shlex
+        args_str = " ".join(shlex.quote(a) for a in args)
         eof = f"EOF_{int(time.time()*1000)}"
 
         with self._lock:
             try:
-                self._drain(self._sock, wait=0.2)
-
-                self._sock.sendall(f"cat > /tmp/main.c << '{eof}'\n".encode())
-                for line in code.splitlines():
-                    self._sock.sendall((line + "\n").encode())
-                    time.sleep(0.005)
-                self._sock.sendall(f"{eof}\n".encode())
-                time.sleep(0.3)
-
-                self._sock.sendall(b"rm -f /tmp/app\n")
-                self._sock.sendall(b"echo '===COMPILANDO==='\n")
-                self._sock.sendall(b"gcc /tmp/main.c -o /tmp/app 2>&1\n")
-                self._sock.sendall(b"GCC_RC=$?\n")
-                self._sock.sendall(
-                    b"if [ $GCC_RC -ne 0 ]; then echo '===COMPILE_FAILED==='; "
-                    b"else echo '===COMPILADO_OK==='; fi\n"
+                self._drain(self._sock, wait=0.05)
+                # Envio em bloco atômico
+                payload = (
+                    f"cat << '{eof}' > /tmp/main.c\n"
+                    f"{code}\n"
+                    f"{eof}\n"
+                    f"rm -f /tmp/app /tmp/out.txt /tmp/err.txt\n"
+                    f"gcc -O2 /tmp/main.c -o /tmp/app > /tmp/err.txt 2>&1\n"
+                    f"GCC_RC=$?\n"
+                    f"if [ $GCC_RC -ne 0 ]; then\n"
+                    f"  echo '===COMPILE_FAILED==='\n"
+                    f"  cat /tmp/err.txt\n"
+                    f"  echo '===FIM==='\n"
+                    f"else\n"
+                    f"  echo '===EXECUTANDO==='\n"
+                    f"  /tmp/app {args_str} > /tmp/out.txt 2>&1\n"
+                    f"  APP_RC=$?\n"
+                    f"  echo \"APP_RC=$APP_RC\"\n"
+                    f"  cat /tmp/out.txt\n"
+                    f"  echo '===FIM==='\n"
+                    f"fi\n"
                 )
-                time.sleep(0.3)
-
-                self._sock.sendall(b"if [ -x /tmp/app ]; then\n")
-                self._sock.sendall(b"echo '===EXECUTANDO==='\n")
-                self._sock.sendall(f"/tmp/app {args_str} 2>&1\n".encode())
-                self._sock.sendall(b"echo '===FIM==='\n")
-                self._sock.sendall(b"fi\n")
+                self._sock.sendall(payload.encode("utf-8"))
 
                 buf = b""
                 deadline = time.time() + timeout
@@ -723,31 +817,29 @@ class QemuDaemon:
                     if not chunk:
                         break
                     buf += chunk
-                    if b"===FIM===" in buf or b"===COMPILE_FAILED===" in buf:
+                    if b"===FIM===" in buf:
                         break
 
                 text = buf.decode("utf-8", errors="replace")
 
                 if "===COMPILE_FAILED===" in text:
-                    stderr_raw = text.split("===COMPILE_FAILED===")[0]
-                    if "===COMPILANDO===" in stderr_raw:
-                        stderr_raw = stderr_raw.split("===COMPILANDO===", 1)[1]
-                    return SandboxResult(False, "", self._clean_output(stderr_raw), 1)
+                    err_raw = text.split("===COMPILE_FAILED===", 1)[1].split("===FIM===")[0]
+                    return SandboxResult(False, "", self._clean_output(err_raw), 1)
 
                 if "===EXECUTANDO===" in text and "===FIM===" in text:
-                    stdout_raw = text.split("===EXECUTANDO===", 1)[1].split("===FIM===")[0]
-                    stderr_raw = ""
-                    if "===COMPILANDO===" in text:
-                        stderr_raw = text.split("===COMPILANDO===", 1)[1].split("===COMPILADO_OK===")[0]
+                    exec_part = text.split("===EXECUTANDO===", 1)[1].split("===FIM===")[0]
+                    rc_match = re.search(r"APP_RC=(\d+)", exec_part)
+                    rc = int(rc_match.group(1)) if rc_match else 0
+                    # Remove o marcador APP_RC=...
+                    clean_stdout = re.sub(r"APP_RC=\d+\r?\n?", "", exec_part)
                     return SandboxResult(
-                        True,
-                        self._clean_output(stdout_raw),
-                        self._clean_output(stderr_raw),
-                        0,
+                        success=(rc == 0),
+                        stdout=self._clean_output(clean_stdout),
+                        stderr="",
+                        exit_code=rc,
                     )
 
-                return SandboxResult(False, text[-2000:], "Sem marcador de fim", -1)
-
+                return SandboxResult(False, text[-1000:], "Timeout ou execução incompleta", -1)
             except Exception as e:
                 self._sock = None
                 self.log.exception("_run_c: erro")
@@ -758,42 +850,30 @@ class QemuDaemon:
         if not self._ensure_socket():
             return SandboxResult(False, "", "Daemon offline ou socket morto", -2)
 
-        py_check = self.shell(
-            "which python3 >/dev/null 2>&1 && python3 --version 2>&1 || echo NO_PY",
-            timeout=10,
-        )
-        if "NO_PY" in py_check or "Python 3" not in py_check:
-            return SandboxResult(False, "",
-                "python3 ausente no Alpine. Rode 'orn sandbox bootstrap'.", -2)
-
         args = args or []
-        import shlex as _shlex
-        args_str = " ".join(_shlex.quote(a) for a in args)
+        import shlex
+        args_str = " ".join(shlex.quote(a) for a in args)
         eof = f"EOF_{int(time.time()*1000)}"
 
         with self._lock:
             try:
-                self._drain(self._sock, wait=0.2)
-
-                self._sock.sendall(f"cat > /tmp/main.py << '{eof}'\n".encode())
-                for line in code.splitlines():
-                    self._sock.sendall((line + "\n").encode())
-                    time.sleep(0.005)
-                self._sock.sendall(f"{eof}\n".encode())
-                time.sleep(0.3)
-
-                self._sock.sendall(b"rm -f /tmp/out.txt /tmp/err.txt\n")
-                self._sock.sendall(b"echo '===EXECUTANDO==='\n")
-                self._sock.sendall(
-                    f"python3 /tmp/main.py {args_str} > /tmp/out.txt 2> /tmp/err.txt\n".encode()
+                self._drain(self._sock, wait=0.05)
+                payload = (
+                    f"cat << '{eof}' > /tmp/main.py\n"
+                    f"{code}\n"
+                    f"{eof}\n"
+                    f"rm -f /tmp/out.txt /tmp/err.txt\n"
+                    f"echo '===EXECUTANDO==='\n"
+                    f"python3 /tmp/main.py {args_str} > /tmp/out.txt 2> /tmp/err.txt\n"
+                    f"PY_RC=$?\n"
+                    f"echo \"PY_RC=$PY_RC\"\n"
+                    f"echo '===STDOUT==='\n"
+                    f"cat /tmp/out.txt\n"
+                    f"echo '===STDERR==='\n"
+                    f"cat /tmp/err.txt\n"
+                    f"echo '===FIM==='\n"
                 )
-                self._sock.sendall(b"PY_RC=$?\n")
-                self._sock.sendall(b"echo \"PY_RC=$PY_RC\"\n")
-                self._sock.sendall(b"echo '===STDOUT==='\n")
-                self._sock.sendall(b"cat /tmp/out.txt\n")
-                self._sock.sendall(b"echo '===STDERR==='\n")
-                self._sock.sendall(b"cat /tmp/err.txt\n")
-                self._sock.sendall(b"echo '===FIM==='\n")
+                self._sock.sendall(payload.encode("utf-8"))
 
                 buf = b""
                 deadline = time.time() + timeout
@@ -811,14 +891,9 @@ class QemuDaemon:
                 text = buf.decode("utf-8", errors="replace")
                 if "===STDOUT===" in text and "===FIM===" in text:
                     out_raw = text.split("===STDOUT===", 1)[1].split("===STDERR===")[0]
-                    err_raw = ""
-                    if "===STDERR===" in text:
-                        err_raw = text.split("===STDERR===", 1)[1].split("===FIM===")[0]
-
-                    import re as _re
-                    rc_match = _re.search(r"PY_RC=(\d+)", text)
+                    err_raw = text.split("===STDERR===", 1)[1].split("===FIM===")[0]
+                    rc_match = re.search(r"PY_RC=(\d+)", text)
                     rc = int(rc_match.group(1)) if rc_match else 0
-
                     return SandboxResult(
                         success=(rc == 0),
                         stdout=self._clean_output(out_raw),
@@ -826,10 +901,10 @@ class QemuDaemon:
                         exit_code=rc,
                     )
 
-                return SandboxResult(False, text[-2000:], "Sem marcador de fim", -1)
-
+                return SandboxResult(False, text[-1000:], "Timeout ou execução incompleta", -1)
             except Exception as e:
                 self._sock = None
                 self.log.exception("_run_python: erro")
                 return SandboxResult(False, "", f"Erro socket: {e}", -1)
+
 
