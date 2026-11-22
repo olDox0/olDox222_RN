@@ -187,6 +187,10 @@ int orn_infer(const char* prompt, int max_tokens, char* output, int output_size)
         );
         
         if (n > 0 && out_pos + n < output_size - 1) {
+            piece[n] = '\0';
+            if (strstr(piece, "stopgen") != NULL || strstr(piece, "| stopgen |") != NULL) {
+                break;
+            }
             memcpy(output + out_pos, piece, n);
             out_pos += n;
         }

@@ -82,57 +82,115 @@ def _normalize_lang(raw: str) -> str:
 
 
 def _extract_code_block(text: str, default_lang: str = "python") -> tuple[str, str]:
-    """Extrai ``(code, lang)`` de uma saída de modelo.
-
-    Regras:
-      - normaliza CRLF → LF
-      - normaliza aliases de linguagem (``py``→``python``, ``cpp``→``c++``)
-      - prioriza blocos cuja lang bate com ``default_lang`` (ou sem lang)
-      - entre candidatos, escolhe o **maior** (descarta blocos de prosa)
-      - se não houver fence e o texto parecer código, devolve cru
-    """
     if not text:
         return "", default_lang
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-
     target = _normalize_lang(default_lang)
-    matches = _CODE_BLOCK_RE.findall(text)  # [(raw_lang, body), ...]
-
+    matches = _CODE_BLOCK_RE.findall(text)  
     if not matches:
-        if _CODE_HINT_RE.search(text):
-            return text.strip(), default_lang
-        return text.strip(), default_lang
+        cleaned = text.strip()
+        # Se começou com fence de markdown mas não fechou, remove a linha de abertura
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            first_line = lines[0].lstrip("`").strip()
+            lang = _normalize_lang(first_line) or default_lang
+            code = "\n".join(lines[1:]).strip()
+            return code, lang
+        return cleaned, default_lang
 
     norm = [(body, _normalize_lang(raw)) for raw, body in matches]
-
     preferred = [(body, lang) for body, lang in norm if lang in (target, "")]
     pool = preferred or norm
-
     code, lang = max(pool, key=lambda pair: len(pair[0]))
     final_lang = lang or target or default_lang
     return code.strip(), final_lang
 
 
-def _extract_json(text: str) -> dict:
-    """Extrai JSON de ``text`` (tolera bloco markdown). Levanta ValueError."""
+def _parse_sections_to_plan(text: str, default_lang: str = "python") -> dict | None:
+    """Extrai seções de texto livre e envelopa em um plano estruturado garantido."""
+    if not text or len(text.strip()) < 15:
+        return None
+
+    ext = "c" if default_lang in ("c", "cpp", "c++") else "py"
+    default_filename = f"main.{ext}"
+
+    # Tenta extrair [ENTENDIMENTO]
+    understanding = ""
+    m_und = re.search(r"\[ENTENDIMENTO\]\s*(.*?)(?=\[(?:ARQUIVO|ARQUIVOS|RISCOS|CRITERIOS)\]|$)", text, re.DOTALL | re.IGNORECASE)
+    if m_und:
+        understanding = m_und.group(1).strip()
+    elif "understanding" in text.lower():
+        # Fallback se a IA tentou imitar chave de JSON
+        m_key = re.search(r'["\']?understanding["\']?\s*:\s*["\']([^"\']+)["\']', text, re.IGNORECASE)
+        if m_key:
+            understanding = m_key.group(1).strip()
+
+    # Tenta extrair [ARQUIVO]
+    filename = default_filename
+    m_file = re.search(r"\[(?:ARQUIVO|ARQUIVOS)\]\s*(.*?)(?=\[(?:ENTENDIMENTO|RISCOS|CRITERIOS)\]|$)", text, re.DOTALL | re.IGNORECASE)
+    if m_file:
+        cand = m_file.group(1).strip().splitlines()[0].strip()
+        cand = re.sub(r"[^\w\.\-\/]", "", cand)
+        if cand:
+            filename = cand
+
+    # Tenta extrair [RISCOS]
+    risks = []
+    m_risks = re.search(r"\[RISCOS\]\s*(.*?)(?=\[(?:ENTENDIMENTO|ARQUIVO|ARQUIVOS|CRITERIOS)\]|$)", text, re.DOTALL | re.IGNORECASE)
+    if m_risks:
+        for line in m_risks.group(1).strip().splitlines():
+            clean = line.strip(" -*•")
+            if clean:
+                risks.append(clean)
+
+    if not understanding:
+        # Se não achou tag, usa o primeiro parágrafo significativo
+        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("{")]
+        understanding = lines[0] if lines else ""
+
+    if not understanding or len(understanding) < 4:
+        return None
+
+    # O sistema envelopa em JSON canônico perfeito
+    return {
+        "understanding": understanding,
+        "files": [{"path": filename, "action": "create", "purpose": "implementação da tarefa"}],
+        "io_contracts": [],
+        "risks": risks or ["possível loop infinito ou estouro de limites"],
+        "success_criteria": ["execução bem-sucedida no sandbox"]
+    }
+
+def _extract_json(text: str, default_lang: str = "python") -> dict:
     if not text:
         raise ValueError("texto vazio")
     body = text.strip()
     m = _JSON_FENCE_RE.search(body)
     if m:
         body = m.group(1).strip()
-    obj = json.loads(body)
-    if not isinstance(obj, dict):
-        raise ValueError("JSON raiz não é objeto")
-    return obj
+    try:
+        obj = json.loads(body)
+        if isinstance(obj, dict):
+            return obj
+    except (ValueError, json.JSONDecodeError):
+        pass
+
+    # Envelopamento automático caso o JSON da IA venha quebrado ou em seções
+    enveloped = _parse_sections_to_plan(text, default_lang=default_lang)
+    if enveloped is not None:
+        return enveloped
+
+    raise ValueError("não foi possível extrair nem JSON nem seções estruturadas")
 
 
 def _plan_is_valid(obj: dict) -> tuple[bool, str]:
+    if not isinstance(obj, dict):
+        return False, "plano não é um dicionário"
     if not isinstance(obj.get("understanding"), str):
         return False, "campo 'understanding' ausente ou não-string"
     if not isinstance(obj.get("files"), list):
         return False, "campo 'files' ausente ou não-lista"
     return True, ""
+
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +231,13 @@ class TaskRunner:
     # inferência / validação
     # ------------------------------------------------------------------
     def _ask(self, task: Task, system: str, user: str) -> str:
+        # Limpa o histórico de diálogo prévio do bridge para evitar acúmulo de contexto
+        if hasattr(self.bridge, "clear_context"):
+            try:
+                self.bridge.clear_context()
+            except Exception:
+                pass
+
         full = f"{system}\n\n{user}" if system else user
         max_tokens = self._resolve_max_tokens(task, full)
         try:
@@ -204,15 +269,10 @@ class TaskRunner:
 
 
     def _resolve_max_tokens(self, task: Task, prompt: str) -> int:
-        """Nunca devolve None: bridge trata None como 'sem teto' e estoura o ctx."""
         if task.spec.max_tokens is not None and task.spec.max_tokens > 0:
             return int(task.spec.max_tokens)
-        try:
-            from engine.core.executive import _adaptive_max_tokens
-            n = int(_adaptive_max_tokens(prompt))
-        except Exception:
-            n = self._default_max_tokens
-        return max(64, min(n, 1024))
+        # Para tarefas autônomas com código, o piso mínimo seguro é 512 tokens
+        return max(512, self._default_max_tokens)
 
     # ------------------------------------------------------------------
     # transições auxiliares
@@ -240,12 +300,13 @@ class TaskRunner:
     def _phase_plan(self, task: Task) -> None:
         self._emit(task, "phase_start", phase="plan")
         system, user = prompts.build_plan_prompt(task)
-
         last_err = ""
-        for attempt in range(2):  # 1 tentativa + 1 retry de JSON
+        obj = None
+        raw = ""
+        for attempt in range(2):  
             raw = self._ask(task, system, user)
             try:
-                obj = _extract_json(raw)
+                obj = _extract_json(raw, default_lang=task.spec.language)
                 ok, why = _plan_is_valid(obj)
                 if not ok:
                     last_err = why

@@ -8,13 +8,11 @@ Sempre com ``run_isolated=False``: a fase SANDBOX é a única porta de
 execução. O hook só enriquece/valida estaticamente o código.
 """
 from __future__ import annotations
-
 from typing import Any, Callable
-
 from engine.tasks.model import Task
+from engine.tasks.runner import _extract_code_block
 
 Applier = Callable[..., str]
-
 
 def _real_applier(
     code: str,
@@ -35,7 +33,6 @@ def _real_applier(
         run_isolated=run_isolated,
     )
 
-
 def make_code_hook(
     *,
     bridge: Any = None,
@@ -43,14 +40,11 @@ def make_code_hook(
     applier: Applier | None = None,
     max_retries: int = 0,
 ) -> Callable[[str, Task], str]:
-    """Retorna um ``code_hook(code, task) -> code``.
-
-    Falhas do applier/hook são **silenciosas** (retorna ``code`` original);
-    o motivo vai pro ``task.errors`` só quando o runner estiver olhando.
-    """
     apply_fn = applier or _real_applier
-
     def _hook(code: str, task: Task) -> str:
+        # Se for C/C++, não aciona validação isolada prévia para evitar duplicidade com SANDBOX
+        if task.spec.language in ("c", "cpp", "c++") and applier is None:
+            return code
         try:
             out = apply_fn(
                 code,
@@ -64,8 +58,8 @@ def make_code_hook(
             return code
         if not isinstance(out, str) or not out.strip():
             return code
-        return out
-
+        clean_code, _ = _extract_code_block(out, task.spec.language)
+        return clean_code or code
     return _hook
 
 

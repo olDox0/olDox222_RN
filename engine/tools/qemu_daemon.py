@@ -412,18 +412,23 @@ class QemuDaemon:
         return buf
 
     def _open_serial(self, port: int, timeout: float = 15.0) -> Optional[socket.socket]:
-        """Handshake com drenagem agressiva e timeouts curtos."""
         try:
             s = socket.create_connection((HOST, port), timeout=5.0)
         except OSError as exc:
             self.log.error("open_serial: connect falhou: %s", exc)
             return None
         self.log.debug("open_serial: TCP conectado em %s:%d", HOST, port)
+        
+        # Envia Ctrl+C e Enter para matar qualquer processo travado que esteja monopolizando o terminal
+        try:
+            s.sendall(b"\x03\x03\n")
+            time.sleep(0.2)
+        except OSError:
+            pass
 
-        # 1. DRENAGEM AGRESSIVA — descarta o buffer acumulado
         s.settimeout(0.15)
         drained = b""
-        for _ in range(80):  # até 12s drenando
+        for _ in range(80):  
             try:
                 chunk = s.recv(65536)
                 if not chunk:
@@ -433,25 +438,20 @@ class QemuDaemon:
                 break
         if drained:
             self.log.debug("open_serial: drenou %d bytes", len(drained))
-
-        # 2. Envia Enter para "acordar" o prompt
         try:
-            s.sendall(b"\n")
-            time.sleep(0.4)
+            s.sendall(b"\x03\n")
+            time.sleep(0.3)
         except OSError:
             pass
 
-        # 3. Aguarda prompt com timeout curto
         s.settimeout(1.5)
         deadline = time.time() + timeout
         got_prompt = False
         buffer = b""
-
         while time.time() < deadline:
             try:
                 chunk = s.recv(4096)
             except socket.timeout:
-                # Se já viu login mas não ~#, tenta root
                 if b"login:" in buffer.lower() and b"~#" not in buffer:
                     try:
                         s.sendall(b"root\n")
@@ -459,14 +459,15 @@ class QemuDaemon:
                         break
                 else:
                     try:
-                        s.sendall(b"\n")
+                        # Se ainda não apareceu o prompt, manda Ctrl+C de novo
+                        s.sendall(b"\x03\n")
                     except OSError:
                         break
                 continue
             if not chunk:
                 break
             buffer += chunk
-            if b"~#" in buffer or b"# " in buffer[-10:]:
+            if b"~#" in buffer:
                 got_prompt = True
                 break
             if b"login:" in buffer.lower():
@@ -474,7 +475,6 @@ class QemuDaemon:
                     s.sendall(b"root\n")
                 except OSError:
                     break
-
         if not got_prompt:
             self.log.warning(
                 "open_serial: sem prompt em %ss (buf=%r)",
@@ -485,32 +485,11 @@ class QemuDaemon:
             except Exception:
                 pass
             return None
-
-        # 4. Desativa echo (opcional, sem esperar resposta)
         try:
             s.sendall(b"stty -echo 2>/dev/null\n")
             time.sleep(0.2)
         except OSError:
             pass
-
-        # 5. Marker de confirmação (rápido)
-        marker = f"OK_{int(time.time()*1000)}"
-        try:
-            s.sendall(f"echo {marker}\n".encode())
-            s.settimeout(2.0)
-            wait_buf = b""
-            while marker.encode() not in wait_buf:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                wait_buf += chunk
-            if marker.encode() not in wait_buf:
-                self.log.warning("open_serial: marker não voltou")
-                # Mesmo assim retorna — o socket pode servir
-        except OSError:
-            pass
-
-        s.settimeout(0.5)
         return s
 
     def _ensure_socket(self) -> bool:
@@ -784,8 +763,9 @@ class QemuDaemon:
         with self._lock:
             try:
                 self._drain(self._sock, wait=0.05)
-                # Envio em bloco atômico
+                run_sec = max(5, timeout - 5)
                 payload = (
+                    f"killall -9 app 2>/dev/null\n"
                     f"cat << '{eof}' > /tmp/main.c\n"
                     f"{code}\n"
                     f"{eof}\n"
@@ -798,8 +778,11 @@ class QemuDaemon:
                     f"  echo '===FIM==='\n"
                     f"else\n"
                     f"  echo '===EXECUTANDO==='\n"
-                    f"  /tmp/app {args_str} > /tmp/out.txt 2>&1\n"
+                    f"  timeout {run_sec} /tmp/app {args_str} > /tmp/out.txt 2>&1\n"
                     f"  APP_RC=$?\n"
+                    f"  if [ $APP_RC -eq 143 ] || [ $APP_RC -eq 137 ] || [ $APP_RC -eq 124 ]; then\n"
+                    f"    echo 'Erro: Execução excedeu o tempo limite (possível loop infinito).' >> /tmp/out.txt\n"
+                    f"  fi\n"
                     f"  echo \"APP_RC=$APP_RC\"\n"
                     f"  cat /tmp/out.txt\n"
                     f"  echo '===FIM==='\n"
@@ -858,14 +841,19 @@ class QemuDaemon:
         with self._lock:
             try:
                 self._drain(self._sock, wait=0.05)
+                run_timeout = max(5, timeout - 5)
                 payload = (
+                    f"killall -9 python3 2>/dev/null\n"
                     f"cat << '{eof}' > /tmp/main.py\n"
                     f"{code}\n"
                     f"{eof}\n"
                     f"rm -f /tmp/out.txt /tmp/err.txt\n"
                     f"echo '===EXECUTANDO==='\n"
-                    f"python3 /tmp/main.py {args_str} > /tmp/out.txt 2> /tmp/err.txt\n"
+                    f"timeout -s 9 {run_timeout} python3 /tmp/main.py {args_str} > /tmp/out.txt 2> /tmp/err.txt\n"
                     f"PY_RC=$?\n"
+                    f"if [ $PY_RC -eq 137 ] || [ $PY_RC -eq 124 ]; then\n"
+                    f"  echo 'Erro: Execução excedeu o tempo limite (possivel loop infinito ou input bloqueante).' >> /tmp/err.txt\n"
+                    f"fi\n"
                     f"echo \"PY_RC=$PY_RC\"\n"
                     f"echo '===STDOUT==='\n"
                     f"cat /tmp/out.txt\n"
