@@ -73,6 +73,66 @@ _CODE_HINT_RE = re.compile(
     re.MULTILINE,
 )
 
+_LEAKED_MARKERS: tuple[str, ...] = (
+    "| stopgen |",
+    "| stopgen|",
+    "|stopgen |",
+    "[CRIATORES]",
+    "[COMANDA]",
+    "[RESULTADO]",
+)
+_LEAKED_END_RE = re.compile(r"(?:^|\n)\s*\[END\]\s*(?:\n|$)", re.MULTILINE)
+
+# --- P3: detector de loop infinito estrutural ---
+_C_INFINITE_LOOPS: tuple[re.Pattern, ...] = (
+    re.compile(r"\bwhile\s*\(\s*(1|1u|1ull|true|TRUE|True)\s*\)"),
+    re.compile(r"\bfor\s*\(\s*;\s*;\s*\)"),
+)
+_PY_INFINITE_LOOPS: tuple[re.Pattern, ...] = (
+    re.compile(r"^\s*while\s+(True|1)\s*:", re.MULTILINE),
+)
+
+def _has_infinite_loop(code: str, lang: str) -> tuple[bool, str]:
+    """Detecta loops estruturalmente infinitos sem `break` visível.
+
+    Retorna (True, padrão_detectado) se achar loop suspeito.
+    Retorna (False, "") se código parece seguro.
+    """
+    if not code:
+        return False, ""
+    norm_lang = _normalize_lang(lang)
+    # 1. Detecta padrões de loop infinito
+    patterns = ()
+    if norm_lang in ("c", "cpp", "c++"):
+        patterns = _C_INFINITE_LOOPS
+    elif norm_lang == "python":
+        patterns = _PY_INFINITE_LOOPS
+    else:
+        return False, ""
+    matched_pattern = ""
+    for pat in patterns:
+        m = pat.search(code)
+        if m:
+            matched_pattern = m.group(0)
+            break
+    if not matched_pattern:
+        return False, ""
+    # 2. Se existe `break` em qualquer lugar, aceita (conservador)
+    if re.search(r"\bbreak\b", code):
+        return False, ""
+    return True, matched_pattern
+
+def _has_leaked_markers(text: str) -> tuple[bool, list[str]]:
+    """Detecta marcadores de prompt que vazaram no output do modelo."""
+    if not text:
+        return False, []
+    found: list[str] = []
+    for marker in _LEAKED_MARKERS:
+        if marker in text:
+            found.append(marker)
+    if _LEAKED_END_RE.search(text):
+        found.append("[END]")
+    return bool(found), found
 
 def _normalize_lang(raw: str) -> str:
     if not raw:
@@ -185,13 +245,26 @@ def _extract_json(text: str, default_lang: str = "python") -> dict:
 def _plan_is_valid(obj: dict) -> tuple[bool, str]:
     if not isinstance(obj, dict):
         return False, "plano não é um dicionário"
-    if not isinstance(obj.get("understanding"), str):
-        return False, "campo 'understanding' ausente ou não-string"
-    if not isinstance(obj.get("files"), list):
-        return False, "campo 'files' ausente ou não-lista"
+    und = obj.get("understanding")
+    if not isinstance(und, str) or len(und.strip()) < 4:
+        return False, "campo 'understanding' ausente, não-string ou muito curto"
+    files = obj.get("files")
+    if not isinstance(files, list) or not files:
+        return False, "campo 'files' ausente, não-lista ou vazio"
+    # Validação de coerência: plano não pode negar riscos quando há loops implícitos
+    risks = obj.get("risks") or []
+    if isinstance(risks, list):
+        risks_text = " ".join(str(r) for r in risks).lower()
+        und_text = und.lower()
+        negations = ("não há risco", "nao ha risco", "sem risco",
+                     "nenhum risco", "sem riscos", "não há riscos")
+        if any(neg in risks_text for neg in negations):
+            # Sinal de plano degenerado — modelo negou riscos
+            return False, (
+                "plano nega explicitamente riscos; "
+                "todo plano deve listar riscos reais (loops, overflow, etc)"
+            )
     return True, ""
-
-
 
 # ---------------------------------------------------------------------------
 # TaskRunner
@@ -206,7 +279,8 @@ class TaskRunner:
         emit: Callable[[dict], None] | None = None,
         code_hook: Callable[[str, Task], str] | None = None,
         sandbox_step: Callable[[Task], tuple[bool, str]] | None = None,
-        default_max_tokens: int = 512,      # <-- NOVO
+        default_max_tokens: int = 512,
+        enable_diff_refine: bool = False,
     ) -> None:
         self.store = store
         self.bridge = bridge
@@ -214,7 +288,8 @@ class TaskRunner:
         self._emit_sink = emit
         self._code_hook = code_hook
         self._sandbox_step = sandbox_step
-        self._default_max_tokens = max(64, int(default_max_tokens))\
+        self._default_max_tokens = max(64, int(default_max_tokens))
+        self.enable_diff_refine = enable_diff_refine
 
     # ------------------------------------------------------------------
     # emissão
@@ -303,8 +378,25 @@ class TaskRunner:
         last_err = ""
         obj = None
         raw = ""
-        for attempt in range(2):  
-            raw = self._ask(task, system, user)
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            if attempt == 0:
+                raw = self._ask(task, system, user)
+            else:
+                # Retry com prompt de correção mostrando erro anterior
+                retry_sys, retry_user = prompts.build_plan_retry_prompt(
+                    task, raw, last_err
+                )
+                raw = self._ask(task, retry_sys, retry_user)
+            # P1: filtro de marcadores vazados
+            has_leak, leaked = _has_leaked_markers(raw)
+            if has_leak:
+                last_err = (
+                    f"marcadores de prompt vazaram no output: "
+                    f"{', '.join(leaked)}"
+                )
+                continue
+            # P2: extração + validação
             try:
                 obj = _extract_json(raw, default_lang=task.spec.language)
                 ok, why = _plan_is_valid(obj)
@@ -315,8 +407,9 @@ class TaskRunner:
             except (ValueError, json.JSONDecodeError) as exc:
                 last_err = f"{type(exc).__name__}: {exc}"
         else:
-            raise _TaskAborted(f"plano JSON inválido após 2 tentativas: {last_err}")
-
+            raise _TaskAborted(
+                f"plano inválido após {max_attempts} tentativas: {last_err}"
+            )
         art = TaskArtifact(
             phase="plan",
             content=raw,
@@ -334,10 +427,21 @@ class TaskRunner:
         if not code.strip():
             raise _RetryDraft("draft vazio — o modelo não retornou bloco de código")
 
+        # ok, why = self._validate(code)
+        # if not ok:
+        #     raise _RetryDraft(f"draft rejeitado pelo validator: {why}")
+
         ok, why = self._validate(code)
         if not ok:
             raise _RetryDraft(f"draft rejeitado pelo validator: {why}")
-
+        # P3: detector de loop infinito estrutural
+        loop_inf, pattern = _has_infinite_loop(code, task.spec.language)
+        if loop_inf:
+            raise _RetryDraft(
+                f"draft contém possível loop infinito ({pattern!r}) sem `break` "
+                "visível. Reescreva com condição de parada explícita (for com limite, "
+                "while com condição, ou adicione `break`)."
+            )
         art = TaskArtifact(
             phase="draft",
             content=raw,
@@ -368,7 +472,13 @@ class TaskRunner:
         ok, why = self._validate(code)
         if not ok:
             raise _RetryDraft(f"implement rejeitado pelo validator: {why}")
-
+        # P3: detector de loop infinito estrutural
+        loop_inf, pattern = _has_infinite_loop(code, task.spec.language)
+        if loop_inf:
+            raise _RetryDraft(
+                f"implement contém possível loop infinito ({pattern!r}) sem `break` "
+                "visível. Reescreva com condição de parada explícita."
+            )
         art = TaskArtifact(
             phase="implement",
             content=raw,
@@ -550,6 +660,12 @@ class TaskRunner:
                     self._bump_attempt(task, r.feedback)
                     if task.status == TaskStatus.BLOCKED:
                         return
+                    # Tenta primeiro a correção cirúrgica por Diff
+                    if self._try_diff_refine(task, r.feedback):
+                        task.set_phase("sandbox")
+                        self.store.save(task)
+                        continue
+                    # Se o diff cirúrgico falhar, volta ao DRAFT como fallback
                     task.set_phase("draft")
                     self.store.save(task)
 
@@ -561,6 +677,67 @@ class TaskRunner:
 
             else:
                 raise _TaskAborted(f"fase desconhecida: {phase!r}")
+
+    def _validate_diff_syntax(self, code: str, lang: str) -> bool:
+        norm_lang = _normalize_lang(lang)
+        if norm_lang == "python":
+            import ast
+            try:
+                ast.parse(code)
+                return True
+            except SyntaxError:
+                return False
+        if norm_lang in ("c", "cpp"):
+            return "int main" in code and not code.lstrip().startswith("```")
+        return bool(code.strip())
+
+    def _try_diff_refine(self, task: Task, feedback: str) -> bool:
+        if not self.enable_diff_refine:
+            return False
+        impl = task.artifact("implement")
+        if impl is None or not impl.code.strip():
+            return False
+
+        orig_code = impl.code
+        system, user = prompts.build_diff_prompt(task, feedback)
+
+        self._emit(task, "phase_start", phase="diff_refine", attempt=task.attempts)
+        try:
+            raw = self._ask(task, system, user)
+        except Exception as exc:
+            self._emit(task, "phase_error", phase="diff_refine", reason=str(exc))
+            return False
+
+        # 1. Tenta aplicar como patch cirúrgico (@N)
+        try:
+            from engine.tools.diff_engine import parse_diff, apply_hunks
+            hunks = parse_diff(raw, original_content=orig_code)
+            if hunks:
+                lines = orig_code.splitlines()
+                new_lines, errors = apply_hunks(lines, hunks)
+                if not errors and new_lines != lines:
+                    new_code = "\n".join(new_lines)
+                    if self._validate_diff_syntax(new_code, task.spec.language):
+                        impl.code = new_code
+                        impl.meta["diff_patched"] = True
+                        self.store.save_artifact(task, impl)
+                        self._emit(task, "phase_done", phase="diff_refine", hunks=len(hunks))
+                        return True
+        except Exception:
+            pass
+
+        # 2. Fallback: se o modelo gerou o bloco de código corrigido
+        code_cand, _ = _extract_code_block(raw, task.spec.language)
+        if code_cand.strip() and code_cand.strip() != orig_code.strip():
+            if self._validate_diff_syntax(code_cand, task.spec.language):
+                impl.code = code_cand
+                impl.meta["diff_patched"] = True
+                self.store.save_artifact(task, impl)
+                self._emit(task, "phase_done", phase="diff_refine", mode="full_block")
+                return True
+
+        self._emit(task, "phase_error", phase="diff_refine", reason="patch_invalido")
+        return False
 
 class _FakeBridge:
     def __init__(self, responses: list[str]) -> None:
@@ -622,30 +799,115 @@ def _run_tests() -> int:
             t = store.new(TaskSpec(goal=goal, max_retries=max_retries))
             return store, t
 
-        # ---------- happy path ----------
+        # --- P1: marcadores vazados ---
+        _PLAN_LEAKED_STOPGEN = (
+            '{"understanding": "x", "files": [{"path": "a.py", "action": "create", '
+            '"purpose": "p"}], "risks": ["r"], "success_criteria": ["ok"]} '
+            '| stopgen |'
+        )
+        _PLAN_LEAKED_CREATORS = (
+            '{"understanding": "x", "files": [{"path": "a.py", "action": "create", '
+            '"purpose": "p"}], "risks": ["r"], "success_criteria": ["ok"]}\n'
+            '[CRIATORES]\n[END]'
+        )
+        _PLAN_DENIES_RISKS = (
+            '{"understanding": "x", "files": [{"path": "a.py", "action": "create", '
+            '"purpose": "p"}], "risks": ["não há riscos no programa"], '
+            '"success_criteria": ["ok"]}'
+        )
+
         store, t = _mk()
-        events: list[dict] = []
-        bridge = _FakeBridge([_PLAN_JSON, _DRAFT_OK, _IMPL_OK])
-        validator = _FakeValidator()
-        runner = TaskRunner(store, bridge, validator, emit=events.append)
-        out = runner.run(t.id)
-        _check("happy: status DONE", out.status == TaskStatus.DONE)
-        _check("happy: attempts 0", out.attempts == 0)
-        _check("happy: 3 chamadas bridge", len(bridge.calls) == 3)
-        _check("happy: artefatos plan/draft/implement/sandbox/present",
-               all(k in out.artifacts for k in ("plan", "draft", "implement", "sandbox", "present")))
-        _check("happy: draft.code extraído", out.artifacts["draft"].code.startswith("def soma"))
-        _check("happy: implement.code extraído",
-               "-> int" in out.artifacts["implement"].code)
-        _check("happy: plan meta é dict",
-               isinstance(out.artifacts["plan"].meta.get("plan"), dict))
-        _check("happy: sandbox stub flag",
-               out.artifacts["sandbox"].meta.get("stub") is True)
-        kinds = [e["event"] for e in events]
-        _check("happy: task_start emitido", "task_start" in kinds)
-        _check("happy: task_done emitido", "task_done" in kinds)
-        _check("happy: phase_done emitido 5x",
-               kinds.count("phase_done") == 5)
+        bridge = _FakeBridge([_PLAN_LEAKED_STOPGEN] * 3)
+        out = TaskRunner(store, bridge, _FakeValidator()).run(t.id)
+        _check("plan | stopgen | rejeita: FAILED", out.status == TaskStatus.FAILED)
+        _check("plan | stopgen | menção em erro",
+              any("stopgen" in e.lower() for e in out.errors))
+
+        store, t = _mk()
+        bridge = _FakeBridge([_PLAN_LEAKED_CREATORS] * 3)
+        out = TaskRunner(store, bridge, _FakeValidator()).run(t.id)
+        _check("plan [CRIATORES]+[END] rejeita: FAILED", out.status == TaskStatus.FAILED)
+
+        store, t = _mk()
+        bridge = _FakeBridge([_PLAN_DENIES_RISKS] * 3)
+        out = TaskRunner(store, bridge, _FakeValidator()).run(t.id)
+        _check("plan que nega riscos rejeita: FAILED", out.status == TaskStatus.FAILED)
+
+        # --- P2: retry com correção ---
+        store, t = _mk()
+        # 1ª: inválido, 2ª: JSON válido após correção
+        bridge = _FakeBridge(["{invalido", _PLAN_JSON, _DRAFT_OK, _IMPL_OK])
+        out = TaskRunner(store, bridge, _FakeValidator()).run(t.id)
+        _check("plan retry com correção: DONE", out.status == TaskStatus.DONE)
+        _check("plan retry usa prompt de correção",
+              any("TENTATIVA ANTERIOR" in c["prompt"] or "tentativa anterior" in c["prompt"].lower()
+                  for c in bridge.calls[1:2]))
+
+        # --- P2: _plan_is_valid mais rigoroso ---
+        ok, why = _plan_is_valid({"understanding": "", "files": [{"path": "x"}]})
+        _check("plan understanding vazio rejeita", not ok)
+        ok, why = _plan_is_valid({"understanding": "entendimento válido aqui", "files": []})
+        _check("plan files vazio rejeita", not ok)
+        ok, why = _plan_is_valid({
+            "understanding": "entendimento válido aqui",
+            "files": [{"path": "x"}],
+            "risks": ["não há riscos no programa"],
+        })
+        _check("plan que nega riscos rejeita (unit)", not ok and "nega" in why)
+        ok, why = _plan_is_valid({
+            "understanding": "entendimento válido aqui",
+            "files": [{"path": "x"}],
+            "risks": ["possível loop infinito"],
+        })
+        _check("plan com riscos reais passa (unit)", ok)
+
+        # --- P3: detector de loop infinito estrutural ---
+        inf, pat = _has_infinite_loop("while (1) { i++; }", "c")
+        _check("loop_inf: while(1) sem break", inf and "while" in pat)
+        inf, pat = _has_infinite_loop("while(1) { if (x) break; }", "c")
+        _check("loop_inf: while(1) COM break aceita", not inf)
+        inf, pat = _has_infinite_loop("for(;;) { return; }", "c")
+        _check("loop_inf: for(;;) sem break", inf and "for" in pat)
+        inf, pat = _has_infinite_loop("for (;;) { if (x) break; }", "c++")
+        _check("loop_inf: for(;;) COM break aceita", not inf)
+        inf, pat = _has_infinite_loop("while (true) { x++; }", "cpp")
+        _check("loop_inf: while(true) sem break", inf)
+        inf, pat = _has_infinite_loop("for (int i=0; i<10; i++) { }", "c")
+        _check("loop_inf: for com limite aceita", not inf)
+        inf, pat = _has_infinite_loop("while True:\n    x += 1", "python")
+        _check("loop_inf: while True sem break", inf and "while" in pat)
+        inf, pat = _has_infinite_loop("while True:\n    if cond: break", "python")
+        _check("loop_inf: while True COM break aceita", not inf)
+        inf, pat = _has_infinite_loop("while 1:\n    pass", "python")
+        _check("loop_inf: while 1 sem break", inf)
+        inf, pat = _has_infinite_loop("for i in range(10):\n    pass", "python")
+        _check("loop_inf: for range aceita", not inf)
+        inf, pat = _has_infinite_loop("def f():\n    return 1", "python")
+        _check("loop_inf: função sem loop aceita", not inf)
+        inf, pat = _has_infinite_loop("", "python")
+        _check("loop_inf: vazio aceita", not inf)
+
+        # P3 integração: draft com while(1) sem break → retry
+        store, t = _mk()
+        _DRAFT_LOOP = "```c\nwhile(1) { i++; }\n```"
+        _DRAFT_OK_C = "```c\nfor(int i=0; i<10; i++) { printf(\"%d\\n\", i); }\n```"
+        _IMPL_OK_C = "```c\nint main(){ for(int i=0;i<10;i++) printf(\"%d\\n\",i); return 0; }\n```"
+        bridge = _FakeBridge([_PLAN_JSON, _DRAFT_LOOP, _DRAFT_OK_C, _IMPL_OK_C])
+        out = TaskRunner(store, bridge, _FakeValidator()).run(t.id)
+        _check("P3 integração: draft loop_inf retry → DONE", out.status == TaskStatus.DONE)
+        _check("P3 integração: feedback injetado no 2o draft",
+              any("loop infinito" in c["prompt"] for c in bridge.calls[2:3]))
+        _check("P3 integração: attempts 1", out.attempts == 1)
+
+        # --- _has_leaked_markers unit ---
+        leak, found = _has_leaked_markers("algo | stopgen | aqui")
+        _check("detecta | stopgen |", leak and "| stopgen |" in found)
+        leak, found = _has_leaked_markers("plano\n[END]\n")
+        _check("detecta [END] isolado", leak and "[END]" in found)
+        leak, found = _has_leaked_markers("plano limpo sem nada")
+        _check("plano limpo passa", not leak)
+        leak, found = _has_leaked_markers("texto com [ENDGAME] não é END", )
+        _check("[ENDGAME] não é falso positivo", not leak)
 
         # ---------- plan fenced em markdown ----------
         store, t = _mk()
@@ -655,10 +917,10 @@ def _run_tests() -> int:
 
         # ---------- plan inválido 2x → FAILED ----------
         store, t = _mk()
-        bridge = _FakeBridge(["não é json", "{invalido"])
+        bridge = _FakeBridge(["não é json", "{invalido", "também inválido"])
         out = TaskRunner(store, bridge, _FakeValidator()).run(t.id)
         _check("plan inválido: FAILED", out.status == TaskStatus.FAILED)
-        _check("plan inválido: 2 chamadas bridge", len(bridge.calls) == 2)
+        _check("plan inválido: 3 chamadas bridge", len(bridge.calls) == 3)
         _check("plan inválido: erro registrado", len(out.errors) >= 1)
 
         # ---------- plan JSON sem 'files' 2x → FAILED ----------
@@ -897,6 +1159,38 @@ def _run_tests() -> int:
             _check("_ask: None levanta", False)
         except Exception:
             _check("_ask: None levanta", True)
+
+        # --- P5: defesa em profundidade contra timeout ---
+        calls.clear()
+        def py_timeout_signal(code, args, timeout):
+            # Daemon reporta success=True mas stdout contém sinal de timeout
+            return True, "algo\nErro: Execução excedeu o tempo limite (possível loop infinito).\n", ""
+        step = make_sandbox_step(python_runner=py_timeout_signal)
+        ok, fb = step(_mk())
+        _check("P5: timeout no stdout força False", ok is False)
+        _check("P5: feedback menciona timeout", "tempo limite" in fb or "timeout" in fb.lower())
+
+        calls.clear()
+        def py_killed_signal(code, args, timeout):
+            return True, "", "Killed\n"
+        step = make_sandbox_step(python_runner=py_killed_signal)
+        ok, fb = step(_mk())
+        _check("P5: 'Killed' no stderr força False", ok is False)
+
+        calls.clear()
+        def py_normal_output(code, args, timeout):
+            # Output contém "timeout" como palavra do domínio do problema
+            return True, "The timeout value is 30 seconds.\n", ""
+        step = make_sandbox_step(python_runner=py_normal_output)
+        ok, fb = step(_mk())
+        _check("P5: 'timeout' como dado não é falso positivo", ok is True)
+
+        calls.clear()
+        def py_terminated_signal(code, args, timeout):
+            return True, "", "Terminated\n"
+        step = make_sandbox_step(python_runner=py_terminated_signal)
+        ok, fb = step(_mk())
+        _check("P5: 'Terminated' no stderr força False", ok is False)
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

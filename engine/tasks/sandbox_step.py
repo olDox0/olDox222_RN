@@ -16,8 +16,8 @@ God: Ares (execução) + Poseidon (I/O).
 """
 from __future__ import annotations
 
+import re
 from typing import Callable
-
 from engine.tasks.model import Task
 
 RunnerFn = Callable[[str, list[str], int], tuple[bool, str, str]]
@@ -25,6 +25,17 @@ RunnerFn = Callable[[str, list[str], int], tuple[bool, str, str]]
 
 _FEEDBACK_MAX = 3000
 
+# --- P5: defesa em profundidade contra timeout/kill reportados como sucesso ---
+_TIMEOUT_SIGNALS_RE = re.compile(
+    r"excedeu o tempo limite|"
+    r"execution timed out|"
+    r"exceeded the time limit|"
+    r"possible infinite loop|"
+    r"possível loop infinito|"
+    r"Killed\s*$|"
+    r"Terminated\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 def _truncate(s: str) -> str:
     s = (s or "").strip()
@@ -80,7 +91,13 @@ def make_sandbox_step(
             ok, out, err = runner(art.code, fixed_args, timeout)
         except Exception as exc:
             return False, f"sandbox exceção: {type(exc).__name__}: {exc}"
-
+        # P5: defesa em profundidade — detecta sinais textuais de timeout/kill
+        # mesmo se o daemon reportou success=True (protege contra regressão)
+        combined_output = (out or "") + "\n" + (err or "")
+        if _TIMEOUT_SIGNALS_RE.search(combined_output):
+            ok = False
+            if not err:
+                err = "[P5] sinal de timeout/kill detectado no output"
         parts: list[str] = []
         if out.strip():
             parts.append("[STDOUT]\n" + out.strip())
@@ -221,7 +238,6 @@ def _run_tests() -> int:
         return 0
     print(f"  {passed}/{passed + failed} passaram — {failed} falha(s)")
     return 1
-
 
 if __name__ == "__main__":
     import sys

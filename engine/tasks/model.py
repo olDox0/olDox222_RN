@@ -30,8 +30,8 @@ PHASE_TRANSITIONS: dict[Phase, frozenset[Phase]] = {
     "plan":      frozenset({"draft"}),
     "draft":     frozenset({"implement"}),
     "implement": frozenset({"sandbox", "draft"}),
-    "sandbox":   frozenset({"present", "draft"}),
-    "present":   frozenset(),  # terminal da fase; status vira DONE em seguida
+    "sandbox":   frozenset({"present", "draft", "sandbox"}),
+    "present":   frozenset(),  
 }
 
 # ---------------------------------------------------------------------------

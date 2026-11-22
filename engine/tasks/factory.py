@@ -56,6 +56,7 @@ def build_default_runner(
         code_hook=code_hook,
         sandbox_step=sandbox_step,
         default_max_tokens=default_max_tokens,
+        enable_diff_refine=True,
     )
 
 
