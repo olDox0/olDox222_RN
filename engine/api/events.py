@@ -16,8 +16,12 @@ import sys
 from dataclasses import dataclass, field
 from typing import Iterator, Literal
 
-EventKind = Literal["start", "sources", "chunk", "llm_done", "validated", "done", "error"]
-
+EventKind = Literal[
+    "start", "sources", "chunk", "llm_done", "validated", "done", "error",
+    # task-level:
+    "task_start", "phase_start", "phase_done", "phase_error",
+    "sandbox_start", "sandbox_done", "task_done",
+]
 @dataclass(slots=True)
 class SourceRef:
     category:    str       = ""

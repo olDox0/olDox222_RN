@@ -3289,3 +3289,6 @@ def sandbox_run(file_path: str, args: str, timeout: int) -> None:
             Display.info("Stdout:")
             print(result.stdout)
         raise SystemExit(result.exit_code or 1)
+
+from engine.tasks.cli import task_group
+cli.add_command(task_group, name="task")
