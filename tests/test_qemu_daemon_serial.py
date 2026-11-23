@@ -40,6 +40,13 @@ def test_shell_prompt_uses_last_line() -> None:
     )
 
 
+
+def test_shell_prompt_recognizes_prompt_suffix_without_newline() -> None:
+    assert qemu_daemon._has_shell_prompt(
+        b"localhost login:localhost:/root# "
+    )
+
+
 class _ScriptedSocket:
     def __init__(self, events: list[bytes | BaseException]) -> None:
         self.events = list(events)
