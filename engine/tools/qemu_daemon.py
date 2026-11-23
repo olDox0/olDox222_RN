@@ -32,6 +32,17 @@ DAEMON_LOG_FILE = STATE_DIR / "daemon.log"       # o que o Python faz
 DISK_FILE = STATE_DIR / "alpine.img.qcow2"
 DISK_SIZE_MB = 512
 
+_SHELL_PROMPT_RE = re.compile(rb"[A-Za-z0-9_.-]+:[^\r\n]*[#$][ \t]*$")
+
+
+def _has_shell_prompt(data: bytes) -> bool:
+    """Reconhece o prompt final do ash/sh do Alpine, inclusive com cwd."""
+    tail = data.rstrip(b"\r\n")
+    if not tail:
+        return False
+    line = tail.rsplit(b"\n", 1)[-1].rstrip(b"\r")
+    return _SHELL_PROMPT_RE.fullmatch(line) is not None
+
 def _setup_logger() -> logging.Logger:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("orn.sandbox.daemon")
@@ -392,10 +403,10 @@ class QemuDaemon:
 
         print(f"    [OK] Boot completo detectado.")
         self._sock = self._open_serial(port, timeout=20.0)
-        if self._sock is not None:
-            print(f"    [OK] Socket logado.")
-        else:
-            print(f"    [!] Boot OK, mas socket falhou.")
+        if self._sock is None:
+            print(f"    [!] Boot OK, mas o shell serial não ficou pronto.")
+            return False
+        print(f"    [OK] Socket logado.")
         return True
 
     def _drain(self, s: socket.socket, wait: float = 0.2) -> bytes:
@@ -447,16 +458,19 @@ class QemuDaemon:
         s.settimeout(1.5)
         deadline = time.time() + timeout
         got_prompt = False
+        login_submitted = False
         buffer = b""
         while time.time() < deadline:
             try:
                 chunk = s.recv(4096)
             except socket.timeout:
-                if b"login:" in buffer.lower() and b"~#" not in buffer:
-                    try:
-                        s.sendall(b"root\n")
-                    except OSError:
-                        break
+                if b"login:" in buffer.lower() and not _has_shell_prompt(buffer):
+                    if not login_submitted:
+                        try:
+                            s.sendall(b"root\n")
+                            login_submitted = True
+                        except OSError:
+                            break
                 else:
                     try:
                         # Se ainda não apareceu o prompt, manda Ctrl+C de novo
@@ -467,12 +481,13 @@ class QemuDaemon:
             if not chunk:
                 break
             buffer += chunk
-            if b"~#" in buffer:
+            if _has_shell_prompt(buffer):
                 got_prompt = True
                 break
-            if b"login:" in buffer.lower():
+            if b"login:" in buffer.lower() and not login_submitted:
                 try:
                     s.sendall(b"root\n")
+                    login_submitted = True
                 except OSError:
                     break
         if not got_prompt:
@@ -492,21 +507,44 @@ class QemuDaemon:
             pass
         return s
 
+    def _serial_socket_healthy(
+        self, sock: socket.socket, timeout: float = 1.0
+    ) -> bool:
+        """Confirma execução de um comando no shell, não apenas escrita no TCP."""
+        marker = f"__ORN_HEALTH_{time.monotonic_ns()}__".encode("ascii")
+        marker_line = re.compile(
+            rb"(?:^|\r?\n)" + re.escape(marker) + rb"(?:\r?\n|$)"
+        )
+        try:
+            self._drain(sock, wait=0.1)
+            sock.sendall(b"echo " + marker + b"\n")
+            sock.settimeout(min(0.2, timeout))
+            response = bytearray()
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    return False
+                response.extend(chunk)
+                if marker_line.search(response):
+                    return True
+            return False
+        except OSError as exc:
+            self.log.debug("ensure_socket: health check falhou: %s", exc)
+            return False
+
     def _ensure_socket(self) -> bool:
         if self._sock is not None:
-            try:
-                self._sock.settimeout(0.3)
-                try:
-                    self._sock.sendall(b"echo __ALIVE__\n")
-                    self._drain(self._sock, wait=0.3)
-                except OSError:
-                    pass
+            if self._serial_socket_healthy(self._sock):
                 return True
-            except Exception:
-                try:
-                    self._sock.close()
-                except Exception:
-                    pass
+            self.log.warning("ensure_socket: socket serial sem resposta válida")
+            try:
+                self._sock.close()
+            except OSError:
+                pass
             self._sock = None
 
         st = self.status()
@@ -597,7 +635,7 @@ class QemuDaemon:
                         continue
                     if marker in s or s == cmd.strip() or f"echo {marker}" in s:
                         continue
-                    if re.search(r"^[a-zA-Z0-9_\-]+:[~/\w]*[#$]", s):
+                    if _has_shell_prompt(s.encode("utf-8", errors="replace")):
                         continue
                     cleaned.append(s)
                 return "\n".join(cleaned).strip()
