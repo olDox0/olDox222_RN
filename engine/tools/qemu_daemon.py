@@ -32,7 +32,7 @@ DAEMON_LOG_FILE = STATE_DIR / "daemon.log"       # o que o Python faz
 DISK_FILE = STATE_DIR / "alpine.img.qcow2"
 DISK_SIZE_MB = 512
 
-_SHELL_PROMPT_RE = re.compile(rb"[A-Za-z0-9_.-]+:[^\r\n]*[#$][ \t]*$")
+_SHELL_PROMPT_RE = re.compile(rb"[A-Za-z0-9_.-]+:(?:~|/)[^\r\n]*[#$][ \t]*$")
 
 
 def _has_shell_prompt(data: bytes) -> bool:
@@ -41,7 +41,7 @@ def _has_shell_prompt(data: bytes) -> bool:
     if not tail:
         return False
     line = tail.rsplit(b"\n", 1)[-1].rstrip(b"\r")
-    return _SHELL_PROMPT_RE.fullmatch(line) is not None
+    return _SHELL_PROMPT_RE.search(line) is not None
 
 
 def _setup_logger() -> logging.Logger:
