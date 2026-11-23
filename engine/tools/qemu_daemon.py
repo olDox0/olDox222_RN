@@ -43,6 +43,7 @@ def _has_shell_prompt(data: bytes) -> bool:
     line = tail.rsplit(b"\n", 1)[-1].rstrip(b"\r")
     return _SHELL_PROMPT_RE.fullmatch(line) is not None
 
+
 def _setup_logger() -> logging.Logger:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("orn.sandbox.daemon")
@@ -556,7 +557,6 @@ class QemuDaemon:
 
     def _wait_boot_marker(self, port: int) -> bool:
         """Retorna True só se o Alpine estiver no sistema completo (não recovery)."""
-        import re
         try:
             with socket.create_connection((HOST, port), timeout=2) as s:
                 s.settimeout(1.5)
@@ -574,7 +574,7 @@ class QemuDaemon:
                             return False
                         if re.search(r"welcome to alpine linux\s+3\.", low):
                             return True
-                        if re.search(r"[a-z][a-z0-9\-]*:~\s*#", text):
+                        if _has_shell_prompt(buf):
                             return True
                     except socket.timeout:
                         break
