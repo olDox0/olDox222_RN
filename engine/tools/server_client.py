@@ -6,6 +6,12 @@ from typing import Any
 HOST = "127.0.0.1"
 PORT = 8371
 
+def task_send(cmd: str, *, workspace: str | None = None, **kwargs) -> dict:
+    payload = {"task": cmd, **kwargs}
+    if workspace:
+        payload["workspace"] = workspace   # F3=C
+    return _sandbox_call(payload, wait=kwargs.pop("wait", 600.0))
+
 def is_server_online() -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

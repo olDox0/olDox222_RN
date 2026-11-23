@@ -148,7 +148,7 @@ class InferenceFacade:
         except ImportError:
             yield StreamEvent(kind="error", error="stream proxy indisponível")
             return
-        for raw in stream_infer_events(prompt, max_tokens, host=_H, port=_P):
+        for raw in stream_infer_events(prompt, max_tokens, host=_H, infer_port=_P):
             ev = StreamEvent.from_raw(raw)
             if ev is not None:
                 yield ev

@@ -307,7 +307,7 @@ def _infer(prompt: str, max_tokens: int) -> tuple[str, float]:
 
         infer_kwargs: dict[str, Any] = {
             "max_tokens": max_tokens,
-            "stop": ["<|im_end|>", "</s>"],
+            "stop": ["<|im_end|>", "</s>", "| stopgen |", "|stopgen|"],
             "echo": False,
             "temperature": _cfg.temperature,
             "top_p": _cfg.top_p,

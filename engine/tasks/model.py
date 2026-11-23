@@ -40,18 +40,22 @@ PHASE_TRANSITIONS: dict[Phase, frozenset[Phase]] = {
 class TaskStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
-    BLOCKED = "blocked"   # retries esgotados — retomável via `orn task resume`
+    PAUSED  = "paused"
     DONE    = "done"
-    FAILED  = "failed"    # erro irrecuperável
-    ABORTED = "aborted"   # abortado pelo usuário
+    BLOCKED = "blocked"
+    ABORTED = "aborted"
+    FAILED  = "failed"   # confirmar se store.py já usa
 
 
 STATUS_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.PENDING: frozenset({TaskStatus.RUNNING, TaskStatus.ABORTED}),
     TaskStatus.RUNNING: frozenset({
-        TaskStatus.DONE,
-        TaskStatus.FAILED,
-        TaskStatus.BLOCKED,
+        TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.BLOCKED,
+        TaskStatus.PAUSED,          # NOVO
+        TaskStatus.ABORTED,
+    }),
+    TaskStatus.PAUSED: frozenset({  # NOVO
+        TaskStatus.RUNNING,
         TaskStatus.ABORTED,
     }),
     TaskStatus.BLOCKED: frozenset({TaskStatus.RUNNING, TaskStatus.ABORTED}),

@@ -74,12 +74,15 @@ _CODE_HINT_RE = re.compile(
 )
 
 _LEAKED_MARKERS: tuple[str, ...] = (
-    "| stopgen |",
-    "| stopgen|",
-    "|stopgen |",
     "[CRIATORES]",
     "[COMANDA]",
     "[RESULTADO]",
+)
+_END_MARKERS: tuple[str, ...] = (
+    "| stopgen |",
+    "| stopgen|",
+    "|stopgen |",
+    "|stopgen|",
 )
 _LEAKED_END_RE = re.compile(r"(?:^|\n)\s*\[END\]\s*(?:\n|$)", re.MULTILINE)
 
@@ -91,6 +94,17 @@ _C_INFINITE_LOOPS: tuple[re.Pattern, ...] = (
 _PY_INFINITE_LOOPS: tuple[re.Pattern, ...] = (
     re.compile(r"^\s*while\s+(True|1)\s*:", re.MULTILINE),
 )
+
+def _strip_end_markers(text: str) -> tuple[str, bool]:
+    if not text:
+        return text, False
+    found = False
+    for marker in _END_MARKERS:
+        if marker in text:
+            text = text.replace(marker, "")
+            found = True
+    return text, found
+
 
 def _has_infinite_loop(code: str, lang: str) -> tuple[bool, str]:
     """Detecta loops estruturalmente infinitos sem `break` visível.
@@ -389,6 +403,7 @@ class TaskRunner:
                 )
                 raw = self._ask(task, retry_sys, retry_user)
             # P1: filtro de marcadores vazados
+            raw, _ = _strip_end_markers(raw)
             has_leak, leaked = _has_leaked_markers(raw)
             if has_leak:
                 last_err = (
@@ -423,6 +438,7 @@ class TaskRunner:
         self._emit(task, "phase_start", phase="draft", attempt=task.attempts)
         system, user = prompts.build_draft_prompt(task, feedback=task.feedback)
         raw = self._ask(task, system, user)
+        raw, _ = _strip_end_markers(raw)
         code, lang = _extract_code_block(raw, task.spec.language)
         if not code.strip():
             raise _RetryDraft("draft vazio — o modelo não retornou bloco de código")
@@ -458,6 +474,7 @@ class TaskRunner:
         self._emit(task, "phase_start", phase="implement", attempt=task.attempts)
         system, user = prompts.build_implement_prompt(task, feedback=task.feedback)
         raw = self._ask(task, system, user)
+        raw, _ = _strip_end_markers(raw)
         code, lang = _extract_code_block(raw, task.spec.language)
         if not code.strip():
             raise _RetryDraft("implement vazio — modelo não retornou bloco de código")
@@ -817,11 +834,12 @@ def _run_tests() -> int:
         )
 
         store, t = _mk()
-        bridge = _FakeBridge([_PLAN_LEAKED_STOPGEN] * 3)
+        bridge = _FakeBridge([_PLAN_LEAKED_STOPGEN, _DRAFT_OK, _IMPL_OK])
         out = TaskRunner(store, bridge, _FakeValidator()).run(t.id)
-        _check("plan | stopgen | rejeita: FAILED", out.status == TaskStatus.FAILED)
-        _check("plan | stopgen | menção em erro",
-              any("stopgen" in e.lower() for e in out.errors))
+        _check("plan | stopgen | → DONE (terminador legítimo)",
+               out.status == TaskStatus.DONE)
+        _check("plan | stopgen | não vaza para artefato",
+               "| stopgen |" not in out.artifacts["plan"].content)
 
         store, t = _mk()
         bridge = _FakeBridge([_PLAN_LEAKED_CREATORS] * 3)
@@ -899,7 +917,15 @@ def _run_tests() -> int:
               any("loop infinito" in c["prompt"] for c in bridge.calls[2:3]))
         _check("P3 integração: attempts 1", out.attempts == 1)
 
-        # --- _has_leaked_markers unit ---
+        # --- _strip_end_markers unit ---
+        s, had = _strip_end_markers("plano válido | stopgen |")
+        _check("strip: remove | stopgen |", s.strip() == "plano válido" and had)
+        s, had = _strip_end_markers("plano |stopgen| e | stopgen |")
+        _check("strip: múltiplos", "stopgen" not in s and had)
+        s, had = _strip_end_markers("plano limpo")
+        _check("strip: limpo não muda", s == "plano limpo" and not had)
+
+         # --- _has_leaked_markers unit ---
         leak, found = _has_leaked_markers("algo | stopgen | aqui")
         _check("detecta | stopgen |", leak and "| stopgen |" in found)
         leak, found = _has_leaked_markers("plano\n[END]\n")
