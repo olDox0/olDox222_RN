@@ -103,15 +103,19 @@ def test_open_serial_submits_root_login_once_and_recognizes_prompt(monkeypatch) 
 
 
 class _HealthSocket(_ScriptedSocket):
-    def __init__(self, *, reply: bool) -> None:
+    def __init__(self, *, reply: bool, echo_only: bool = False) -> None:
         super().__init__([])
         self.reply = reply
+        self.echo_only = echo_only
 
     def sendall(self, data: bytes) -> None:
         super().sendall(data)
-        if self.reply and data.startswith(b"echo "):
-            marker = data[5:].strip()
-            self.events.append(marker + b"\r\n")
+        if data.startswith(b"echo "):
+            if self.reply:
+                marker = data[5:].strip()
+                self.events.append(marker + b"\r\n")
+            elif self.echo_only:
+                self.events.append(data.replace(b"\n", b"\r\n"))
 
 
 def test_serial_socket_health_requires_command_output(monkeypatch) -> None:
@@ -120,6 +124,10 @@ def test_serial_socket_health_requires_command_output(monkeypatch) -> None:
 
     assert daemon._serial_socket_healthy(_HealthSocket(reply=True), timeout=0.05)
     assert not daemon._serial_socket_healthy(_HealthSocket(reply=False), timeout=0.05)
+    # Echo do TTY não comprova que o shell executou o comando.
+    assert not daemon._serial_socket_healthy(
+        _HealthSocket(reply=False, echo_only=True), timeout=0.05
+    )
 
 
 def test_ensure_socket_discards_stale_socket_and_reconnects() -> None:
