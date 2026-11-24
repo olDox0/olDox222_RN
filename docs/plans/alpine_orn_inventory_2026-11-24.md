@@ -348,3 +348,21 @@ Na configuração CMake upstream de ggml, GGML_NATIVE=OFF, isoladamente, não ga
 - DGGML_CUDA=OFF
 
 A notação acima corresponde aos argumentos CMake com o prefixo habitual "-D" (ex.: -DGGML_AVX=OFF). Isso evita que um baseline genérico dependa do CPUID virtual mais limitado.
+
+
+
+## Venv e dependências Python — instalação concluída
+
+No guest Alpine 3.24.4 foi criado o ambiente virtual /opt/orn-runtime/venv e /var/tmp/orn-build. O pip foi executado com TMPDIR=/var/tmp/orn-build, --no-cache-dir e --only-binary=:all:.
+
+A instalação terminou com Successfully installed:
+- scikit-build-core 1.1.2
+- numpy 2.5.5 (wheel cp314 musllinux_1_2_x86_64, 17,1 MB)
+- typing-extensions 4.16.0
+- diskcache 5.6.3
+- jinja2 3.1.6
+- MarkupSafe 3.0.4 (wheel musllinux)
+- packaging 26.4
+- pathspec 1.1.1
+
+Nenhuma dependência transitiva foi compilada. Ainda falta uma medição posterior de df -h / após essa instalação, além de validar imports, pip check e disponibilidade do backend CMake/Python. O build llama-cpp-python ainda não começou.
