@@ -76,3 +76,39 @@ Isso comprova os testes unitários de parsing/validação da configuração de m
 - [ ] Confirmar aceleração WHPX ou TCG efetivamente utilizada.
 - [ ] Medir as flags de CPU expostas pelo host e pelo guest.
 - [ ] Fazer backup verificável do QCOW2 antes de qualquer expansão.
+
+
+## Inventário do guest — 2026-11-24 (QEMU online)
+
+O script `scripts/alpine_orn_guest_inventory.py` foi executado com o daemon online.
+
+| Campo | Resultado |
+|---|---|
+| Estado QEMU | Online (PID 10232 na primeira coleta; PID 17260 após restart) |
+| RAM configurada no boot | 512 MiB (ainda não alterada) |
+| Memória reportada pelo guest | 468,1 MiB total; ~36,9 MiB usada na segunda coleta |
+| Disco | `/dev/vda`, 2.097.152 setores de 512 bytes (~2 GiB) |
+| Partição 1 | `/dev/vda1`, 307.200 setores (~150 MiB), ext4, montada em `/boot` |
+| Partição 2 | `/dev/vda2`, 1.788.928 setores (~873 MiB em unidades de 512 bytes), ext4, montada em `/` |
+| Raiz | `/dev/vda2`, ext4, RW |
+| Espaço reportado em / | 1,6G total, ~302M usados, ~1,2G livres |
+| Espaço em /boot | 271,1M total, ~27,8M usados |
+| Swap | Não configurado |
+| `/etc/fstab` | UUID do `/boot`; entrada do cdrom/usb e tmpfs; raiz não aparece explicitamente |
+
+As unidades de tamanho apresentadas por `df` e `lsblk` podem diferir conforme arredondamento e blocos reservados. Não usar os números aproximados para operações de partição.
+
+### Interpretação provisória
+
+A raiz está em uma partição ext4 gravável de `/dev/vda`, e o daemon anexa o QCOW2 como dispositivo virtio. Isso é compatível com uma instalação persistente no disco virtual. **Persistência ainda não comprovada:** falta gravar um sentinela, parar/iniciar o QEMU e confirmar que o arquivo permanece.
+
+### RAM — tentativa não aplicada
+
+O prompt utilizado era CMD, mas foi digitada a sintaxe PowerShell `$env:ORN_QEMU_RAM_MB = "1280"`. CMD rejeitou a linha. O daemon reiniciou normalmente, porém o log confirmou `-m 512M`. Para CMD, utilizar:
+
+```cmd
+set "ORN_QEMU_RAM_MB=1280"
+orn sandbox daemon restart
+```
+
+Depois confirmar no log `guest RAM=1280 MiB` e no Alpine com `free -h`.
