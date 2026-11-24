@@ -291,3 +291,27 @@ No Alpine 3.24.4, o usuário executou `apk add --simulate build-base cmake ninja
 A linha final foi `OK: 560.4 MiB in 106 packages`. Interpretação: tamanho/estado total reportado pelo APK para o conjunto simulado, não bytes de download e não a diferença de espaço que será consumida isoladamente. Antes da simulação, o guest reportava aproximadamente 1,2 GiB livres em `/`.
 
 Para minimizar pressão de disco, a próxima etapa deve simular um conjunto mínimo: `build-base cmake python3-dev pkgconf ca-certificates`, sem `git`, `linux-headers` e `ninja` explícitos. Usar Make/Unix Makefiles no primeiro build. Confirmar `df -h / /var/tmp` e montagem de `/var/tmp` antes de transferir/extrair fontes; `/tmp` é tmpfs e não deve ser usado para os artefatos de compilação. Instalar por etapas e conferir espaço depois.
+
+
+## Instalação efetiva da toolchain APK — T06 concluída
+
+O usuário executou no guest `apk add --no-cache build-base cmake ninja git python3-dev linux-headers pkgconf ca-certificates`. A operação foi concluída sem erro, com `OK: 561.1 MiB in 107 packages`. O log mostrou 33 ações de instalação/upgrade, incluindo atualização de Python `3.14.10-r1` para `3.14.10-r2` e instalação de `python3-dev 3.14.10-r2`.
+
+Verificação após instalação:
+
+| Ferramenta / métrica | Resultado |
+|---|---|
+| GCC | Alpine 15.2.0 |
+| G++ | Alpine 15.2.0 |
+| CMake | 4.2.3 |
+| Ninja | 1.9 |
+| Git | 2.54.1 |
+| Python | 3.14.10 |
+| `python3-config --includes` | `-I/usr/include/python3.14` |
+| Raiz `/` | 579,3 MiB usados; 999,7 MiB disponíveis; 37% usado |
+
+Status: dependências de compilação instaladas. Próximo passo: criar venv dedicado em `/opt/orn-runtime/venv` e preparar build serial com controle de `TMPDIR` em `/var/tmp`.
+
+### Relato separado: Barrier / Amaranth
+
+O usuário relatou que a operação pareceu afetar o Amaranth enquanto utiliza Barrier, mas não descreveu o sintoma. A operação APK ocorreu no Alpine guest por meio de `QemuDaemon.shell()`; não há evidência atual de que tenha alterado configurações do Windows, do Barrier ou de outro computador. O screenshot enviado mostra o Lite XL com o arquivo `doxoade/tools/audio_systems/__init__.py` aberto, mas não exibe a interface/estado do Barrier. Não atribuir causalidade sem conhecer o efeito concreto (desconexão, lag, perda de teclado/mouse ou clipboard).
