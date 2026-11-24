@@ -255,3 +255,30 @@ Inventário de tamanho no host:
 O Qwen 0.5B local é Q2_K, não o Q4_K_M inicialmente previsto. Ele pode ser o primeiro smoke test de integração com o modelo planejado. SmolLM2 135M Q4_K_M é menor e serve para verificar rapidamente carregamento e execução do backend, mas não é substituto comparável ao Qwen em benchmark de qualidade ou velocidade.
 
 Com T05 concluída, a decisão de compilação é: CPU genérica, sem `GGML_NATIVE`, sem `-march=native`, build serial/paralelismo 1. O próximo passo é medir o espaço livre do guest e o estado atual das ferramentas antes de instalar pacotes APK.
+
+
+## Inventário de toolchain e compatibilidade Python — 2026-11-24
+
+Consulta de pacotes no Alpine 3.24.4:
+
+| Pacote / comando | Estado |
+|---|---|
+| `gcc` | instalado — GCC 15.2.0 |
+| `musl-dev` | instalado |
+| `build-base` | meta-pacote ausente |
+| `g++` | ausente |
+| `cmake` | ausente |
+| `ninja` | ausente |
+| `git` | ausente |
+| `python3` | instalado — Python 3.14.10 |
+| `python3-dev` | ausente |
+| `py3-pip` | instalado — pip 26.1.2 |
+| `linux-headers` | ausente |
+| `pkgconf` | ausente |
+| `ca-certificates` | ausente |
+
+Repositórios ativos: Alpine v3.24 main e community.
+
+Verificação externa dos metadados da distribuição em 2026-11-24: PyPI lista `llama-cpp-python` 0.3.38, publicado em 2026-11-23, com classificador Python 3.14 e `Requires-Python >=3.8`. O sdist tem 79,4 MB e SHA256 `0570c9736b5e2a239b651da18687238eeba7fc2369dcdfd8cbb009dc1321e23f`. O `pyproject.toml` declara `scikit-build-core[pyproject]>=0.9.2` e CMake mínimo 3.21. Isto dá suporte de metadados à combinação Python 3.14, mas não substitui o teste de build nativo no Alpine/musl.
+
+Próximo passo seguro: executar `apk add --simulate build-base cmake ninja git python3-dev linux-headers pkgconf ca-certificates` para inspecionar o plano e o espaço antes de instalar. Não compilar em `/tmp` porque o inventário anterior mostrou `/tmp` como tmpfs; usar diretório em disco ext4, como `/var/tmp/orn-build`, e limitar o paralelismo de CMake a 1.
