@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Taskier
 
 **Data:** 2026-11-24  
-**Status:** Execução em andamento — T01, T03, T05 e dependências T06 concluídas; próximo: venv e build do llama-cpp-python  
+**Status:** Execução em andamento — T01, T03, T05 e dependências Python/APK de T06 instaladas; validar ambiente e iniciar build do llama-cpp-python  
 **Plano-mestre:** [alpine_orn_blitz.md](alpine_orn_blitz.md)
 
 ## Legenda
@@ -132,8 +132,10 @@ Dentro do Alpine:
 - [x] Instalar `build-base cmake ninja git python3-dev linux-headers pkgconf ca-certificates` com `--no-cache`.
 - [x] Verificar GCC/G++ 15.2.0, CMake 4.2.3, Ninja 1.9, Git 2.54.1, Python 3.14.10 e `python3-config --includes`.
 - [x] Confirmar pós-instalação: 579,3 MiB usados, 999,7 MiB livres em `/` (37% ocupados).
-- [ ] Criar venv dedicado para o runtime em `/opt/orn-runtime/venv`.
-- [ ] Instalar dependências Python por wheels binários, sem cache e sem compilar dependências transitivas.
+- [x] Criar venv dedicado para o runtime em `/opt/orn-runtime/venv`.
+- [x] Instalar dependências Python por wheels binários, sem cache e sem compilar dependências transitivas.
+- [x] Instalar `numpy 2.5.5`, `scikit-build-core 1.1.2`, `typing-extensions 4.16.0`, `diskcache 5.6.3`, `jinja2 3.1.6`, `MarkupSafe 3.0.4`, `packaging 26.4` e `pathspec 1.1.1`.
+- [ ] Verificar importações, `pip check` e espaço final no guest.
 - [ ] Registrar versões e executar teste de import Python/CMake.
 
 **Nota:** APK finalizou com `OK: 561.1 MiB in 107 packages`; esse valor é o total reportado do sistema, não o incremento isolado da instalação. Python foi atualizado de `3.14.10-r1` para `3.14.10-r2`.
