@@ -394,3 +394,17 @@ No Alpine 3.24.4, consulta read-only retornou:
 A partição raiz começa em 616448; esse LBA deve ser mantido exatamente durante a expansão. O fim atual é o último setor do disco. A tabela não tem partição intermediária entre vda1 e vda2. Não apagar, formatar, mover, nem alterar o início da partição 2.
 
 Alpine v3.24 oferece cloud-utils-growpart (subpacote de community) com growpart e dependências partx/sfdisk; e2fsprogs-extra fornece /usr/sbin/resize2fs. A simulação/instalação desses utilitários deve preceder o procedimento de resize. O procedimento proposto: segundo backup do estado atual com QEMU parado → qemu-img resize positivo 2 GiB→4 GiB → reboot → growpart /dev/vda 2 → confirmar tabela/start LBA → resize2fs /dev/vda2 → confirmar df -h /. O resize do filesystem ocorre somente depois de validar que a partição foi expandida.
+
+
+
+## Simulação de ferramentas de crescimento de partição — T02
+
+A verificação confirmou que /sbin/fdisk é link/applet pertencente a BusyBox 1.37.0-r31; não é o fdisk completo de util-linux. O conjunto simulado cloud-utils-growpart e e2fsprogs-extra resolveria seis pacotes:
+- libsmartcols 2.42.3-r1
+- partx 2.42.3-r1
+- libfdisk 2.42.3-r1
+- sfdisk 2.42.3-r1
+- cloud-utils-growpart 0.33-r1
+- e2fsprogs-extra 1.47.4-r0
+
+Resultado de APK: OK: 562.2 MiB in 113 packages. A simulação não instalou os pacotes. Próximo passo: apk add --no-cache cloud-utils-growpart e2fsprogs-extra; depois verificar command -v growpart, sfdisk, resize2fs e espaço em /.
