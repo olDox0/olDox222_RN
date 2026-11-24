@@ -33,14 +33,17 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 
 **Script:** `scripts/alpine_orn_host_inventory.ps1` (somente leitura).
 
-### T01 — Auditar persistência real do Alpine [P0]
+### T01 — Auditar persistência real do Alpine [P0] — parcial
 - [x] Registrar tentativa inicial de inventário com daemon offline (PID 11136 morto).
 - [x] Reiniciar daemon com sucesso; estado reportado online, PID 10232.
-- [ ] Reexecutar `python scripts/alpine_orn_guest_inventory.py` com daemon online.
-- [ ] Consultar `lsblk -f`, `df -h`, `mount` e `/etc/fstab`.
-- [ ] Identificar disco, partição e filesystem realmente usados.
-- [ ] Depois de confirmar um caminho persistente, criar arquivo sentinela nesse caminho.
+- [x] Executar inventário com daemon online (PID 17260).
+- [x] Identificar disco: `/dev/vda`, 2 GiB.
+- [x] Identificar partições: `/dev/vda1` (~300 MiB, ext4 em `/boot`) e `/dev/vda2` (~1,75 GiB, ext4 em `/`).
+- [x] Confirmar raiz em filesystem ext4 gravável, com ~1,2 GiB livres.
+- [ ] Criar arquivo sentinela em `/workspace`.
 - [ ] Reiniciar QEMU e confirmar que o sentinela continua presente.
+
+**Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`. A estrutura aponta para instalação em disco; a persistência entre boots ainda não foi validada.
 - [ ] Se não houver persistência, planejar migração para instalação Alpine no QCOW2 antes da compilação do runtime.
 
 **Script:** `scripts/alpine_orn_guest_inventory.py` (somente leitura; não cria sentinela, não monta e não formata dispositivos).
@@ -79,6 +82,8 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Executar no checkout local: `12 passed in 0.20s`.
 - [ ] Reiniciar a VM com 1.280 MiB e confirmar `free -h` no Alpine.
 - [ ] Confirmar que o perfil `code` continua com seus limites originais.
+
+**Tentativa local em 2026-11-24:** a variável foi digitada com sintaxe PowerShell em um prompt CMD e não foi definida. O log confirmou que o daemon reiniciou ainda em 512 MiB. Em CMD, usar `set "ORN_QEMU_RAM_MB=1280"`; em PowerShell, usar `$env:ORN_QEMU_RAM_MB = "1280"`.
 
 **Observação:** a coleta atual mostra o QEMU ainda iniciado com `-m 512M`; a configuração de 1.280 MiB não foi aplicada nesta rodada.
 
