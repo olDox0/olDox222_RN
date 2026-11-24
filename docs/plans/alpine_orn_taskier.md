@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Taskier
 
 **Data:** 2026-11-24  
-**Status:** Backlog inicial — todas as tarefas ainda pendentes  
+**Status:** Execução em andamento — T00 inventariado; T01 com teste de persistência pós-reboot pendente; T03 validada no guest  
 **Plano-mestre:** [alpine_orn_blitz.md](alpine_orn_blitz.md)
 
 ## Legenda
@@ -40,8 +40,8 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Identificar disco: `/dev/vda`, 2 GiB.
 - [x] Identificar partições: `/dev/vda1` (~300 MiB, ext4 em `/boot`) e `/dev/vda2` (~1,75 GiB, ext4 em `/`).
 - [x] Confirmar raiz em filesystem ext4 gravável, com ~1,2 GiB livres.
-- [~] Comando de criação do sentinela foi executado em 2026-11-24; a saída ficou vazia porque o arquivo foi escrito sem newline final e o parser serial remove a linha que contém o marcador de fim. A criação precisa ser validada com teste shell que emita uma linha própria.
-- [ ] Reiniciar QEMU e confirmar que o sentinela continua presente.
+- [x] Validar o sentinela antes do reboot com `grep -qx ... && echo SENTINEL_OK`; retorno `SENTINEL_OK`.
+- [ ] Repetir a validação do sentinela após o reboot atual (PID 10936) para comprovar persistência entre boots.
 
 **Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`. A estrutura aponta para instalação em disco; a persistência entre boots ainda não foi validada.
 - [ ] Se não houver persistência, planejar migração para instalação Alpine no QCOW2 antes da compilação do runtime.
@@ -97,7 +97,7 @@ orn sandbox daemon restart
 
 **Critério:** sem variável, mantém comportamento legado; com 1280, o comando QEMU usa `-m 1280M` e o guest informa aproximadamente 1.280 MiB.
 
-**Estado:** implementação e testes adicionados ao repositório; validação executável no Bluebaby pendente.
+**Estado:** implementação, testes unitários e aplicação real de 1.280 MiB no Bluebaby concluídos.
 
 ### T04 — Consolidar a configuração do disco [P1]
 - [ ] Resolver a duplicidade entre `DISK_SIZE_MB` no daemon e `size_mb=512` no DiskForge.
@@ -244,7 +244,7 @@ Dentro do Alpine:
 
 ## Próxima sequência de execução
 
-O host reportou 15,69 GiB livres em C: (de 236,33 GiB, cerca de 6,6% livres). **Suspender expansão do QCOW2 e downloads/builds grandes** até identificar o consumo e manter folga no hospedeiro. O inventário mostrou também volumes pequenos sem letra (NTFS 1,03 GiB com ~0,1 GiB livre; FAT32 0,09 GiB com ~0,03 GiB livre) e M: FAT32 1 GiB com ~0,97 GiB livre. Não formatar/apagar; primeiro mapear com `Get-Disk` e `Get-Partition`.
+O host reportou 15,69 GiB livres em C: (236,33 GiB, cerca de 6,6% livres). `Get-Disk` identificou um único NVMe ADATA de 238,47 GiB. O mapa GPT indica: partição 1 System/EFI 0,10 GiB; partição 2 Reserved 0,02 GiB; partição 3 C: 236,33 GiB; partição 4 M: FAT32 com label `ALPINE`, 1,00 GiB; partição 5 Recovery, 1,03 GiB. Os volumes sem letra correspondem às partições pequenas do disco. **Não apagar nem formatar nenhuma partição.** Suspender downloads/builds grandes até recuperar espaço em C:; a expansão QCOW2 continua sem necessidade demonstrada.
 
 O comando sentinela executou `printf TOKEN > file && cat file` sem newline no arquivo. O `QemuDaemon.shell()` acrescenta um marcador na saída e filtra a linha que contém o marcador; por isso o texto pode ser descartado apesar do comando ter sido executado. Validar com:
 ```cmd
@@ -256,12 +256,12 @@ Executar apenas estes itens primeiro:
 
 O código atual anexa o QCOW2 ao QEMU, mas a busca estática não encontrou comandos `mkfs` ou montagem de `/dev/vda`/`/dev/vdb` no fluxo do daemon. Isso não prova que o convidado não tenha sido instalado manualmente; o diagnóstico do guest deve decidir essa questão. Não expandir nem formatar até essa auditoria.
 
-1. **T00:** inventário do Bluebaby e QEMU.
-2. **T01:** confirmar persistência real do Alpine.
-3. **T02:** backup, inspeção e expansão planejada do QCOW2.
-4. **T03:** tornar a RAM configurável e usar 1.280 MiB no experimento.
+1. **T01:** repetir agora a leitura do sentinela após o restart. Se retornar `SENTINEL_OK`, marcar persistência comprovada.
+2. **T02:** decidir backup e eventual aumento de QCOW2 somente após avaliar o espaço de C:. A imagem atual tem 2 GiB virtuais e ~353 MiB físicos; o guest ainda tem ~1,2 GiB livres.
+3. **Armazenamento do host:** investigar uso de C: antes de downloads/builds. O espaço livre atual é baixo para baixar GGUF e compilar dependências, mesmo que suficiente para um backup compacto da imagem.
+4. **T05:** confirmar aceleração WHPX/TCG efetiva antes de benchmark.
 
-Não iniciar build ou download do GGUF antes de T01/T02. Isso evita compilar e baixar o modelo em um filesystem volátil ou pequeno demais.
+T03 está validada no guest. Não iniciar o download do GGUF/build até confirmar T01 e decidir a estratégia de armazenamento.
 
 ## Registro de decisões
 
