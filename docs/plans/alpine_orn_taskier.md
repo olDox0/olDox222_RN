@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Taskier
 
 **Data:** 2026-11-24  
-**Status:** Execução em andamento — T01, T03, T05 e T06 (dependências APK) concluídas; próximo: venv e build do llama-cpp-python  
+**Status:** Execução em andamento — T01, T03, T05 e dependências T06 concluídas; próximo: venv e build do llama-cpp-python  
 **Plano-mestre:** [alpine_orn_blitz.md](alpine_orn_blitz.md)
 
 ## Legenda
@@ -133,6 +133,7 @@ Dentro do Alpine:
 - [x] Verificar GCC/G++ 15.2.0, CMake 4.2.3, Ninja 1.9, Git 2.54.1, Python 3.14.10 e `python3-config --includes`.
 - [x] Confirmar pós-instalação: 579,3 MiB usados, 999,7 MiB livres em `/` (37% ocupados).
 - [ ] Criar venv dedicado para o runtime em `/opt/orn-runtime/venv`.
+- [ ] Instalar dependências Python por wheels binários, sem cache e sem compilar dependências transitivas.
 - [ ] Registrar versões e executar teste de import Python/CMake.
 
 **Nota:** APK finalizou com `OK: 561.1 MiB in 107 packages`; esse valor é o total reportado do sistema, não o incremento isolado da instalação. Python foi atualizado de `3.14.10-r1` para `3.14.10-r2`.
@@ -149,8 +150,8 @@ Dentro do Alpine:
 ### T08 — Compilar llama-cpp-python no Alpine [P0]
 - [ ] Fixar versão/tag do llama-cpp-python.
 - [ ] Registrar a versão correspondente do llama.cpp.
-- [ ] Começar com CPU genérica: `GGML_NATIVE=OFF`.
-- [ ] Começar com OpenMP e BLAS desligados.
+- [ ] Começar com CPU baseline: `GGML_NATIVE=OFF` e desligar explicitamente `GGML_SSE42`, `GGML_AVX`, `GGML_AVX2`, `GGML_BMI2`, `GGML_FMA` e `GGML_F16C`.
+- [ ] Desligar OpenMP, BLAS e CUDA.
 - [ ] Compilar com paralelismo 1 para limitar pico de RAM.
 - [ ] Instalar dentro do venv.
 - [ ] Validar importação e registrar versão/caminho do módulo.
