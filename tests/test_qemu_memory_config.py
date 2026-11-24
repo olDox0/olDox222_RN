@@ -37,10 +37,8 @@ def test_invalid_ram_is_rejected(value, monkeypatch):
         _resolve_qemu_memory_mb()
 
 
-@pytest.mark.parametrize("value", [1280.5, True, None])
+@pytest.mark.parametrize("value", [1280.5, True])
 def test_non_integer_arguments_are_rejected(value):
-    if value is None:
-        return
     with pytest.raises(ValueError):
         _resolve_qemu_memory_mb(value)
 
