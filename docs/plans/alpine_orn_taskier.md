@@ -40,7 +40,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Identificar disco: `/dev/vda`, 2 GiB.
 - [x] Identificar partições: `/dev/vda1` (~300 MiB, ext4 em `/boot`) e `/dev/vda2` (~1,75 GiB, ext4 em `/`).
 - [x] Confirmar raiz em filesystem ext4 gravável, com ~1,2 GiB livres.
-- [ ] Criar arquivo sentinela em `/workspace`.
+- [~] Comando de criação do sentinela foi executado em 2026-11-24; a saída ficou vazia porque o arquivo foi escrito sem newline final e o parser serial remove a linha que contém o marcador de fim. A criação precisa ser validada com teste shell que emita uma linha própria.
 - [ ] Reiniciar QEMU e confirmar que o sentinela continua presente.
 
 **Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`. A estrutura aponta para instalação em disco; a persistência entre boots ainda não foi validada.
@@ -83,7 +83,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [ ] Reiniciar a VM com 1.280 MiB e confirmar `free -h` no Alpine.
 - [ ] Confirmar que o perfil `code` continua com seus limites originais.
 
-**Tentativa local em 2026-11-24:** a variável foi digitada com sintaxe PowerShell em um prompt CMD e não foi definida. O log confirmou que o daemon reiniciou ainda em 512 MiB. Em CMD, usar `set "ORN_QEMU_RAM_MB=1280"`; em PowerShell, usar `$env:ORN_QEMU_RAM_MB = "1280"`.
+**Tentativa local em 2026-11-24:** agora executou `set "ORN_QEMU_RAM_MB=1280"` no CMD e `echo %ORN_QEMU_RAM_MB%` retornou `1280`. Ainda não foi executado `orn sandbox daemon restart` após definir a variável; portanto, a VM atual permanece em 512 MiB até o restart. Próximo comando é o restart no mesmo CMD.
 
 **Observação:** a coleta atual mostra o QEMU ainda iniciado com `-m 512M`; a configuração de 1.280 MiB não foi aplicada nesta rodada.
 
@@ -243,6 +243,14 @@ Dentro do Alpine:
 ---
 
 ## Próxima sequência de execução
+
+O host reportou 15,69 GiB livres em C: (de 236,33 GiB, cerca de 6,6% livres). **Suspender expansão do QCOW2 e downloads/builds grandes** até identificar o consumo e manter folga no hospedeiro. O inventário mostrou também volumes pequenos sem letra (NTFS 1,03 GiB com ~0,1 GiB livre; FAT32 0,09 GiB com ~0,03 GiB livre) e M: FAT32 1 GiB com ~0,97 GiB livre. Não formatar/apagar; primeiro mapear com `Get-Disk` e `Get-Partition`.
+
+O comando sentinela executou `printf TOKEN > file && cat file` sem newline no arquivo. O `QemuDaemon.shell()` acrescenta um marcador na saída e filtra a linha que contém o marcador; por isso o texto pode ser descartado apesar do comando ter sido executado. Validar com:
+```cmd
+python -c "from engine.tools.qemu_daemon import QemuDaemon; print(QemuDaemon().shell('test \"$(cat /workspace/.orn_alpine_persistence_probe)\" = ORN_PERSIST_20261124 && echo SENTINEL_OK || echo SENTINEL_MISSING'))"
+```
+O `echo` escreve uma linha terminada em newline, permitindo ao parser preservar o resultado.
 
 Executar apenas estes itens primeiro:
 
