@@ -174,3 +174,18 @@ python -c "from engine.tools.qemu_daemon import QemuDaemon; print(QemuDaemon().s
 Volumes reportados: C: com 15,69 GiB livres; NTFS sem letra com 0,10 GiB livres; M: `ALPINE` com 0,97 GiB livres; FAT32 sem letra com 0,03 GiB livres. C: tem cerca de 6,6% livres. A antiga estimativa de 125 GB estava incorreta/incompleta: o disco é anunciado como 256 GB decimais, equivalentes a aproximadamente 238,47 GiB.
 
 Não há evidência para apagar ou alterar as partições pequenas. M: é uma partição Basic interna rotulada `ALPINE`; preservar até identificar sua finalidade. Suspender downloads/builds grandes até investigar o uso de C: e recuperar folga. O QCOW2 atual permanece com 2 GiB virtuais e ~353 MiB físicos; a raiz Alpine usa ~302 MiB e tem ~1,2 GiB livres.
+
+
+## Confirmação final de persistência — 2026-11-24 (após reboot PID 10936)
+
+O usuário repetiu a verificação depois do `orn sandbox daemon restart` que iniciou o QEMU com 1.280 MiB. O comando verificou existência do arquivo e igualdade exata do conteúdo:
+
+```cmd
+python -c "from engine.tools.qemu_daemon import QemuDaemon; print(QemuDaemon().shell('test -f /workspace/.orn_alpine_persistence_probe && grep -qx ORN_PERSIST_20261124 /workspace/.orn_alpine_persistence_probe && echo SENTINEL_OK || echo SENTINEL_MISSING'))"
+```
+
+Saída observada: `SENTINEL_OK`.
+
+**Conclusão:** o arquivo `/workspace/.orn_alpine_persistence_probe`, contendo exatamente `ORN_PERSIST_20261124`, sobreviveu ao reinício do QEMU. A persistência do sistema de arquivos do Alpine está comprovada para este ciclo de reboot. A raiz está montada em `/dev/vda2` como ext4 gravável e o QCOW2 associado ao QEMU tem 2 GiB virtuais. Não é necessária migração de instalação por falta de persistência.
+
+Com isso, T01 está concluída. T03 também está validada: o daemon iniciou com `-m 1280M` e o Alpine reportou `Mem: 1.2G total`. Próximos pontos técnicos: investigar a folga de C: antes de downloads/builds, fazer backup verificável do QCOW2 se houver espaço e descobrir o acelerador QEMU efetivamente utilizado (WHPX ou TCG), além das flags de CPU visíveis no guest.
