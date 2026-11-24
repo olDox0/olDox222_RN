@@ -366,3 +366,13 @@ A instalação terminou com Successfully installed:
 - pathspec 1.1.1
 
 Nenhuma dependência transitiva foi compilada. Ainda falta uma medição posterior de df -h / após essa instalação, além de validar imports, pip check e disponibilidade do backend CMake/Python. O build llama-cpp-python ainda não começou.
+
+
+
+## Validação do venv e espaço posterior — 2026-11-24
+
+O usuário executou pip check no ambiente /opt/orn-runtime/venv, que retornou No broken requirements found. Pacotes listados: diskcache 5.6.3, Jinja2 3.1.6, MarkupSafe 3.0.4, NumPy 2.5.5, packaging 26.4, pathspec 1.1.1, pip 26.2.2, scikit-build-core 1.1.2 e typing-extensions 4.16.0.
+
+Depois da instalação do venv, /dev/vda2 passou a reportar 670,0 MiB usados, 909,0 MiB disponíveis (42% usado). O build llama-cpp-python ainda não começou.
+
+A raiz de 2 GiB virtuais deixa menos de 1 GiB disponível. Antes de baixar/extrair/compilar o sdist (~79 MiB) e manter o build tree, instalar o wheel e copiar GGUF, recomenda-se expandir o disco para 4 GiB, aproveitando o backup verificado. Antes de qualquer resize, parar o daemon, confirmar nenhum processo QEMU ativo e fazer um segundo backup do estado atual, que inclui toolchain e venv.
