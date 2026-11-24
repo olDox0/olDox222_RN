@@ -52,12 +52,14 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 
 **Critério atendido:** sentinela sobreviveu ao reboot; raiz identificada em `/dev/vda2` (ext4, RW), no QCOW2 de 2 GiB.
 
-### T02 — Backup e capacidade do QCOW2 [P0]
+### T02 — Backup e capacidade do QCOW2 [P0] — backup verificado; expansão pendente de decisão
 - [x] Registrar imagem atual: 2 GiB de tamanho virtual / ~353 MiB físicos.
 - [x] Registrar espaço livre no volume do repositório: 15,69 GiB no momento da coleta.
-- [ ] Fazer cópia de segurança verificável da imagem atual.
-- [ ] Confirmar espaço livre real no disco hospedeiro de destino do backup.
-- [ ] Reavaliar a necessidade de 6 GiB virtuais; não expandir por padrão.
+- [x] Fazer cópia de segurança verificável da imagem atual em `data/sandbox/backups/alpine-before-orn-runtime-20261124.qcow2`.
+- [x] Confirmar que nenhum processo `qemu-system-x86_64.exe` estava ativo antes da cópia.
+- [x] Validar SHA256 idêntico na origem e na cópia: `b9c87ffa2bcff5ada49b993a96636d50d83fb1522cbce238e29bdf2407d17691`.
+- [x] Confirmar espaço livre atual em C:: 94,05 GiB de 236,33 GiB (39,8%).
+- [~] Reavaliar a necessidade de 6 GiB virtuais; imagem continua com 2 GiB e guest tem ~1,2 GiB livres.
 - [ ] Verificar se o QCOW2 pode ser expandido sem recriação.
 - [ ] Expandir a imagem, partição e filesystem de forma compatível com o filesystem encontrado.
 - [ ] Confirmar capacidade e espaço livre dentro do Alpine.
@@ -105,8 +107,11 @@ orn sandbox daemon restart
 
 **Arquivos-alvo:** `engine/tools/disk_forge.py`, `engine/tools/qemu_daemon.py`.
 
-### T05 — Verificar aceleração e CPU exposta [P0]
-- [ ] Confirmar se o QEMU está usando WHPX ou TCG.
+### T05 — Verificar aceleração e CPU exposta [P0] — parcial
+- [x] Testar inicialização isolada de WHPX: retorno `WHPX_INIT_OK`.
+- [x] Confirmar que o QEMU da VM foi iniciado com prioridade `-accel whpx` e fallback `-accel tcg`; a VM completou o boot.
+- [ ] Confirmar diretamente qual acelerador foi selecionado no processo da VM.
+
 - [ ] Registrar fabricante, modelo e flags visíveis em `/proc/cpuinfo`.
 - [ ] Registrar `-smp 2` e o modelo de CPU efetivo.
 - [ ] Não habilitar `-march=native` nem `GGML_NATIVE=ON` até confirmar compatibilidade.
@@ -254,9 +259,10 @@ O `echo` escreve uma linha terminada em newline, permitindo ao parser preservar 
 
 T01 e T03 estão concluídas. A persistência do Alpine foi comprovada pela sobrevivência do sentinela ao reboot; a RAM de 1.280 MiB foi aplicada e reconhecida pelo guest.
 
-1. **T02 / armazenamento:** C: agora tem 94,05 GiB livres (39,8%). Fazer backup verificável do QCOW2 com o daemon comprovadamente parado; não expandir a imagem sem necessidade demonstrada.
-2. **T05:** iniciar novamente o daemon, identificar a aceleração efetiva (WHPX ou TCG) e registrar as flags de CPU vistas no Alpine. A última consulta falhou porque o PID 10936 estava morto; o `findstr` no log não encontrou mensagens de acelerador e não é conclusivo.
-3. **T06–T08:** após backup e T05, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
+1. **T02 / capacidade:** backup SHA256 verificado e armazenamento do host com 94,05 GiB livres. Decidir se a raiz de 2 GiB comporta o toolchain + GGUF; não expandir sem inspeção adicional.
+2. **T05:** o teste WHPX isolado retornou `WHPX_INIT_OK` e o QEMU da VM iniciou com WHPX primeiro e TCG como fallback. Falta obter confirmação direta do acelerador ativo e recolher `/proc/cpuinfo`; a primeira consulta falhou por citação no CMD.
+3. **Modelos locais:** existe `models/sicdox/qwen2.5-coder-0.5b-instruct-q2_k.gguf`; é Q2_K, não o Q4_K_M originalmente planejado. Pode servir como smoke test inicial, mantendo Q4_K_M como referência de qualidade até decisão.
+4. **T06–T08:** depois de fechar capacidade e CPU, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
 
 A coleta mais recente reportou C: com 94,05 GiB livres de 236,33 GiB (39,8% livres), portanto o bloqueio anterior de armazenamento foi resolvido. A partição M: de 1 GiB, label `ALPINE`, permanece sem finalidade confirmada; não alterar nem formatar partições.
 
