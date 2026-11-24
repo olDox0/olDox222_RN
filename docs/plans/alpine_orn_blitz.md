@@ -22,8 +22,8 @@ A hipótese não será tratada como conclusão antecipada:
 | Item | Configuração |
 |---|---|
 | Máquina hospedeira | Bluebaby |
-| RAM física | 16 GB |
-| Disco físico | 125 GB (espaço livre a medir) |
+| RAM física | 16 GB (inventário: 15,69 GiB visíveis) |
+| Disco/volume do repositório | C: com 15,69 GiB livres na coleta; capacidade do disco físico deve ser reconciliada com a especificação informada de 125 GB |
 | CPU | Modelo exato a registrar no inventário |
 | Hospedeiro | Windows + QEMU |
 | Convidado | Alpine Linux x86_64 |
@@ -42,7 +42,10 @@ O disco físico de 125 GB não significa que todo esse espaço esteja livre. O e
 
 A inspeção do código atual identificou:
 
-- `engine/tools/qemu_daemon.py`: inicialmente usava `-m 512M` fixo; T03 agora permite configurar a RAM pelo argumento `QemuDaemon(memory_mb=...)` ou pela variável `ORN_QEMU_RAM_MB`, preservando 512 MiB como default legado. O intervalo aceito é 256–8.192 MiB. A validação do guest de 1.280 MiB ainda depende de execução local.
+- `engine/tools/qemu_daemon.py`: inicialmente usava `-m 512M` fixo; T03 agora permite configurar a RAM pelo argumento `QemuDaemon(memory_mb=...)` ou pela variável `ORN_QEMU_RAM_MB`, preservando 512 MiB como default legado. O intervalo aceito é 256–8.192 MiB. Os 12 testes unitários passaram; a VM ainda foi iniciada com 512 MiB na coleta, então a validação de 1.280 MiB permanece pendente.
+- Inventário do host em 2026-11-24: Intel Core i5-1235U (10C/12T), Windows 11 Pro build 26300, QEMU 11.1.0, 15,69 GiB de RAM visível e 7,92 GiB livres. Unidade C: tinha 15,69 GiB livres.
+- QCOW2 atual: 2 GiB virtuais, ~353 MiB ocupados fisicamente, sem flag de corrupção. Isso contradiz o pressuposto de que a imagem existente teria apenas 512 MiB; o valor de 512 é default de criação, não tamanho constatado.
+- A primeira execução do inventário do guest ocorreu com QEMU offline (PID antigo morto). O daemon iniciou depois com sucesso; o inventário do guest precisa ser repetido.
 - `engine/tools/disk_forge.py`: `DiskForge.forge_qcow2()` cria discos novos com 512 MB por padrão.
 - `engine/tools/qemu_daemon.py`: existe a constante `DISK_SIZE_MB = 512`; sua relação com o valor usado pelo DiskForge precisa ser consolidada.
 - `engine/tools/sandbox_controller.py`: o método `run()` aplica limites por processo, inclusive `ulimit -v 262144`. Esse perfil é para execução de código e não deve ser reutilizado para inferência.
