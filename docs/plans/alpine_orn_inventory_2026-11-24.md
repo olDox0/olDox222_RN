@@ -282,3 +282,12 @@ Repositórios ativos: Alpine v3.24 main e community.
 Verificação externa dos metadados da distribuição em 2026-11-24: PyPI lista `llama-cpp-python` 0.3.38, publicado em 2026-11-23, com classificador Python 3.14 e `Requires-Python >=3.8`. O sdist tem 79,4 MB e SHA256 `0570c9736b5e2a239b651da18687238eeba7fc2369dcdfd8cbb009dc1321e23f`. O `pyproject.toml` declara `scikit-build-core[pyproject]>=0.9.2` e CMake mínimo 3.21. Isto dá suporte de metadados à combinação Python 3.14, mas não substitui o teste de build nativo no Alpine/musl.
 
 Próximo passo seguro: executar `apk add --simulate build-base cmake ninja git python3-dev linux-headers pkgconf ca-certificates` para inspecionar o plano e o espaço antes de instalar. Não compilar em `/tmp` porque o inventário anterior mostrou `/tmp` como tmpfs; usar diretório em disco ext4, como `/var/tmp/orn-build`, e limitar o paralelismo de CMake a 1.
+
+
+## Simulação de dependências APK — T06.2
+
+No Alpine 3.24.4, o usuário executou `apk add --simulate build-base cmake ninja git python3-dev linux-headers pkgconf ca-certificates`. A resolução foi concluída sem erro e listou 29 pacotes novos. Entre eles: `g++ 15.2.0-r5`, `make 4.4.1-r4`, `build-base 0.5-r4`, `cmake 4.2.3-r0`, `git 2.54.1-r0`, `linux-headers 7.0.0-r1`, `pkgconf 2.5.1-r0`, `python3-dev 3.14.10-r1`, `ca-certificates 20261020-r0` e `samurai 1.2-r8` (backend leve do tipo Ninja selecionado pela resolução).
+
+A linha final foi `OK: 560.4 MiB in 106 packages`. Interpretação: tamanho/estado total reportado pelo APK para o conjunto simulado, não bytes de download e não a diferença de espaço que será consumida isoladamente. Antes da simulação, o guest reportava aproximadamente 1,2 GiB livres em `/`.
+
+Para minimizar pressão de disco, a próxima etapa deve simular um conjunto mínimo: `build-base cmake python3-dev pkgconf ca-certificates`, sem `git`, `linux-headers` e `ninja` explícitos. Usar Make/Unix Makefiles no primeiro build. Confirmar `df -h / /var/tmp` e montagem de `/var/tmp` antes de transferir/extrair fontes; `/tmp` é tmpfs e não deve ser usado para os artefatos de compilação. Instalar por etapas e conferir espaço depois.
