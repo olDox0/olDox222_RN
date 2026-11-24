@@ -56,18 +56,28 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 
 ## Sprint B — Controle de recursos QEMU
 
-### T03 — Tornar a RAM configurável [P0]
-- [ ] Substituir o `-m 512M` fixo por configuração explícita.
-- [ ] Usar variável de ambiente ou configuração equivalente, por exemplo `ORN_QEMU_RAM_MB`.
-- [ ] Manter o default legado de 512 MiB quando não houver configuração.
-- [ ] Configurar 1.280 MiB no perfil deste experimento.
-- [ ] Validar tipo, faixa aceitável e erro de configuração inválida.
-- [ ] Registrar a memória escolhida no log do daemon e na linha de comando QEMU.
-- [ ] Testar que o perfil `code` continua com seus limites originais.
+### T03 — Tornar a RAM configurável [P0] — implementação registrada
+- [x] Substituir o `-m 512M` fixo por configuração explícita.
+- [x] Usar `ORN_QEMU_RAM_MB` ou o argumento `QemuDaemon(memory_mb=...)`.
+- [x] Manter o default legado de 512 MiB quando não houver configuração.
+- [x] Validar intervalo de 256 a 8.192 MiB e rejeitar valores inválidos.
+- [x] Registrar a memória escolhida no log do daemon e no comando QEMU.
+- [x] Adicionar testes unitários para default, variável de ambiente, precedência, limites e entradas inválidas.
+- [ ] Executar os testes no checkout local do Bluebaby.
+- [ ] Reiniciar a VM com 1.280 MiB e confirmar `free -h` no Alpine.
+- [ ] Confirmar que o perfil `code` continua com seus limites originais.
 
-**Arquivo-alvo:** `engine/tools/qemu_daemon.py`.
+**Arquivos:** `engine/tools/qemu_daemon.py`, `tests/test_qemu_memory_config.py`.
 
-**Critério:** sem variável, mantém comportamento legado; com 1280, o guest informa aproximadamente 1.280 MiB.
+**Uso no PowerShell (nova instância do terminal):**
+```powershell
+$env:ORN_QEMU_RAM_MB = "1280"
+python -m engine.cli sandbox daemon restart
+```
+
+**Critério:** sem variável, mantém comportamento legado; com 1280, o comando QEMU usa `-m 1280M` e o guest informa aproximadamente 1.280 MiB.
+
+**Estado:** implementação e testes adicionados ao repositório; validação executável no Bluebaby pendente.
 
 ### T04 — Consolidar a configuração do disco [P1]
 - [ ] Resolver a duplicidade entre `DISK_SIZE_MB` no daemon e `size_mb=512` no DiskForge.
