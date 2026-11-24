@@ -189,3 +189,12 @@ Saída observada: `SENTINEL_OK`.
 **Conclusão:** o arquivo `/workspace/.orn_alpine_persistence_probe`, contendo exatamente `ORN_PERSIST_20261124`, sobreviveu ao reinício do QEMU. A persistência do sistema de arquivos do Alpine está comprovada para este ciclo de reboot. A raiz está montada em `/dev/vda2` como ext4 gravável e o QCOW2 associado ao QEMU tem 2 GiB virtuais. Não é necessária migração de instalação por falta de persistência.
 
 Com isso, T01 está concluída. T03 também está validada: o daemon iniciou com `-m 1280M` e o Alpine reportou `Mem: 1.2G total`. Próximos pontos técnicos: investigar a folga de C: antes de downloads/builds, fazer backup verificável do QCOW2 se houver espaço e descobrir o acelerador QEMU efetivamente utilizado (WHPX ou TCG), além das flags de CPU visíveis no guest.
+
+
+## Atualização posterior — armazenamento liberado e daemon offline
+
+Em nova coleta via PowerShell, o volume C: passou a reportar 236,33 GiB totais, 94,05 GiB livres e 39,8% de espaço livre. Isso substitui a medição anterior de 15,69 GiB livres; a limitação de armazenamento para backup/builds deixa de ser o bloqueio imediato.
+
+Na mesma rodada, `findstr` não encontrou referências a WHPX, TCG ou accelerator em `data/sandbox/qemu_daemon.log`. A ausência de texto nesse arquivo não identifica qual acelerador foi selecionado.
+
+A tentativa de consultar `/proc/cpuinfo` não alcançou o guest: `QemuDaemon` reportou `offline (PID 10936 morto)`. Portanto, as flags de CPU do guest continuam pendentes. Próximo passo é iniciar o daemon novamente, confirmar que o boot continua com 1.280 MiB, e então repetir a coleta de CPU. Antes do backup do QCOW2, verificar também que não existe processo QEMU órfão ativo.
