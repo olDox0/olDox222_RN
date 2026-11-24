@@ -17,21 +17,26 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 
 ## Sprint A — Inventário e integridade
 
-### T00 — Registrar o estado do Bluebaby [P0]
-- [ ] Executar `scripts/alpine_orn_host_inventory.ps1`.
-- [ ] Registrar modelo exato da CPU e instruções.
-- [ ] Registrar Windows, QEMU e versão do executável `qemu-img`.
-- [ ] Registrar RAM total/livre e espaço livre do volume de 125 GB.
-- [ ] Registrar commit/branch do ORN usado no experimento.
-- [ ] Identificar aceleração QEMU efetiva pelos logs/diagnóstico.
-- [ ] Salvar saída de `qemu-img info` do QCOW2 atual.
+### T00 — Registrar o estado do Bluebaby [P0] — parcial
+- [x] Executar `scripts/alpine_orn_host_inventory.ps1`.
+- [x] Registrar CPU: Intel Core i5-1235U, 10 cores / 12 threads (flags de instruções ainda pendentes).
+- [x] Registrar SO: Windows 11 Pro, build 26300.
+- [x] Registrar QEMU: 11.1.0; executável em `C:\Program Files\qemu\`.
+- [x] Registrar RAM: 15,69 GiB total, 7,92 GiB livres na coleta.
+- [x] Registrar armazenamento da unidade C:: 15,69 GiB livres na coleta.
+- [x] Registrar checkout: HEAD `b6b8746e8faa41e8c73b50013a93a9dea9139d65`.
+- [x] Registrar QCOW2: 2 GiB virtuais, aproximadamente 353 MiB físicos, sem flag de corrupção.
+- [ ] Identificar aceleração QEMU efetiva (WHPX/TCG).
+- [ ] Confirmar flags de CPU disponíveis ao host e ao guest.
 
-**Evidência:** inventário textual anexado ao registro do experimento.
+**Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`.
 
 **Script:** `scripts/alpine_orn_host_inventory.ps1` (somente leitura).
 
 ### T01 — Auditar persistência real do Alpine [P0]
-- [ ] Executar `python scripts/alpine_orn_guest_inventory.py`.
+- [x] Registrar tentativa inicial de inventário com daemon offline (PID 11136 morto).
+- [x] Reiniciar daemon com sucesso; estado reportado online, PID 10232.
+- [ ] Reexecutar `python scripts/alpine_orn_guest_inventory.py` com daemon online.
 - [ ] Consultar `lsblk -f`, `df -h`, `mount` e `/etc/fstab`.
 - [ ] Identificar disco, partição e filesystem realmente usados.
 - [ ] Depois de confirmar um caminho persistente, criar arquivo sentinela nesse caminho.
@@ -45,16 +50,18 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 **Critério:** dados de teste sobrevivem ao reboot; filesystem e dispositivo estão documentados.
 
 ### T02 — Backup e capacidade do QCOW2 [P0]
+- [x] Registrar imagem atual: 2 GiB de tamanho virtual / ~353 MiB físicos.
+- [x] Registrar espaço livre no volume do repositório: 15,69 GiB no momento da coleta.
 - [ ] Fazer cópia de segurança verificável da imagem atual.
-- [ ] Confirmar espaço livre real no disco hospedeiro.
-- [ ] Planejar imagem sparse com capacidade virtual de referência de 6 GiB.
+- [ ] Confirmar espaço livre real no disco hospedeiro de destino do backup.
+- [ ] Reavaliar a necessidade de 6 GiB virtuais; não expandir por padrão.
 - [ ] Verificar se o QCOW2 pode ser expandido sem recriação.
 - [ ] Expandir a imagem, partição e filesystem de forma compatível com o filesystem encontrado.
 - [ ] Confirmar capacidade e espaço livre dentro do Alpine.
 
 **Arquivo-alvo de código:** `engine/tools/disk_forge.py`.
 
-**Nota:** o DiskForge tem default de 512 MB. A expansão da imagem existente e o novo tamanho padrão para imagens futuras são tarefas distintas. Não formatar, apagar ou recriar a imagem existente.
+**Nota:** o QCOW2 já existente tem 2 GiB virtuais, apesar do default de 512 MB em DiskForge/CLI para imagens novas. Não inferir tamanho virtual pela constante/default. A expansão da imagem existente e o novo tamanho padrão para imagens futuras são tarefas distintas. Não formatar, apagar ou recriar a imagem existente.
 
 **Critério:** espaço suficiente para toolchain, build, pacote ORN e GGUF; dados existentes preservados.
 
@@ -62,16 +69,18 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 
 ## Sprint B — Controle de recursos QEMU
 
-### T03 — Tornar a RAM configurável [P0] — implementação registrada
+### T03 — Tornar a RAM configurável [P0] — implementação e testes unitários concluídos
 - [x] Substituir o `-m 512M` fixo por configuração explícita.
 - [x] Usar `ORN_QEMU_RAM_MB` ou o argumento `QemuDaemon(memory_mb=...)`.
 - [x] Manter o default legado de 512 MiB quando não houver configuração.
 - [x] Validar intervalo de 256 a 8.192 MiB e rejeitar valores inválidos.
 - [x] Registrar a memória escolhida no log do daemon e no comando QEMU.
 - [x] Adicionar testes unitários para default, variável de ambiente, precedência, limites e entradas inválidas.
-- [ ] Executar os testes no checkout local do Bluebaby.
+- [x] Executar no checkout local: `12 passed in 0.20s`.
 - [ ] Reiniciar a VM com 1.280 MiB e confirmar `free -h` no Alpine.
 - [ ] Confirmar que o perfil `code` continua com seus limites originais.
+
+**Observação:** a coleta atual mostra o QEMU ainda iniciado com `-m 512M`; a configuração de 1.280 MiB não foi aplicada nesta rodada.
 
 **Arquivos:** `engine/tools/qemu_daemon.py`, `tests/test_qemu_memory_config.py`.
 
