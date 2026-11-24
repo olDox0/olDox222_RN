@@ -112,3 +112,30 @@ orn sandbox daemon restart
 ```
 
 Depois confirmar no log `guest RAM=1280 MiB` e no Alpine com `free -h`.
+
+
+## Atualização após retorno do usuário — 2026-11-24
+
+### Resultado da tentativa do sentinela
+O usuário executou:
+```sh
+mkdir -p /workspace && printf ORN_PERSIST_20261124 > /workspace/.orn_alpine_persistence_probe && cat /workspace/.orn_alpine_persistence_probe
+```
+A saída no host foi vazia. Interpretação técnica: `printf` criou o arquivo sem newline final; o `cat` também não emitiu newline. O método `QemuDaemon.shell()` acrescenta um marcador de término e remove linhas que contêm esse marcador. Assim, o token e o marcador podem ter ficado na mesma linha, fazendo o parser descartar a linha inteira. A ausência de saída não comprova falha de criação. Validar com:
+```sh
+test "$(cat /workspace/.orn_alpine_persistence_probe)" = ORN_PERSIST_20261124 && echo SENTINEL_OK || echo SENTINEL_MISSING
+```
+
+### Variável de RAM
+No CMD, o usuário executou `set "ORN_QEMU_RAM_MB=1280"` e confirmou `echo %ORN_QEMU_RAM_MB%` = `1280`. Porém não foi executado `orn sandbox daemon restart` após definir a variável. A VM permanece com o boot registrado em 512 MiB até reinicialização.
+
+### Armazenamento Windows
+`Get-Volume` reportou:
+- C: NTFS, 236,33 GiB total, 15,69 GiB livres (~6,6% livre).
+- Volume sem letra NTFS: 1,03 GiB total, 0,10 GiB livre.
+- M: FAT32: 1,00 GiB total, 0,97 GiB livre.
+- Volume sem letra FAT32: 0,09 GiB total, 0,03 GiB livre.
+
+O volume C: está com pouco espaço livre para uma compilação e instalação grandes. Os volumes sem letra e M: não foram identificados; não concluir que são partições dispensáveis. Suspender expansão do QCOW2 e operações de limpeza/partição até mapear `Get-Disk`, `Get-Partition`, labels e tipos de partição.
+
+O usuário interrompeu as tentativas de `Get-Disk` por estar no CMD; o comando precisa ser chamado via `powershell -NoProfile -Command "..."`.
