@@ -26,7 +26,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Registrar armazenamento da unidade C:: 15,69 GiB livres na coleta.
 - [x] Registrar checkout: HEAD `b6b8746e8faa41e8c73b50013a93a9dea9139d65`.
 - [x] Registrar QCOW2: 2 GiB virtuais, aproximadamente 353 MiB físicos, sem flag de corrupção.
-- [ ] Identificar aceleração QEMU efetiva (WHPX/TCG).
+- [x] Identificar aceleração efetiva como WHPX com evidência do módulo `WinHvPlatform.dll` carregado no processo QEMU.
 - [ ] Confirmar flags de CPU disponíveis ao host e ao guest.
 
 **Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`.
