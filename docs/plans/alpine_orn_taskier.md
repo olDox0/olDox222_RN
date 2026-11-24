@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Taskier
 
 **Data:** 2026-11-24  
-**Status:** Execução em andamento — T01 e T03 concluídas; T00/T02/T05 ainda têm verificações pendentes  
+**Status:** Execução em andamento — T01, T03 e T05 concluídas; T02 em avaliação de capacidade; próxima T06  
 **Plano-mestre:** [alpine_orn_blitz.md](alpine_orn_blitz.md)
 
 ## Legenda
@@ -107,15 +107,14 @@ orn sandbox daemon restart
 
 **Arquivos-alvo:** `engine/tools/disk_forge.py`, `engine/tools/qemu_daemon.py`.
 
-### T05 — Verificar aceleração e CPU exposta [P0] — parcial
+### T05 — Verificar aceleração e CPU exposta [P0] — concluída
 - [x] Testar inicialização isolada de WHPX: retorno `WHPX_INIT_OK`.
-- [x] Confirmar que o QEMU da VM foi iniciado com prioridade `-accel whpx` e fallback `-accel tcg`; a VM completou o boot.
-- [ ] Confirmar diretamente qual acelerador foi selecionado no processo da VM.
-
-- [ ] Registrar fabricante, modelo e flags visíveis em `/proc/cpuinfo`.
-- [ ] Registrar `-smp 2` e o modelo de CPU efetivo.
-- [ ] Não habilitar `-march=native` nem `GGML_NATIVE=ON` até confirmar compatibilidade.
-- [ ] Anotar qualquer diferença de CPU entre Windows e convidado.
+- [x] Confirmar que o processo QEMU da VM (PID 16452) carrega `WinHvPlatform.dll`, além de o teste isolado WHPX ter passado; evidência de WHPX ativo no processo da VM.
+- [x] Registrar comando QEMU com `-accel whpx -accel tcg`, `-smp 2` e RAM 1.280 MiB.
+- [x] Registrar CPU virtual no guest: `QEMU Virtual CPU version 2.5+`, fabricante `GenuineIntel`, família 15, modelo 107, 2 CPUs lógicas expostas.
+- [x] Registrar flags do guest: `mmx`, `sse`, `sse2`, `pni` (SSE3), entre outras flags genéricas; não aparecem `ssse3`, `sse4_1`, `sse4_2` ou `avx`.
+- [x] Definir compilação genérica, sem `-march=native` e sem `GGML_NATIVE=ON`.
+- [x] Registrar diferença entre CPU física do host (Intel Core i5-1235U) e CPU virtual genérica apresentada ao Alpine.
 
 **Critério:** a aceleração e o conjunto de instruções usados no benchmark são conhecidos.
 
@@ -260,8 +259,8 @@ O `echo` escreve uma linha terminada em newline, permitindo ao parser preservar 
 T01 e T03 estão concluídas. A persistência do Alpine foi comprovada pela sobrevivência do sentinela ao reboot; a RAM de 1.280 MiB foi aplicada e reconhecida pelo guest.
 
 1. **T02 / capacidade:** backup SHA256 verificado e armazenamento do host com 94,05 GiB livres. Decidir se a raiz de 2 GiB comporta o toolchain + GGUF; não expandir sem inspeção adicional.
-2. **T05:** o teste WHPX isolado retornou `WHPX_INIT_OK` e o QEMU da VM iniciou com WHPX primeiro e TCG como fallback. Falta obter confirmação direta do acelerador ativo e recolher `/proc/cpuinfo`; a primeira consulta falhou por citação no CMD.
-3. **Modelos locais:** existe `models/sicdox/qwen2.5-coder-0.5b-instruct-q2_k.gguf`; é Q2_K, não o Q4_K_M originalmente planejado. Pode servir como smoke test inicial, mantendo Q4_K_M como referência de qualidade até decisão.
+2. **T05:** concluída. `WinHvPlatform.dll` foi encontrada no processo QEMU PID 16452; o guest expõe QEMU Virtual CPU 2.5+ com SSE/SSE2/SSE3, sem SSSE3/SSE4/AVX. Compilar para baseline genérico.
+3. **Modelos locais:** Qwen2.5-Coder 0.5B Q2_K, 395,9 MiB, disponível para smoke test. SmolLM2 135M Q4_K_M, 100,6 MiB, disponível para teste rápido de carga; não comparar diretamente resultados de modelos diferentes.
 4. **T06–T08:** depois de fechar capacidade e CPU, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
 
 A coleta mais recente reportou C: com 94,05 GiB livres de 236,33 GiB (39,8% livres), portanto o bloqueio anterior de armazenamento foi resolvido. A partição M: de 1 GiB, label `ALPINE`, permanece sem finalidade confirmada; não alterar nem formatar partições.
