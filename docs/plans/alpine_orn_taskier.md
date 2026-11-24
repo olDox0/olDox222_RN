@@ -67,7 +67,15 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Confirmar que `e2fsck` existe; `resize2fs`, `sfdisk`, `growpart` e `lsblk` ainda ausentes.
 - [x] Identificar `/sbin/fdisk` como applet BusyBox 1.37.0.
 - [x] Simular `cloud-utils-growpart` e `e2fsprogs-extra`: 6 pacotes adicionais, incluindo `sfdisk 2.42.3-r1`, `partx`, `libfdisk`, `growpart` e `resize2fs`; APK reportou `OK: 562.2 MiB in 113 packages`.
-- [ ] Instalar essas ferramentas e verificar espaço restante.
+- [x] Instalar `cloud-utils-growpart 0.33-r1` e `e2fsprogs-extra 1.47.4-r0`.
+- [x] Confirmar `/usr/bin/growpart`, `/sbin/sfdisk` (util-linux 2.42.3) e `/usr/sbin/resize2fs`.
+- [x] Confirmar `sfdisk -d /dev/vda`: label DOS, vda1 start 2048 size 614400; vda2 start 616448 size 3577856.
+- [x] Confirmar raiz com 907,9 MiB disponíveis após instalação dos utilitários.
+- [ ] Parar daemon, confirmar ausência de processo QEMU e fazer segundo backup do estado atual.
+- [ ] Comparar SHA256 de origem e segundo backup.
+- [ ] Redimensionar QCOW2 para 4 GiB e confirmar com `qemu-img info`.
+- [ ] Executar `growpart /dev/vda 2`, confirmar start LBA 616448.
+- [ ] Executar `resize2fs /dev/vda2` e confirmar novo espaço com `df -h /`.
 - [ ] Criar segundo backup verificável do estado atual (toolchain + venv) com QEMU parado.
 - [ ] Crescer o QCOW2 de 2 para 4 GiB sem shrink e sem sobrescrever backups.
 - [ ] Crescer `/dev/vda2` preservando o setor inicial 616448; confirmar a nova tabela antes de alterar o filesystem.
