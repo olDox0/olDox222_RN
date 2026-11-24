@@ -45,15 +45,18 @@ def _resolve_qemu_memory_mb(memory_mb: int | str | None = None) -> int:
 
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return DEFAULT_QEMU_RAM_MB
-    if isinstance(raw, bool):
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
         raise ValueError("ORN_QEMU_RAM_MB deve ser um inteiro em MiB")
 
-    try:
-        value = int(raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"RAM QEMU inválida: {raw!r}. Informe um inteiro em MiB."
-        ) from exc
+    if isinstance(raw, str):
+        normalized = raw.strip()
+        if not normalized or not normalized.lstrip("+-").isdigit():
+            raise ValueError(
+                f"RAM QEMU inválida: {raw!r}. Informe um inteiro em MiB."
+            )
+        value = int(normalized)
+    else:
+        value = raw
 
     if not MIN_QEMU_RAM_MB <= value <= MAX_QEMU_RAM_MB:
         raise ValueError(
