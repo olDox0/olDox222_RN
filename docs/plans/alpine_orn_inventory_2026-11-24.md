@@ -329,3 +329,22 @@ Próxima preparação: venv isolado em /opt/orn-runtime/venv; dependências Pyth
 ### Observação sobre o relato Barrier / Amaranth
 
 O usuário registrou que algo pareceu afetar Amaranth durante a sessão em que usa Barrier, mas não especificou o comportamento. A operação APK foi executada no guest Alpine por QemuDaemon.shell() e alterou somente pacotes dentro do guest. O screenshot enviado mostra o editor Lite XL com doxoade/tools/audio_systems/__init__.py; não mostra estado ou erro do Barrier. Possível lentidão momentânea de host/rede durante download e instalação não é evidência de alteração persistente no Barrier ou no outro computador. A relação causal fica indeterminada até obter o sintoma exato.
+
+
+
+## Ajuste de segurança do baseline SIMD para o build
+
+Na configuração CMake upstream de ggml, GGML_NATIVE=OFF, isoladamente, não garante que todas as opções SIMD fiquem desligadas: quando GGML_NATIVE_DEFAULT é ON no host, INS_ENB pode manter SSE4.2, AVX, AVX2, BMI2, FMA e F16C habilitados por default. Como o guest QEMU não anuncia SSE4.2, AVX, AVX2 ou BMI2, o build deve passar explicitamente:
+
+- DGGML_NATIVE=OFF
+- DGGML_SSE42=OFF
+- DGGML_AVX=OFF
+- DGGML_AVX2=OFF
+- DGGML_BMI2=OFF
+- DGGML_FMA=OFF
+- DGGML_F16C=OFF
+- DGGML_OPENMP=OFF
+- DGGML_BLAS=OFF
+- DGGML_CUDA=OFF
+
+A notação acima corresponde aos argumentos CMake com o prefixo habitual "-D" (ex.: -DGGML_AVX=OFF). Isso evita que um baseline genérico dependa do CPUID virtual mais limitado.
