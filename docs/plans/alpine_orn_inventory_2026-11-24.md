@@ -376,3 +376,21 @@ O usuário executou pip check no ambiente /opt/orn-runtime/venv, que retornou No
 Depois da instalação do venv, /dev/vda2 passou a reportar 670,0 MiB usados, 909,0 MiB disponíveis (42% usado). O build llama-cpp-python ainda não começou.
 
 A raiz de 2 GiB virtuais deixa menos de 1 GiB disponível. Antes de baixar/extrair/compilar o sdist (~79 MiB) e manter o build tree, instalar o wheel e copiar GGUF, recomenda-se expandir o disco para 4 GiB, aproveitando o backup verificado. Antes de qualquer resize, parar o daemon, confirmar nenhum processo QEMU ativo e fazer um segundo backup do estado atual, que inclui toolchain e venv.
+
+
+
+## Geometria MBR do QCOW2 e utilitários de expansão — 2026-11-24
+
+No Alpine 3.24.4, consulta read-only retornou:
+
+- Disco /dev/vda: 2.147.483.648 bytes, 4.194.304 setores de 512 bytes (2 GiB).
+- Tabela de partição MBR/DOS, conforme fdisk -l.
+- /dev/vda1: início LBA 2048, 614.400 setores, fim LBA 616447, 300 MiB, tipo 83 Linux, bootável.
+- /dev/vda2: início LBA 616448, 3.577.856 setores, fim LBA 4194303, aproximadamente 1.747 MiB, tipo 83 Linux, ext4 montado como raiz.
+- UUID vda1: 4e11f7e4-67bc-4192-a412-6aba1020cb97.
+- UUID vda2: 62f96db6-e0d1-4171-ad9d-2df3c696079a.
+- e2fsck e blkid existem. sfdisk, parted, growpart, resize2fs e lsblk não estão no PATH.
+
+A partição raiz começa em 616448; esse LBA deve ser mantido exatamente durante a expansão. O fim atual é o último setor do disco. A tabela não tem partição intermediária entre vda1 e vda2. Não apagar, formatar, mover, nem alterar o início da partição 2.
+
+Alpine v3.24 oferece cloud-utils-growpart (subpacote de community) com growpart e dependências partx/sfdisk; e2fsprogs-extra fornece /usr/sbin/resize2fs. A simulação/instalação desses utilitários deve preceder o procedimento de resize. O procedimento proposto: segundo backup do estado atual com QEMU parado → qemu-img resize positivo 2 GiB→4 GiB → reboot → growpart /dev/vda 2 → confirmar tabela/start LBA → resize2fs /dev/vda2 → confirmar df -h /. O resize do filesystem ocorre somente depois de validar que a partição foi expandida.
