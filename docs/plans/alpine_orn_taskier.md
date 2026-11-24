@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Taskier
 
 **Data:** 2026-11-24  
-**Status:** Execução em andamento — T01, T03, T05 e dependências T06 concluídas; venv validado; expansão do QCOW2 recomendada antes do build  
+**Status:** Execução em andamento — T01, T03, T05 e T06 concluídas; venv validado; resize do QCOW2 preparado, expansão pendente  
 **Plano-mestre:** [alpine_orn_blitz.md](alpine_orn_blitz.md)
 
 ## Legenda
@@ -60,9 +60,16 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Validar SHA256 idêntico na origem e na cópia: `b9c87ffa2bcff5ada49b993a96636d50d83fb1522cbce238e29bdf2407d17691`.
 - [x] Confirmar espaço livre atual em C:: 94,05 GiB de 236,33 GiB (39,8%).
 - [~] Reavaliar a necessidade de 6 GiB virtuais; imagem continua com 2 GiB e guest tem ~1,2 GiB livres.
-- [ ] Verificar se o QCOW2 pode ser expandido sem recriação.
-- [ ] Expandir a imagem, partição e filesystem de forma compatível com o filesystem encontrado.
-- [ ] Confirmar capacidade e espaço livre dentro do Alpine.
+- [x] Confirmar tabela MBR/DOS do disco virtual via `fdisk -l /dev/vda`.
+- [x] Registrar `/dev/vda1`: início 2048, tamanho 614400 setores, fim 616447, tipo 83 Linux, bootável.
+- [x] Registrar `/dev/vda2`: início 616448, tamanho 3577856 setores, fim 4194303, tipo 83 Linux; ext4 em `/`.
+- [x] Confirmar `/dev/vda` em 2.097.152 KiB (2 GiB) e `blkid` para UUIDs das partições.
+- [x] Confirmar que `e2fsck` existe; `resize2fs`, `sfdisk`, `growpart` e `lsblk` ainda ausentes.
+- [ ] Identificar se `/sbin/fdisk` pertence ao BusyBox e simular a instalação de `cloud-utils-growpart` e `e2fsprogs-extra`.
+- [ ] Criar segundo backup verificável do estado atual (toolchain + venv) com QEMU parado.
+- [ ] Crescer o QCOW2 de 2 para 4 GiB sem shrink e sem sobrescrever backups.
+- [ ] Crescer `/dev/vda2` preservando o setor inicial 616448; confirmar a nova tabela antes de alterar o filesystem.
+- [ ] Expandir o ext4 de `/dev/vda2` e conferir `df -h /`.
 
 **Arquivo-alvo de código:** `engine/tools/disk_forge.py`.
 
@@ -268,7 +275,7 @@ O `echo` escreve uma linha terminada em newline, permitindo ao parser preservar 
 
 T01 e T03 estão concluídas. A persistência do Alpine foi comprovada pela sobrevivência do sentinela ao reboot; a RAM de 1.280 MiB foi aplicada e reconhecida pelo guest.
 
-1. **T02 / capacidade:** backup SHA256 verificado e armazenamento do host com 94,05 GiB livres. O guest tem ~1,2 GiB livres; simular o plano APK e estimar espaço antes de instalar. Não expandir sem inspeção adicional.
+1. **T02 / capacidade:** backup inicial SHA256 verificado; agora raiz do guest tem ~909 MiB livres. MBR confirmado: vda2 inicia no setor 616448 e termina no 4194303. Preparar `growpart`/`resize2fs`; fazer segundo backup depois de parar QEMU antes do resize 2→4 GiB.
 2. **T05:** concluída. `WinHvPlatform.dll` foi encontrada no processo QEMU PID 16452; o guest expõe QEMU Virtual CPU 2.5+ com SSE/SSE2/SSE3, sem SSSE3/SSE4/AVX. Compilar para baseline genérico.
 3. **Modelos locais:** Qwen2.5-Coder 0.5B Q2_K, 395,9 MiB, disponível para smoke test. SmolLM2 135M Q4_K_M, 100,6 MiB, disponível para teste rápido de carga; não comparar diretamente resultados de modelos diferentes.
 4. **T06–T08:** depois de fechar capacidade e CPU, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
