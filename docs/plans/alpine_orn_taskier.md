@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Taskier
 
 **Data:** 2026-11-24  
-**Status:** Execução em andamento — T01, T03, T05 e dependências Python/APK de T06 instaladas; validar ambiente e iniciar build do llama-cpp-python  
+**Status:** Execução em andamento — T01, T03, T05 e dependências T06 concluídas; venv validado; expansão do QCOW2 recomendada antes do build  
 **Plano-mestre:** [alpine_orn_blitz.md](alpine_orn_blitz.md)
 
 ## Legenda
@@ -135,8 +135,10 @@ Dentro do Alpine:
 - [x] Criar venv dedicado para o runtime em `/opt/orn-runtime/venv`.
 - [x] Instalar dependências Python por wheels binários, sem cache e sem compilar dependências transitivas.
 - [x] Instalar `numpy 2.5.5`, `scikit-build-core 1.1.2`, `typing-extensions 4.16.0`, `diskcache 5.6.3`, `jinja2 3.1.6`, `MarkupSafe 3.0.4`, `packaging 26.4` e `pathspec 1.1.1`.
-- [ ] Verificar importações, `pip check` e espaço final no guest.
-- [ ] Registrar versões e executar teste de import Python/CMake.
+- [x] Validar `pip check`: `No broken requirements found`.
+- [x] Validar pacotes instalados: NumPy 2.5.5, scikit-build-core 1.1.2, typing-extensions 4.16.0, DiskCache 5.6.3 e Jinja2 3.1.6.
+- [x] Medir o espaço após o venv: 670,0 MiB usados, 909,0 MiB livres em `/`.
+- [ ] Registrar importações e executar teste de CMake dentro do venv.
 
 **Nota:** APK finalizou com `OK: 561.1 MiB in 107 packages`; esse valor é o total reportado do sistema, não o incremento isolado da instalação. Python foi atualizado de `3.14.10-r1` para `3.14.10-r2`.
 
@@ -150,10 +152,10 @@ Dentro do Alpine:
 **Critério:** manifesto de dependências Linux sem pacotes pesados não utilizados.
 
 ### T08 — Compilar llama-cpp-python no Alpine [P0]
-- [ ] Fixar versão/tag do llama-cpp-python.
-- [ ] Registrar a versão correspondente do llama.cpp.
+- [x] Fixar versão/tag do llama-cpp-python: `v0.3.38`.
+- [ ] Registrar o commit do submódulo llama.cpp embutido no sdist/tag e validar versão.
 - [ ] Começar com CPU baseline: `GGML_NATIVE=OFF` e desligar explicitamente `GGML_SSE42`, `GGML_AVX`, `GGML_AVX2`, `GGML_BMI2`, `GGML_FMA` e `GGML_F16C`.
-- [ ] Desligar OpenMP, BLAS e CUDA.
+- [ ] Desligar `LLAVA_BUILD`, OpenMP, BLAS, CUDA e exemplos/testes/server não necessários.
 - [ ] Compilar com paralelismo 1 para limitar pico de RAM.
 - [ ] Instalar dentro do venv.
 - [ ] Validar importação e registrar versão/caminho do módulo.
