@@ -65,7 +65,9 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Registrar `/dev/vda2`: início 616448, tamanho 3577856 setores, fim 4194303, tipo 83 Linux; ext4 em `/`.
 - [x] Confirmar `/dev/vda` em 2.097.152 KiB (2 GiB) e `blkid` para UUIDs das partições.
 - [x] Confirmar que `e2fsck` existe; `resize2fs`, `sfdisk`, `growpart` e `lsblk` ainda ausentes.
-- [ ] Identificar se `/sbin/fdisk` pertence ao BusyBox e simular a instalação de `cloud-utils-growpart` e `e2fsprogs-extra`.
+- [x] Identificar `/sbin/fdisk` como applet BusyBox 1.37.0.
+- [x] Simular `cloud-utils-growpart` e `e2fsprogs-extra`: 6 pacotes adicionais, incluindo `sfdisk 2.42.3-r1`, `partx`, `libfdisk`, `growpart` e `resize2fs`; APK reportou `OK: 562.2 MiB in 113 packages`.
+- [ ] Instalar essas ferramentas e verificar espaço restante.
 - [ ] Criar segundo backup verificável do estado atual (toolchain + venv) com QEMU parado.
 - [ ] Crescer o QCOW2 de 2 para 4 GiB sem shrink e sem sobrescrever backups.
 - [ ] Crescer `/dev/vda2` preservando o setor inicial 616448; confirmar a nova tabela antes de alterar o filesystem.
