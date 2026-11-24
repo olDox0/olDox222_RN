@@ -315,3 +315,17 @@ Status: dependências de compilação instaladas. Próximo passo: criar venv ded
 ### Relato separado: Barrier / Amaranth
 
 O usuário relatou que a operação pareceu afetar o Amaranth enquanto utiliza Barrier, mas não descreveu o sintoma. A operação APK ocorreu no Alpine guest por meio de `QemuDaemon.shell()`; não há evidência atual de que tenha alterado configurações do Windows, do Barrier ou de outro computador. O screenshot enviado mostra o Lite XL com o arquivo `doxoade/tools/audio_systems/__init__.py` aberto, mas não exibe a interface/estado do Barrier. Não atribuir causalidade sem conhecer o efeito concreto (desconexão, lag, perda de teclado/mouse ou clipboard).
+
+
+
+## Toolchain instalada e espaço após APK — atualização
+
+A instalação de build-base, cmake, ninja, git, python3-dev, linux-headers, pkgconf e ca-certificates terminou sem erro. Saída final do APK: OK: 561.1 MiB in 107 packages. A instalação efetuou 33 ações (instalações e upgrades), incluindo Python 3.14.10-r1 para 3.14.10-r2.
+
+Verificação posterior: GCC/G++ 15.2.0; CMake 4.2.3; Ninja 1.9; Git 2.54.1; Python 3.14.10; cabeçalhos disponíveis em /usr/include/python3.14. Filesystem raiz /dev/vda2: 579,3 MiB usados, 999,7 MiB livres (37% usados). A instalação das dependências de build está concluída; venv do runtime ainda não criado.
+
+Próxima preparação: venv isolado em /opt/orn-runtime/venv; dependências Python do llama-cpp-python em wheels binários quando disponíveis; build temporário sob /var/tmp/orn-build, com TMPDIR apontando para esse diretório, sem cache do pip e sem paralelismo maior que 1.
+
+### Observação sobre o relato Barrier / Amaranth
+
+O usuário registrou que algo pareceu afetar Amaranth durante a sessão em que usa Barrier, mas não especificou o comportamento. A operação APK foi executada no guest Alpine por QemuDaemon.shell() e alterou somente pacotes dentro do guest. O screenshot enviado mostra o editor Lite XL com doxoade/tools/audio_systems/__init__.py; não mostra estado ou erro do Barrier. Possível lentidão momentânea de host/rede durante download e instalação não é evidência de alteração persistente no Barrier ou no outro computador. A relação causal fica indeterminada até obter o sintoma exato.
