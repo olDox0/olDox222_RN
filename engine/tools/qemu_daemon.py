@@ -32,6 +32,37 @@ DAEMON_LOG_FILE = STATE_DIR / "daemon.log"       # o que o Python faz
 DISK_FILE = STATE_DIR / "alpine.img.qcow2"
 DISK_SIZE_MB = 512
 
+DEFAULT_QEMU_RAM_MB = 512
+MIN_QEMU_RAM_MB = 256
+MAX_QEMU_RAM_MB = 8192
+
+
+def _resolve_qemu_memory_mb(memory_mb: int | str | None = None) -> int:
+    """Resolve RAM do guest: argumento > ORN_QEMU_RAM_MB > default legado."""
+    raw: int | str | None = memory_mb
+    if raw is None:
+        raw = os.environ.get("ORN_QEMU_RAM_MB")
+
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return DEFAULT_QEMU_RAM_MB
+    if isinstance(raw, bool):
+        raise ValueError("ORN_QEMU_RAM_MB deve ser um inteiro em MiB")
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"RAM QEMU inválida: {raw!r}. Informe um inteiro em MiB."
+        ) from exc
+
+    if not MIN_QEMU_RAM_MB <= value <= MAX_QEMU_RAM_MB:
+        raise ValueError(
+            f"RAM QEMU fora do intervalo: {value} MiB. "
+            f"Permitido: {MIN_QEMU_RAM_MB}–{MAX_QEMU_RAM_MB} MiB."
+        )
+    return value
+
+
 def _setup_logger() -> logging.Logger:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("orn.sandbox.daemon")
@@ -77,10 +108,15 @@ class DaemonStatus:
 
 
 class QemuDaemon:
-    def __init__(self, alpine_root: str | Path = "data/sandbox/alpine") -> None:
+    def __init__(
+        self,
+        alpine_root: str | Path = "data/sandbox/alpine",
+        memory_mb: int | None = None,
+    ) -> None:
         self.alpine_root = Path(alpine_root).resolve()
         self.qs = QemuSandbox(alpine_root)
         self.log = _setup_logger()
+        self.memory_mb = _resolve_qemu_memory_mb(memory_mb)
         self.boot_mode = "disk"
         self._process: Optional[subprocess.Popen] = None
         self._sock: Optional[socket.socket] = None
@@ -311,6 +347,7 @@ class QemuDaemon:
             boot_order = "d"
 
         self.log.info("_try_boot: boot_mode=%s", boot_mode)
+        self.log.info("_try_boot: guest RAM=%d MiB", self.memory_mb)
         # Detecção de aceleração nativa para Windows com fallback TCG.
 
         accel_flags = ["-accel", "whpx", "-accel", "tcg"]
@@ -318,7 +355,7 @@ class QemuDaemon:
         cmd = [
             self.qs.qemu_exe,
             *accel_flags,
-            "-m", "512M",
+            "-m", f"{self.memory_mb}M",
             "-smp", "2",
             # "-cdrom", str(iso_file),
             # "-boot", "d",
