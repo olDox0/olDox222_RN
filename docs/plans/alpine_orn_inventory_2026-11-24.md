@@ -217,3 +217,41 @@ A primeira tentativa de ler `/proc/cpuinfo` falhou no CMD antes de alcançar o P
 ### Modelos encontrados no host
 
 A listagem `doxoade mk -t models\` mostrou, entre outros, `models/sicdox/qwen2.5-coder-0.5b-instruct-q2_k.gguf`, além de variantes SmolLM2 e Brunnr em diferentes quantizações. O Qwen local é Q2_K, diferente do Q4_K_M definido inicialmente no plano. Pode ser usado como modelo de smoke test, sem substituir silenciosamente o alvo Q4_K_M de benchmark. Tamanho exato dos GGUF ainda não foi coletado.
+
+
+## CPU virtual e WHPX — resultado final de T05
+
+Em 2026-11-24, com o guest online no PID QEMU 16452, o comando `Get-Process -Id 16452 -Module` retornou `WinHvPlatform.dll` em `C:\WINDOWS\SYSTEM32\WinHvPlatform.dll`. O teste isolado de inicialização com `-accel whpx` também retornou `WHPX_INIT_OK`. A linha de comando da VM registrou `-accel whpx -accel tcg`. Em conjunto, essas evidências indicam que o backend WHPX está efetivamente carregado no processo da VM, com TCG como fallback configurado.
+
+A leitura de `/proc/cpuinfo` no Alpine retornou:
+
+```text
+processor       : 0
+vendor_id       : GenuineIntel
+cpu family      : 15
+model           : 107
+model name      : QEMU Virtual CPU version 2.5+
+stepping        : 1
+cpu MHz         : 2495.999
+siblings        : 2
+cpu cores       : 2
+flags           : fpu de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx lm rep_good nopl xtopology cpuid tsc_known_freq pni cx16 x2apic hypervisor lahf_lm pti ibt
+```
+
+Interpretação: o host físico é Intel Core i5-1235U, mas o guest recebe um modelo genérico QEMU Virtual CPU 2.5+, com 2 CPUs lógicas. As flags incluem SSE, SSE2 e `pni` (SSE3), mas não incluem SSSE3, SSE4.1, SSE4.2 ou AVX. Para compilar llama.cpp/llama-cpp-python nesse guest, usar baseline genérico; não usar `-march=native`, AVX ou `GGML_NATIVE=ON` sem mudar a configuração CPU virtual e repetir a inspeção.
+
+### Modelos GGUF locais
+
+Inventário de tamanho no host:
+
+| Arquivo | Tamanho |
+|---|---:|
+| `models/sicdox/qwen2.5-coder-0.5b-instruct-q2_k.gguf` | 395,9 MiB |
+| `models/smolm_sys/SmolLM2-135M-Instruct-Q4_K_M.gguf` | 100,6 MiB |
+| `models/smolm_sys/smollm2-135m-instruct-q2_k.gguf` | 84,1 MiB |
+| `models/smolm_sys/SmolLM2-135M-Instruct-f16.gguf` | 258,3 MiB |
+| Variantes Brunnr Q4_K_M listadas | 100,6 MiB cada |
+
+O Qwen 0.5B local é Q2_K, não o Q4_K_M inicialmente previsto. Ele pode ser o primeiro smoke test de integração com o modelo planejado. SmolLM2 135M Q4_K_M é menor e serve para verificar rapidamente carregamento e execução do backend, mas não é substituto comparável ao Qwen em benchmark de qualidade ou velocidade.
+
+Com T05 concluída, a decisão de compilação é: CPU genérica, sem `GGML_NATIVE`, sem `-march=native`, build serial/paralelismo 1. O próximo passo é medir o espaço livre do guest e o estado atual das ferramentas antes de instalar pacotes APK.
