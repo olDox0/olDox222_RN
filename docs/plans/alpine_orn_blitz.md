@@ -42,7 +42,7 @@ O disco físico de 125 GB não significa que todo esse espaço esteja livre. O e
 
 A inspeção do código atual identificou:
 
-- `engine/tools/qemu_daemon.py`: o argumento QEMU usa atualmente `-m 512M` fixo e `-smp 2`.
+- `engine/tools/qemu_daemon.py`: inicialmente usava `-m 512M` fixo; T03 agora permite configurar a RAM pelo argumento `QemuDaemon(memory_mb=...)` ou pela variável `ORN_QEMU_RAM_MB`, preservando 512 MiB como default legado. O intervalo aceito é 256–8.192 MiB. A validação do guest de 1.280 MiB ainda depende de execução local.
 - `engine/tools/disk_forge.py`: `DiskForge.forge_qcow2()` cria discos novos com 512 MB por padrão.
 - `engine/tools/qemu_daemon.py`: existe a constante `DISK_SIZE_MB = 512`; sua relação com o valor usado pelo DiskForge precisa ser consolidada.
 - `engine/tools/sandbox_controller.py`: o método `run()` aplica limites por processo, inclusive `ulimit -v 262144`. Esse perfil é para execução de código e não deve ser reutilizado para inferência.
@@ -93,8 +93,8 @@ Registrar:
 
 ### B1 — Infraestrutura persistente e dimensionável
 
-- Tornar a RAM do QEMU configurável, sem quebrar o padrão atual para outros usuários.
-- Aplicar 1.280 MiB ao perfil deste experimento.
+- [x] Tornar a RAM do QEMU configurável por argumento ou variável de ambiente, preservando o default de 512 MiB.
+- [x] Aplicar 1.280 MiB como valor configurável deste experimento (validação local ainda pendente).
 - Confirmar que o convidado realmente recebe a RAM configurada.
 - Inspecionar a imagem QCOW2 e o filesystem antes de expandir.
 - Planejar disco virtual sparse de referência de 6 GiB, sujeito à confirmação do espaço livre no hospedeiro.
