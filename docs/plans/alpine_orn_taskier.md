@@ -254,11 +254,11 @@ O `echo` escreve uma linha terminada em newline, permitindo ao parser preservar 
 
 T01 e T03 estão concluídas. A persistência do Alpine foi comprovada pela sobrevivência do sentinela ao reboot; a RAM de 1.280 MiB foi aplicada e reconhecida pelo guest.
 
-1. **T02 / armazenamento:** fazer avaliação segura do espaço disponível em C: e decidir se há folga para backup do QCOW2. Não expandir a imagem por enquanto: o disco virtual tem 2 GiB e o guest ainda reporta cerca de 1,2 GiB livres.
-2. **T05:** identificar a aceleração QEMU realmente utilizada (WHPX ou TCG) e registrar as flags de CPU vistas no Alpine.
-3. **T06–T08:** somente após resolver espaço de armazenamento, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
+1. **T02 / armazenamento:** C: agora tem 94,05 GiB livres (39,8%). Fazer backup verificável do QCOW2 com o daemon comprovadamente parado; não expandir a imagem sem necessidade demonstrada.
+2. **T05:** iniciar novamente o daemon, identificar a aceleração efetiva (WHPX ou TCG) e registrar as flags de CPU vistas no Alpine. A última consulta falhou porque o PID 10936 estava morto; o `findstr` no log não encontrou mensagens de acelerador e não é conclusivo.
+3. **T06–T08:** após backup e T05, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
 
-O host tem 15,69 GiB livres em C: (236,33 GiB, cerca de 6,6% livres). A partição M: de 1 GiB, label `ALPINE`, permanece sem finalidade confirmada; não alterar nem formatar partições. Não iniciar downloads/builds grandes até avaliar e recuperar folga no C:.
+A coleta mais recente reportou C: com 94,05 GiB livres de 236,33 GiB (39,8% livres), portanto o bloqueio anterior de armazenamento foi resolvido. A partição M: de 1 GiB, label `ALPINE`, permanece sem finalidade confirmada; não alterar nem formatar partições.
 
 ## Registro de decisões
 
