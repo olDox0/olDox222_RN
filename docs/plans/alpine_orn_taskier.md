@@ -122,19 +122,20 @@ orn sandbox daemon restart
 
 ## Sprint C — Toolchain Alpine e Python
 
-### T06 — Provisionar dependências de build [P0] — inventário e simulação completos; instalação pendente
+### T06 — Provisionar dependências de build [P0] — inventário e simulações completos; instalação pendente
 Dentro do Alpine:
 - [x] Confirmar Alpine 3.24.4, Python 3.14.10 e pip 26.1.2.
 - [x] Confirmar GCC 15.2.0 e `musl-dev` instalados; G++, CMake, Ninja e Git ausentes.
 - [x] Confirmar `python3-dev`, `pkgconf` e `ca-certificates` ausentes.
-- [x] Simular o conjunto completo: 29 pacotes a instalar; resultado APK `OK: 560.4 MiB in 106 packages`.
-- [ ] Simular um conjunto mínimo sem `git`, `linux-headers` e `ninja` antes da instalação; usar Make/Unix Makefiles inicialmente.
-- [ ] Confirmar espaço em `/` e se `/var/tmp` está no ext4 persistente; não usar `/tmp` (tmpfs) para build.
-- [ ] Instalar o conjunto mínimo validado.
+- [x] Simular conjunto completo: 29 pacotes; total APK `560.4 MiB in 106 packages`.
+- [x] Simular conjunto mínimo: 17 pacotes; total APK `541.8 MiB in 94 packages`.
+- [x] Confirmar `/` e `/var/tmp` no mesmo ext4 persistente (`/dev/vda2`); `/tmp` é tmpfs.
+- [x] Confirmar inodes folgados: 5% usados, 106.028 livres.
+- [ ] Instalar o conjunto completo; a diferença simulada para o conjunto mínimo é só 18,6 MiB no total APK, adicionando Git, linux-headers e Samurai/Ninja para etapas seguintes.
 - [ ] Criar venv dedicado para o runtime.
 - [ ] Registrar versões dos pacotes e ferramentas.
 
-**Nota de capacidade:** os 560,4 MiB são o total reportado pelo APK para o estado simulado de 106 pacotes, não o volume de download nem uma garantia do espaço final exato a liberar. A raiz tinha cerca de 1,2 GiB livres antes da simulação. Por segurança, instalar em etapas e conferir `df -h` depois de cada etapa.
+**Nota de capacidade:** os 560,4 e 541,8 MiB são totais reportados pelo APK para o estado simulado, não tamanhos de download nem consumo incremental isolado. A raiz tem aproximadamente 1,2 GiB livres antes da instalação. Instalar com `--no-cache` e medir `df -h` imediatamente depois.
 
 **Compatibilidade conferida em 2026-11-24:** llama-cpp-python 0.3.38 (PyPI, lançado em 2026-11-23) declara Python >=3.8 e classificador Python 3.14. O `pyproject.toml` requer `scikit-build-core>=0.9.2`, e CMake mínimo 3.21. O sdist tem 79,4 MB. O alvo inicial será 0.3.38 com build CPU genérico; validar build no Alpine/musl antes de integrar ao ORN.
 
