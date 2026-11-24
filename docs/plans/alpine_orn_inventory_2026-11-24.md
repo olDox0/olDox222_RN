@@ -198,3 +198,22 @@ Em nova coleta via PowerShell, o volume C: passou a reportar 236,33 GiB totais, 
 Na mesma rodada, `findstr` não encontrou referências a WHPX, TCG ou accelerator em `data/sandbox/qemu_daemon.log`. A ausência de texto nesse arquivo não identifica qual acelerador foi selecionado.
 
 A tentativa de consultar `/proc/cpuinfo` não alcançou o guest: `QemuDaemon` reportou `offline (PID 10936 morto)`. Portanto, as flags de CPU do guest continuam pendentes. Próximo passo é iniciar o daemon novamente, confirmar que o boot continua com 1.280 MiB, e então repetir a coleta de CPU. Antes do backup do QCOW2, verificar também que não existe processo QEMU órfão ativo.
+
+
+## Backup QCOW2 e teste WHPX — 2026-11-24 16:08 (-03:00)
+
+Antes da cópia, `tasklist /FI "IMAGENAME eq qemu-system-x86_64.exe"` informou que não havia processo QEMU ativo. Foi copiada a imagem `data/sandbox/alpine.img.qcow2` para `data/sandbox/backups/alpine-before-orn-runtime-20261124.qcow2`.
+
+Os dois comandos `certutil -hashfile ... SHA256` retornaram exatamente o mesmo SHA256:
+
+`b9c87ffa2bcff5ada49b993a96636d50d83fb1522cbce238e29bdf2407d17691`
+
+Conclusão: backup idêntico à imagem de origem, concluído com o QEMU desligado. A pasta `data/` está ignorada pelo `.gitignore`, portanto a imagem e o backup não devem entrar no versionamento normal.
+
+Em seguida, um teste isolado QEMU com `-accel whpx -machine none -nodefaults -display none -S -monitor none` permaneceu ativo por 3 segundos e retornou `WHPX_INIT_OK`. Isso confirma que WHPX pode ser inicializado nesse host/QEMU. A VM Alpine foi iniciada depois com `-accel whpx -accel tcg -m 1280M -smp 2` e concluiu o boot (PID 16452). A documentação QEMU estabelece que, quando mais de um acelerador é passado, o seguinte só é usado se o anterior falhar na inicialização. Portanto WHPX é a seleção provável para o boot atual, mas a seleção no processo da VM ainda precisa de confirmação direta; o log `qemu_daemon.log` não mostrou mensagens de acelerador.
+
+A primeira tentativa de ler `/proc/cpuinfo` falhou no CMD antes de alcançar o Python: aspas duplas dentro do argumento `python -c` encerraram a string e CMD interpretou `model` como comando. A VM estava online no PID 16452 após a sequência; repetir a leitura usando comando simples sem aspas internas, por exemplo `QemuDaemon().shell('cat /proc/cpuinfo | head -n 24')`.
+
+### Modelos encontrados no host
+
+A listagem `doxoade mk -t models\` mostrou, entre outros, `models/sicdox/qwen2.5-coder-0.5b-instruct-q2_k.gguf`, além de variantes SmolLM2 e Brunnr em diferentes quantizações. O Qwen local é Q2_K, diferente do Q4_K_M definido inicialmente no plano. Pode ser usado como modelo de smoke test, sem substituir silenciosamente o alvo Q4_K_M de benchmark. Tamanho exato dos GGUF ainda não foi coletado.
