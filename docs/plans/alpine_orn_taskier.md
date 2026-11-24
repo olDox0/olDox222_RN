@@ -18,21 +18,27 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 ## Sprint A — Inventário e integridade
 
 ### T00 — Registrar o estado do Bluebaby [P0]
+- [ ] Executar `scripts/alpine_orn_host_inventory.ps1`.
 - [ ] Registrar modelo exato da CPU e instruções.
 - [ ] Registrar Windows, QEMU e versão do executável `qemu-img`.
 - [ ] Registrar RAM total/livre e espaço livre do volume de 125 GB.
 - [ ] Registrar commit/branch do ORN usado no experimento.
-- [ ] Registrar aceleração QEMU realmente disponível (WHPX/TCG).
+- [ ] Identificar aceleração QEMU efetiva pelos logs/diagnóstico.
 - [ ] Salvar saída de `qemu-img info` do QCOW2 atual.
 
 **Evidência:** inventário textual anexado ao registro do experimento.
 
+**Script:** `scripts/alpine_orn_host_inventory.ps1` (somente leitura).
+
 ### T01 — Auditar persistência real do Alpine [P0]
+- [ ] Executar `python scripts/alpine_orn_guest_inventory.py`.
 - [ ] Consultar `lsblk -f`, `df -h`, `mount` e `/etc/fstab`.
 - [ ] Identificar disco, partição e filesystem realmente usados.
-- [ ] Criar arquivo sentinela em local persistente.
+- [ ] Depois de confirmar um caminho persistente, criar arquivo sentinela nesse caminho.
 - [ ] Reiniciar QEMU e confirmar que o sentinela continua presente.
 - [ ] Se não houver persistência, planejar migração para instalação Alpine no QCOW2 antes da compilação do runtime.
+
+**Script:** `scripts/alpine_orn_guest_inventory.py` (somente leitura; não cria sentinela, não monta e não formata dispositivos).
 
 **Arquivos de referência:** `engine/tools/qemu_daemon.py`, `engine/tools/disk_forge.py`, `docs/History/vol5_sandbox_web.md`.
 
@@ -225,6 +231,8 @@ Dentro do Alpine:
 ## Próxima sequência de execução
 
 Executar apenas estes itens primeiro:
+
+O código atual anexa o QCOW2 ao QEMU, mas a busca estática não encontrou comandos `mkfs` ou montagem de `/dev/vda`/`/dev/vdb` no fluxo do daemon. Isso não prova que o convidado não tenha sido instalado manualmente; o diagnóstico do guest deve decidir essa questão. Não expandir nem formatar até essa auditoria.
 
 1. **T00:** inventário do Bluebaby e QEMU.
 2. **T01:** confirmar persistência real do Alpine.
