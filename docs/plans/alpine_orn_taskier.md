@@ -122,13 +122,17 @@ orn sandbox daemon restart
 
 ## Sprint C — Toolchain Alpine e Python
 
-### T06 — Provisionar dependências de build [P0]
+### T06 — Provisionar dependências de build [P0] — inventário concluído; instalação pendente
 Dentro do Alpine:
-- [ ] Atualizar índices do APK.
-- [ ] Instalar `build-base`, `cmake`, `ninja`, `git`.
-- [ ] Instalar `python3`, `python3-dev`, `py3-pip`, `linux-headers`, `pkgconf` e certificados.
+- [x] Confirmar Alpine 3.24.4, Python 3.14.10 e pip 26.1.2.
+- [x] Confirmar GCC 15.2.0 e `musl-dev` instalados; G++, CMake, Ninja e Git ausentes.
+- [x] Confirmar `python3-dev`, `pkgconf` e `ca-certificates` ausentes.
+- [ ] Simular o plano APK de `build-base`, `cmake`, `ninja`, `git`, `python3-dev`, `linux-headers`, `pkgconf` e `ca-certificates` antes da instalação.
+- [ ] Instalar dependências selecionadas sem usar `/tmp` para o diretório de build.
 - [ ] Criar venv dedicado para o runtime.
 - [ ] Registrar versões dos pacotes e ferramentas.
+
+**Compatibilidade conferida em 2026-11-24:** llama-cpp-python 0.3.38 (PyPI, lançado em 2026-11-23) declara Python >=3.8 e classificador Python 3.14. O `pyproject.toml` requer `scikit-build-core>=0.9.2`, e CMake mínimo 3.21. O sdist tem 79,4 MB. O alvo inicial será 0.3.38 com build CPU genérico; validar build no Alpine/musl antes de integrar ao ORN.
 
 **Critério:** GCC/G++, CMake, Python e pip funcionam dentro do venv.
 
@@ -258,7 +262,7 @@ O `echo` escreve uma linha terminada em newline, permitindo ao parser preservar 
 
 T01 e T03 estão concluídas. A persistência do Alpine foi comprovada pela sobrevivência do sentinela ao reboot; a RAM de 1.280 MiB foi aplicada e reconhecida pelo guest.
 
-1. **T02 / capacidade:** backup SHA256 verificado e armazenamento do host com 94,05 GiB livres. Decidir se a raiz de 2 GiB comporta o toolchain + GGUF; não expandir sem inspeção adicional.
+1. **T02 / capacidade:** backup SHA256 verificado e armazenamento do host com 94,05 GiB livres. O guest tem ~1,2 GiB livres; simular o plano APK e estimar espaço antes de instalar. Não expandir sem inspeção adicional.
 2. **T05:** concluída. `WinHvPlatform.dll` foi encontrada no processo QEMU PID 16452; o guest expõe QEMU Virtual CPU 2.5+ com SSE/SSE2/SSE3, sem SSSE3/SSE4/AVX. Compilar para baseline genérico.
 3. **Modelos locais:** Qwen2.5-Coder 0.5B Q2_K, 395,9 MiB, disponível para smoke test. SmolLM2 135M Q4_K_M, 100,6 MiB, disponível para teste rápido de carga; não comparar diretamente resultados de modelos diferentes.
 4. **T06–T08:** depois de fechar capacidade e CPU, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
