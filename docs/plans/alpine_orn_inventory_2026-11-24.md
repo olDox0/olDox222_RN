@@ -17,7 +17,7 @@
 | RAM visível | 15,69 GiB |
 | RAM livre na coleta | 7,92 GiB |
 | Hipervisor detectado pelo Windows | True |
-| QEMU | 11.1.0 (v11.0? no; output reports v11.1.0-12130-ge470268ff4) |
+| QEMU | 11.1.0 (v11.1.0-12130-ge470268ff4) |
 | Executável QEMU | `C:\Program Files\qemu\qemu-system-x86_64.exe` |
 | Unidade C: livre na coleta | 15,69 GiB |
 | Checkout HEAD | `b6b8746e8faa41e8c73b50013a93a9dea9139d65` |
