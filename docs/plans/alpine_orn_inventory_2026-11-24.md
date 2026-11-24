@@ -408,3 +408,21 @@ A verificação confirmou que /sbin/fdisk é link/applet pertencente a BusyBox 1
 - e2fsprogs-extra 1.47.4-r0
 
 Resultado de APK: OK: 562.2 MiB in 113 packages. A simulação não instalou os pacotes. Próximo passo: apk add --no-cache cloud-utils-growpart e2fsprogs-extra; depois verificar command -v growpart, sfdisk, resize2fs e espaço em /.
+
+
+
+## Ferramentas de crescimento instaladas — T02
+
+O usuário instalou cloud-utils-growpart e e2fsprogs-extra no Alpine 3.24.4. APK concluiu com OK: 562.2 MiB in 113 packages.
+
+Verificação:
+- growpart: /usr/bin/growpart
+- sfdisk: /sbin/sfdisk, util-linux 2.42.3
+- resize2fs: /usr/sbin/resize2fs
+
+O fdisk anterior era o applet BusyBox 1.37.0-r31. A tabela real foi exportada por sfdisk -d:
+label dos; label-id 0x0a4f7c3f
+vda1 start 2048 size 614400 type 83 bootable
+vda2 start 616448 size 3577856 type 83
+
+Depois da instalação, a raiz reportou 671.2 MiB usados e 907.9 MiB disponíveis (43% ocupados). Nenhuma partição ou filesystem foi alterado. Próximo passo: parar daemon, confirmar ausência de processos QEMU, fazer backup idêntico e verificá-lo por SHA256; apenas depois redimensionar a imagem QCOW2 de 2 GiB para 4 GiB.
