@@ -78,7 +78,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 **Uso no PowerShell (nova instância do terminal):**
 ```powershell
 $env:ORN_QEMU_RAM_MB = "1280"
-python -m engine.cli sandbox daemon restart
+orn sandbox daemon restart
 ```
 
 **Critério:** sem variável, mantém comportamento legado; com 1280, o comando QEMU usa `-m 1280M` e o guest informa aproximadamente 1.280 MiB.
