@@ -139,3 +139,38 @@ No CMD, o usuário executou `set "ORN_QEMU_RAM_MB=1280"` e confirmou `echo %ORN_
 O volume C: está com pouco espaço livre para uma compilação e instalação grandes. Os volumes sem letra e M: não foram identificados; não concluir que são partições dispensáveis. Suspender expansão do QCOW2 e operações de limpeza/partição até mapear `Get-Disk`, `Get-Partition`, labels e tipos de partição.
 
 O usuário interrompeu as tentativas de `Get-Disk` por estar no CMD; o comando precisa ser chamado via `powershell -NoProfile -Command "..."`.
+
+
+## Atualização do host e reboot — 2026-11-24 01:46 (-03:00)
+
+### RAM aplicada e confirmada
+
+No CMD foi definido `ORN_QEMU_RAM_MB=1280`, seguido de `orn sandbox daemon restart`. O daemon iniciou online com PID 10936 e porta 8373. O log confirmou `guest RAM=1280 MiB` e o comando `-m 1280M`. O inventário dentro do Alpine reportou `Mem: 1.2G total`, aproximadamente 74,3 MiB usados e 1,0 GiB disponíveis; swap continua em 0. Isso confirma que a configuração chegou ao processo QEMU e que o guest vê aproximadamente 1,2 GiB.
+
+O comando de inicialização ainda contém `-accel whpx -accel tcg`; o log fornecido não identifica qual acelerador foi efetivamente selecionado.
+
+### Persistência: teste parcial
+
+Antes do restart, a verificação do arquivo `/workspace/.orn_alpine_persistence_probe` com `grep -qx ORN_PERSIST_20261124` retornou `SENTINEL_OK`. Isso comprova que o arquivo e o conteúdo existiam antes do reboot. Falta repetir o mesmo teste após o restart de PID 10936 para confirmar que o conteúdo sobreviveu ao ciclo de desligamento/inicialização.
+
+Comando para a próxima verificação, executado no CMD:
+
+```cmd
+python -c "from engine.tools.qemu_daemon import QemuDaemon; print(QemuDaemon().shell('test -f /workspace/.orn_alpine_persistence_probe && grep -qx ORN_PERSIST_20261124 /workspace/.orn_alpine_persistence_probe && echo SENTINEL_OK || echo SENTINEL_MISSING'))"
+```
+
+### Inventário físico do armazenamento Windows
+
+`Get-Disk` identificou um único disco: NVMe ADATA SM2P41C3 de 238,47 GiB (256 GB decimais), GPT. `Get-Partition` mostrou:
+
+| Partição | Tipo / letra | Sistema / label | Capacidade |
+|---|---|---|---:|
+| 1 | System / sem letra | EFI | 0,10 GiB |
+| 2 | Reserved / sem letra | MSR | 0,02 GiB |
+| 3 | Basic / C: | NTFS | 236,33 GiB |
+| 4 | Basic / M: | FAT32, label `ALPINE` | 1,00 GiB |
+| 5 | Recovery / sem letra | NTFS | 1,03 GiB |
+
+Volumes reportados: C: com 15,69 GiB livres; NTFS sem letra com 0,10 GiB livres; M: `ALPINE` com 0,97 GiB livres; FAT32 sem letra com 0,03 GiB livres. C: tem cerca de 6,6% livres. A antiga estimativa de 125 GB estava incorreta/incompleta: o disco é anunciado como 256 GB decimais, equivalentes a aproximadamente 238,47 GiB.
+
+Não há evidência para apagar ou alterar as partições pequenas. M: é uma partição Basic interna rotulada `ALPINE`; preservar até identificar sua finalidade. Suspender downloads/builds grandes até investigar o uso de C: e recuperar folga. O QCOW2 atual permanece com 2 GiB virtuais e ~353 MiB físicos; a raiz Alpine usa ~302 MiB e tem ~1,2 GiB livres.
