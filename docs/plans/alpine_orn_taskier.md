@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Taskier
 
 **Data:** 2026-11-24  
-**Status:** Execução em andamento — T00 inventariado; T01 com teste de persistência pós-reboot pendente; T03 validada no guest  
+**Status:** Execução em andamento — T01 e T03 concluídas; T00/T02/T05 ainda têm verificações pendentes  
 **Plano-mestre:** [alpine_orn_blitz.md](alpine_orn_blitz.md)
 
 ## Legenda
@@ -33,7 +33,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 
 **Script:** `scripts/alpine_orn_host_inventory.ps1` (somente leitura).
 
-### T01 — Auditar persistência real do Alpine [P0] — parcial
+### T01 — Auditar persistência real do Alpine [P0] — concluída
 - [x] Registrar tentativa inicial de inventário com daemon offline (PID 11136 morto).
 - [x] Reiniciar daemon com sucesso; estado reportado online, PID 10232.
 - [x] Executar inventário com daemon online (PID 17260).
@@ -41,16 +41,16 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Identificar partições: `/dev/vda1` (~300 MiB, ext4 em `/boot`) e `/dev/vda2` (~1,75 GiB, ext4 em `/`).
 - [x] Confirmar raiz em filesystem ext4 gravável, com ~1,2 GiB livres.
 - [x] Validar o sentinela antes do reboot com `grep -qx ... && echo SENTINEL_OK`; retorno `SENTINEL_OK`.
-- [ ] Repetir a validação do sentinela após o reboot atual (PID 10936) para comprovar persistência entre boots.
+- [x] Repetir a validação do sentinela após o reboot (PID 10936); retorno `SENTINEL_OK`.
 
-**Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`. A estrutura aponta para instalação em disco. O sentinela foi validado antes do restart; aguarda repetição após o restart atual.
-- [ ] Se não houver persistência, planejar migração para instalação Alpine no QCOW2 antes da compilação do runtime.
+**Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`. O arquivo `/workspace/.orn_alpine_persistence_probe` e o conteúdo `ORN_PERSIST_20261124` foram verificados antes e depois do reboot; a segunda verificação retornou `SENTINEL_OK`.
+- [x] Migração por falta de persistência não é necessária: o sentinela sobreviveu ao reboot.
 
 **Script:** `scripts/alpine_orn_guest_inventory.py` (somente leitura; não cria sentinela, não monta e não formata dispositivos).
 
 **Arquivos de referência:** `engine/tools/qemu_daemon.py`, `engine/tools/disk_forge.py`, `docs/History/vol5_sandbox_web.md`.
 
-**Critério:** dados de teste sobrevivem ao reboot; filesystem e dispositivo estão documentados.
+**Critério atendido:** sentinela sobreviveu ao reboot; raiz identificada em `/dev/vda2` (ext4, RW), no QCOW2 de 2 GiB.
 
 ### T02 — Backup e capacidade do QCOW2 [P0]
 - [x] Registrar imagem atual: 2 GiB de tamanho virtual / ~353 MiB físicos.
@@ -83,9 +83,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Reiniciar a VM com 1.280 MiB e confirmar `free -h` no Alpine.
 - [ ] Confirmar que o perfil `code` continua com seus limites originais.
 
-**Tentativa local em 2026-11-24:** agora executou `set "ORN_QEMU_RAM_MB=1280"` no CMD e `echo %ORN_QEMU_RAM_MB%` retornou `1280`. Ainda não foi executado `orn sandbox daemon restart` após definir a variável; portanto, a VM atual permanece em 512 MiB até o restart. Próximo comando é o restart no mesmo CMD.
-
-**Observação:** a coleta atual mostra o QEMU ainda iniciado com `-m 512M`; a configuração de 1.280 MiB não foi aplicada nesta rodada.
+**Validação no Bluebaby em 2026-11-24:** no CMD, `set "ORN_QEMU_RAM_MB=1280"` foi seguido de `orn sandbox daemon restart`. O log registrou `guest RAM=1280 MiB` e `-m 1280M`; o guest reportou `Mem: 1.2G total`, aproximadamente 74,3 MiB usados e 1,0 GiB disponíveis. QEMU online, PID 10936, porta 8373.
 
 **Arquivos:** `engine/tools/qemu_daemon.py`, `tests/test_qemu_memory_config.py`.
 
@@ -252,16 +250,15 @@ python -c "from engine.tools.qemu_daemon import QemuDaemon; print(QemuDaemon().s
 ```
 O `echo` escreve uma linha terminada em newline, permitindo ao parser preservar o resultado.
 
-Executar apenas estes itens primeiro:
+### Estado atual e próxima sequência
 
-O código atual anexa o QCOW2 ao QEMU, mas a busca estática não encontrou comandos `mkfs` ou montagem de `/dev/vda`/`/dev/vdb` no fluxo do daemon. Isso não prova que o convidado não tenha sido instalado manualmente; o diagnóstico do guest deve decidir essa questão. Não expandir nem formatar até essa auditoria.
+T01 e T03 estão concluídas. A persistência do Alpine foi comprovada pela sobrevivência do sentinela ao reboot; a RAM de 1.280 MiB foi aplicada e reconhecida pelo guest.
 
-1. **T01:** repetir agora a leitura do sentinela após o restart. Se retornar `SENTINEL_OK`, marcar persistência comprovada.
-2. **T02:** decidir backup e eventual aumento de QCOW2 somente após avaliar o espaço de C:. A imagem atual tem 2 GiB virtuais e ~353 MiB físicos; o guest ainda tem ~1,2 GiB livres.
-3. **Armazenamento do host:** investigar uso de C: antes de downloads/builds. O espaço livre atual é baixo para baixar GGUF e compilar dependências, mesmo que suficiente para um backup compacto da imagem.
-4. **T05:** confirmar aceleração WHPX/TCG efetiva antes de benchmark.
+1. **T02 / armazenamento:** fazer avaliação segura do espaço disponível em C: e decidir se há folga para backup do QCOW2. Não expandir a imagem por enquanto: o disco virtual tem 2 GiB e o guest ainda reporta cerca de 1,2 GiB livres.
+2. **T05:** identificar a aceleração QEMU realmente utilizada (WHPX ou TCG) e registrar as flags de CPU vistas no Alpine.
+3. **T06–T08:** somente após resolver espaço de armazenamento, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
 
-T03 está validada no guest. Não iniciar o download do GGUF/build até confirmar T01 e decidir a estratégia de armazenamento.
+O host tem 15,69 GiB livres em C: (236,33 GiB, cerca de 6,6% livres). A partição M: de 1 GiB, label `ALPINE`, permanece sem finalidade confirmada; não alterar nem formatar partições. Não iniciar downloads/builds grandes até avaliar e recuperar folga no C:.
 
 ## Registro de decisões
 
