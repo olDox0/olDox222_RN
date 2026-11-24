@@ -25,14 +25,16 @@ def test_explicit_argument_overrides_environment(monkeypatch):
     assert _resolve_qemu_memory_mb(1280) == 1280
 
 
-@pytest.mark.parametrize("value", ["invalid", "1280.5", "-512", "255", "8193", ""])
+def test_blank_environment_uses_legacy_default(monkeypatch):
+    monkeypatch.setenv("ORN_QEMU_RAM_MB", " ")
+    assert _resolve_qemu_memory_mb() == DEFAULT_QEMU_RAM_MB
+
+
+@pytest.mark.parametrize("value", ["invalid", "1280.5", "-512", "255", "8193"])
 def test_invalid_ram_is_rejected(value, monkeypatch):
     monkeypatch.setenv("ORN_QEMU_RAM_MB", value)
-    if value == "":
-        assert _resolve_qemu_memory_mb() == DEFAULT_QEMU_RAM_MB
-    else:
-        with pytest.raises(ValueError):
-            _resolve_qemu_memory_mb()
+    with pytest.raises(ValueError):
+        _resolve_qemu_memory_mb()
 
 
 def test_ram_range_boundaries_are_accepted():
