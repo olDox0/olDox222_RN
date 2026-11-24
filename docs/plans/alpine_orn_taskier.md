@@ -43,7 +43,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Validar o sentinela antes do reboot com `grep -qx ... && echo SENTINEL_OK`; retorno `SENTINEL_OK`.
 - [ ] Repetir a validação do sentinela após o reboot atual (PID 10936) para comprovar persistência entre boots.
 
-**Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`. A estrutura aponta para instalação em disco; a persistência entre boots ainda não foi validada.
+**Evidência:** `docs/plans/alpine_orn_inventory_2026-11-24.md`. A estrutura aponta para instalação em disco. O sentinela foi validado antes do restart; aguarda repetição após o restart atual.
 - [ ] Se não houver persistência, planejar migração para instalação Alpine no QCOW2 antes da compilação do runtime.
 
 **Script:** `scripts/alpine_orn_guest_inventory.py` (somente leitura; não cria sentinela, não monta e não formata dispositivos).
@@ -72,7 +72,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 
 ## Sprint B — Controle de recursos QEMU
 
-### T03 — Tornar a RAM configurável [P0] — implementação e testes unitários concluídos
+### T03 — Tornar a RAM configurável [P0] — implementação, testes e validação no guest concluídos
 - [x] Substituir o `-m 512M` fixo por configuração explícita.
 - [x] Usar `ORN_QEMU_RAM_MB` ou o argumento `QemuDaemon(memory_mb=...)`.
 - [x] Manter o default legado de 512 MiB quando não houver configuração.
@@ -80,7 +80,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 - [x] Registrar a memória escolhida no log do daemon e no comando QEMU.
 - [x] Adicionar testes unitários para default, variável de ambiente, precedência, limites e entradas inválidas.
 - [x] Executar no checkout local: `12 passed in 0.20s`.
-- [ ] Reiniciar a VM com 1.280 MiB e confirmar `free -h` no Alpine.
+- [x] Reiniciar a VM com 1.280 MiB e confirmar `free -h` no Alpine.
 - [ ] Confirmar que o perfil `code` continua com seus limites originais.
 
 **Tentativa local em 2026-11-24:** agora executou `set "ORN_QEMU_RAM_MB=1280"` no CMD e `echo %ORN_QEMU_RAM_MB%` retornou `1280`. Ainda não foi executado `orn sandbox daemon restart` após definir a variável; portanto, a VM atual permanece em 512 MiB até o restart. Próximo comando é o restart no mesmo CMD.
