@@ -37,6 +37,14 @@ def test_invalid_ram_is_rejected(value, monkeypatch):
         _resolve_qemu_memory_mb()
 
 
+@pytest.mark.parametrize("value", [1280.5, True, None])
+def test_non_integer_arguments_are_rejected(value):
+    if value is None:
+        return
+    with pytest.raises(ValueError):
+        _resolve_qemu_memory_mb(value)
+
+
 def test_ram_range_boundaries_are_accepted():
     assert _resolve_qemu_memory_mb(MIN_QEMU_RAM_MB) == MIN_QEMU_RAM_MB
     assert _resolve_qemu_memory_mb(MAX_QEMU_RAM_MB) == MAX_QEMU_RAM_MB
