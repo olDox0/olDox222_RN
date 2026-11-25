@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from engine.tools.qemu_daemon import _has_shell_prompt
 from engine.tools.qemu_ssh import (
     DEFAULT_SSH_HOST_PORT,
     SSH_SETUP_MARKER,
@@ -18,6 +19,17 @@ from engine.tools.qemu_ssh import (
     qemu_user_netdev,
     resolve_ssh_port,
 )
+
+
+def test_serial_prompt_recognizes_home_and_subdirectory() -> None:
+    assert _has_shell_prompt(b"localhost:~# ")
+    assert _has_shell_prompt(b"localhost:/opt/orn-src# ")
+    assert _has_shell_prompt(b"localhost:/# ")
+
+
+def test_serial_prompt_rejects_non_root_prompt_and_output() -> None:
+    assert not _has_shell_prompt(b"localhost:/opt/orn-src$ ")
+    assert not _has_shell_prompt(b"compilation complete")
 
 
 def test_ssh_port_defaults_to_loopback_port(monkeypatch) -> None:
