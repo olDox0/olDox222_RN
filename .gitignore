@@ -149,3 +149,5 @@ __pycache__/
 !PipelineHelp.txt
 !tests/
 !tests/**
+tests/**/__pycache__/
+tests/**/*.pyc
