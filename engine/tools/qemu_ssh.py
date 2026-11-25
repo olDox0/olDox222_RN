@@ -223,7 +223,7 @@ ssh-keygen -A
 /usr/sbin/sshd -t
 rc-update add sshd default >/dev/null 2>&1 || true
 if rc-service sshd status >/dev/null 2>&1; then
-    rc-service sshd restart
+    rc-service sshd reload >/dev/null 2>&1 || rc-service sshd restart
 else
     rc-service sshd start
 fi

@@ -95,7 +95,7 @@ def test_guest_setup_is_base64_wrapped_and_checks_marker(tmp_path: Path) -> None
     assert "PasswordAuthentication no" in script
     assert "PermitRootLogin prohibit-password" in script
     assert public_key in script
-    assert "rc-service sshd" in script
+    assert "rc-service sshd reload" in script
 
 
 def test_guest_setup_fails_without_success_marker(tmp_path: Path) -> None:

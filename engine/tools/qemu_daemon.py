@@ -38,6 +38,16 @@ MIN_QEMU_RAM_MB = 256
 MAX_QEMU_RAM_MB = 8192
 
 
+def _has_shell_prompt(buffer: bytes) -> bool:
+    """Reconhece o prompt root independentemente do diretório corrente."""
+    return bool(
+        re.search(
+            rb"(?:^|\r?\n)[A-Za-z0-9_.-]+:[^\r\n]*#\s*$",
+            buffer,
+        )
+    )
+
+
 def _resolve_qemu_memory_mb(memory_mb: int | str | None = None) -> int:
     """Resolve RAM do guest: argumento > ORN_QEMU_RAM_MB > default legado."""
     raw: int | str | None = memory_mb
@@ -511,7 +521,7 @@ class QemuDaemon:
             if not chunk:
                 break
             buffer += chunk
-            if b"~#" in buffer:
+            if _has_shell_prompt(buffer):
                 got_prompt = True
                 break
             if b"login:" in buffer.lower():
