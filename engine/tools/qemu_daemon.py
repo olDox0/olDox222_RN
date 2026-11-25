@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from engine.tools.qemu_sandbox import QemuSandbox, SandboxResult
+from engine.tools.qemu_ssh import qemu_user_netdev
 
 HOST = "127.0.0.1"
 PORT_CANDIDATES = [8373, 8374, 8375, 8376]
@@ -354,10 +355,13 @@ class QemuDaemon:
         # Detecção de aceleração nativa para Windows com fallback TCG.
 
         accel_flags = ["-accel", "whpx", "-accel", "tcg"]
+        cpu_model = os.environ.get("ORN_QEMU_CPU_MODEL", "").strip()
+        cpu_flags = ["-cpu", cpu_model] if cpu_model else []
 
         cmd = [
             self.qs.qemu_exe,
             *accel_flags,
+            *cpu_flags,
             "-m", f"{self.memory_mb}M",
             "-smp", "2",
             # "-cdrom", str(iso_file),
@@ -376,7 +380,7 @@ class QemuDaemon:
             "-d", "guest_errors,cpu_reset",
             "-monitor", "none",
             "-display", "none",
-            "-netdev", "user,id=net0",
+            "-netdev", qemu_user_netdev(),
             "-device", "virtio-net-pci,netdev=net0",
             "-no-shutdown",
         ]
