@@ -353,11 +353,17 @@ class QemuDaemon:
         self.log.info("_try_boot: guest RAM=%d MiB", self.memory_mb)
         # Detecção de aceleração nativa para Windows com fallback TCG.
 
+        # Acelerador: WHPX prioritário, TCG como fallback.
         accel_flags = ["-accel", "whpx", "-accel", "tcg"]
+
+        # Perfil de CPU configurável.
+        cpu_model = os.environ.get("ORN_QEMU_CPU_MODEL", "").strip()
+        cpu_flags = ["-cpu", cpu_model] if cpu_model else []
 
         cmd = [
             self.qs.qemu_exe,
             *accel_flags,
+            *cpu_flags,
             "-m", f"{self.memory_mb}M",
             "-smp", "2",
             # "-cdrom", str(iso_file),
@@ -376,7 +382,8 @@ class QemuDaemon:
             "-d", "guest_errors,cpu_reset",
             "-monitor", "none",
             "-display", "none",
-            "-netdev", "user,id=net0",
+            "-netdev",
+            "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22",
             "-device", "virtio-net-pci,netdev=net0",
             "-no-shutdown",
         ]
