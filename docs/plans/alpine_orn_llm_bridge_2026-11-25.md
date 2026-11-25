@@ -29,11 +29,9 @@ O caminho `ORN_MODEL_PATH` agora é aplicado pelo `BridgeConfig` quando nenhum c
 Configuração recomendada para o primeiro teste no guest de 1,2 GiB:
 
 ```python
-from pathlib import Path
 from engine.core.llm_bridge import BridgeConfig, SiCDoxBridge
 
 cfg = BridgeConfig(
-    model_path=Path("/opt/orn-models/SmolLM2-135M-Instruct-Q4_K_M.gguf"),
     n_ctx=512,
     active_window=192,
     n_batch=32,
