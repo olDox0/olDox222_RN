@@ -1056,7 +1056,10 @@ class SiCDoxBridge:
                     "utf-8", errors="ignore"
                 )
             except Exception:
-                prompt_text = ""
+                try:
+                    prompt_text = self._build_prompt()
+                except Exception:
+                    prompt_text = ""
         else:
             prompt_text = prompt
 

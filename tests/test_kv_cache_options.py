@@ -414,3 +414,38 @@ def test_call_engine_continuation_respects_response_hard_limit() -> None:
     assert out["text"] == "12"
     assert out["usage"]["completion_tokens"] == 2
     assert bridge._llm.calls == 2
+
+
+def test_call_engine_continuation_converts_token_prompt_to_text() -> None:
+    class _FakeLLM:
+        def __init__(self) -> None:
+            self.prompts = []
+
+        def detokenize(self, _tokens):
+            return b"PROMPT"
+
+        def tokenize(self, text, special=False):
+            return list(text)
+
+        def __call__(self, prompt, **_kwargs):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return {
+                    "choices": [{"text": "part1", "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                }
+            return {
+                "choices": [{"text": "part2", "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 1},
+            }
+
+    bridge = SiCDoxBridge(
+        BridgeConfig(max_tokens=1, response_hard_limit=2, n_ctx=128)
+    )
+    bridge._llm = _FakeLLM()
+    bridge._native = None
+
+    out = bridge._call_engine([1, 2], 1)
+
+    assert out["text"] == "part1part2"
+    assert bridge._llm.prompts == [[1, 2], "PROMPTpart1"]
