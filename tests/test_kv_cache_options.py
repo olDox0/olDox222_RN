@@ -332,9 +332,11 @@ def test_call_engine_extends_when_finish_reason_is_length() -> None:
     class _FakeLLM:
         def __init__(self) -> None:
             self.calls = 0
+            self.prompts = []
 
-        def __call__(self, _prompt, **_kwargs):
+        def __call__(self, prompt, **_kwargs):
             self.calls += 1
+            self.prompts.append(prompt)
             if self.calls == 1:
                 return {
                     "choices": [{"text": "abc", "finish_reason": "length"}],
@@ -344,6 +346,10 @@ def test_call_engine_extends_when_finish_reason_is_length() -> None:
                 "choices": [{"text": "de", "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
             }
+
+        def tokenize(self, text, special=False):
+            return list(text)
+
 
         def detokenize(self, _tokens):
             return b"prompt"
@@ -357,6 +363,8 @@ def test_call_engine_extends_when_finish_reason_is_length() -> None:
 
     assert out["text"] == "abcde"
     assert out["usage"]["completion_tokens"] == 5
+    assert bridge._llm.calls == 2
+    assert bridge._llm.prompts[1] == "promptabc"
 
 
 def test_call_engine_native_does_not_require_python_llm_loaded() -> None:
@@ -378,3 +386,31 @@ def test_call_engine_native_does_not_require_python_llm_loaded() -> None:
     out = bridge._call_engine("prompt", 8)
 
     assert out["text"] == "ok"
+
+
+def test_call_engine_continuation_respects_response_hard_limit() -> None:
+    class _FakeLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(self, _prompt, **_kwargs):
+            self.calls += 1
+            return {
+                "choices": [{"text": str(self.calls), "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 1, "total_tokens": 5},
+            }
+
+        def tokenize(self, text, special=False):
+            return list(text)
+
+    bridge = SiCDoxBridge(
+        BridgeConfig(max_tokens=4, response_hard_limit=2, n_ctx=128)
+    )
+    bridge._llm = _FakeLLM()
+    bridge._native = None
+
+    out = bridge._call_engine("prompt", 4)
+
+    assert out["text"] == "12"
+    assert out["usage"]["completion_tokens"] == 2
+    assert bridge._llm.calls == 2

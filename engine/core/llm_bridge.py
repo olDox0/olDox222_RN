@@ -1044,33 +1044,121 @@ class SiCDoxBridge:
 
         if self._llm is None:
             raise RuntimeError("Nenhum modelo carregado.")
-        if is_tokens:
-            prompt_size = len(prompt)
-        else:
-            prompt_size = len(prompt.split()) * 2
-        safe_max_tokens = self._cfg.n_ctx - prompt_size - 10 
-        final_max_tokens = min(max_tokens, max(1, safe_max_tokens))
+        # Limite total de geração para todas as chamadas de continuação.
+        hard_limit = max(1, int(self._cfg.response_hard_limit))
+        chunk_max = max(1, min(int(max_tokens), hard_limit))
+
         stop_tokens = ["<|im_end|>", "</s>"]
-        if not is_tokens and prompt.count("```") % 2 == 1:
+        prompt_text = ""
+        if is_tokens:
+            try:
+                prompt_text = self._llm.detokenize(prompt).decode(
+                    "utf-8", errors="ignore"
+                )
+            except Exception:
+                prompt_text = ""
+        else:
+            prompt_text = prompt
+
+        if prompt_text.count("```") % 2 == 1:
             stop_tokens.extend(["\n```\n", "\n``` "])
-        import time
-        t0 = time.perf_counter()
-        resp = self._llm(
-            prompt,
-            max_tokens=final_max_tokens,
-            temperature=self._cfg.temperature,
-            top_p=self._cfg.top_p,
-            top_k=self._cfg.top_k,
-            repeat_penalty=self._cfg.repeat_penalty,
-            min_p=self._cfg.min_p,
-            stop=stop_tokens,
-            echo=False,
-        )
-        llm_ms = (time.perf_counter() - t0) * 1000.0
+
+        base_kwargs = {
+            "temperature": self._cfg.temperature,
+            "top_p": self._cfg.top_p,
+            "top_k": self._cfg.top_k,
+            "repeat_penalty": self._cfg.repeat_penalty,
+            "stop": stop_tokens,
+            "echo": False,
+        }
+        if self._cfg.min_p is not None:
+            base_kwargs["min_p"] = self._cfg.min_p
+
+        accumulated: list[str] = []
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_ms = 0.0
+        prompt_for_call: str | list[int] = prompt
+        min_p_unsupported = False
+
+        while total_completion_tokens < hard_limit:
+            # Mede o prompt atual para nunca solicitar mais espaço do que
+            # ainda cabe no contexto do llama.cpp.
+            if isinstance(prompt_for_call, list):
+                prompt_size = len(prompt_for_call)
+            else:
+                try:
+                    prompt_size = len(
+                        self._llm.tokenize(
+                            prompt_for_call.encode("utf-8"), special=True
+                        )
+                    )
+                except Exception:
+                    prompt_size = len(prompt_for_call.split()) * 2
+
+            safe_max_tokens = self._cfg.n_ctx - prompt_size - 10
+            if safe_max_tokens <= 0:
+                break
+
+            remaining = hard_limit - total_completion_tokens
+            call_max_tokens = min(chunk_max, remaining, safe_max_tokens)
+            if call_max_tokens <= 0:
+                break
+
+            call_kwargs = dict(base_kwargs)
+            call_kwargs["max_tokens"] = call_max_tokens
+            started = time.perf_counter()
+            try:
+                response = self._llm(prompt_for_call, **call_kwargs)
+            except TypeError as exc:
+                if "min_p" not in str(exc) or min_p_unsupported:
+                    raise
+                min_p_unsupported = True
+                base_kwargs.pop("min_p", None)
+                call_kwargs.pop("min_p", None)
+                response = self._llm(prompt_for_call, **call_kwargs)
+            total_ms += (time.perf_counter() - started) * 1000.0
+
+            choices = response.get("choices") or []
+            if not choices:
+                break
+            choice = choices[0]
+            piece = str(choice.get("text", "") or "")
+            usage = response.get("usage", {}) or {}
+
+            prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+            if completion_tokens <= 0 and piece:
+                completion_tokens = max(1, len(piece.split()))
+
+            total_prompt_tokens += prompt_tokens
+            total_completion_tokens += completion_tokens
+            if piece:
+                accumulated.append(piece)
+
+            finish_reason = str(choice.get("finish_reason", "") or "")
+            # Só continua quando o backend confirma que o bloco foi cortado
+            # pelo limite de geração; paradas naturais encerram o ciclo.
+            if finish_reason and finish_reason != "length":
+                break
+            if not piece or completion_tokens <= 0:
+                break
+
+            # A continuação mantém o prompt original e acrescenta toda a
+            # resposta parcial. Tokens pré-montados viram string após o 1º bloco.
+            if isinstance(prompt_for_call, list):
+                prompt_for_call = prompt_text + "".join(accumulated)
+            else:
+                prompt_for_call = prompt_for_call + piece
+
         return {
-            "text": resp["choices"][0]["text"],
-            "usage": resp.get("usage", {}),
-            "llm_call_ms": round(llm_ms, 3)
+            "text": "".join(accumulated),
+            "usage": {
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "total_tokens": total_prompt_tokens + total_completion_tokens,
+            },
+            "llm_call_ms": round(total_ms, 3),
         }
 
     def _build_prompt_tokens(self) -> list[int] | None:
