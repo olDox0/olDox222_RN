@@ -77,3 +77,27 @@ def test_native_backend_off_disables_auto_discovery(
 
     assert bridge._native is None
     assert isinstance(bridge._llm, FakeLlama)
+
+
+def test_shutdown_releases_native_backend_and_stats_reports_it() -> None:
+    class FakeNative:
+        _ready = True
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def shutdown(self) -> None:
+            self.closed = True
+            self._ready = False
+
+    bridge = SiCDoxBridge(BridgeConfig(model_path=Path("unused.gguf")))
+    native = FakeNative()
+    bridge._native = native
+
+    assert bridge.stats()["model_loaded"] is True
+
+    bridge.shutdown()
+
+    assert native.closed is True
+    assert bridge._native is None
+    assert bridge.stats()["model_loaded"] is False

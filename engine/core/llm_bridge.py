@@ -834,17 +834,22 @@ class SiCDoxBridge:
             oldest = self._memo_order.popleft()
             self._memo.pop(oldest, None)
     def shutdown(self) -> None:
-        """Libera modelo da RAM. Idempotente."""
+        """Libera o backend ativo da RAM. Idempotente."""
         if self._llm is not None:
             try:
                 self._llm.close()
-            except Exception as e:
-                import sys as _dox_sys, os as _dox_os
-                exc_type, exc_obj, exc_tb = _dox_sys.exc_info()
-                f_name = _dox_os.path.split(exc_tb.tb_frame.f_code.co_filename)[1] if exc_tb else "Unknown"
-                line_n = exc_tb.tb_lineno if exc_tb else 0
-                print(f"\033[1;34m[ FORENSIC ]\033[0m \033[1mFile: {f_name} | L: {line_n} | Func: _analyze_layer\033[0m\n\033[31m  ■ Type: {type(e).__name__} | Value: {e}\033[0m")
-            self._llm = None
+            except Exception as exc:
+                logger.warning("Falha ao fechar llama-cpp-python: %s", exc)
+            finally:
+                self._llm = None
+
+        if self._native is not None:
+            try:
+                self._native.shutdown()
+            except Exception as exc:
+                logger.warning("Falha ao fechar backend nativo: %s", exc)
+            finally:
+                self._native = None
 
         self._load_time = None
         # ContextWindow preservada para retomada de sessão.
@@ -857,7 +862,7 @@ class SiCDoxBridge:
         if self._load_time is not None:
             elapsed = round(time.monotonic() - self._load_time, 1)
         return {
-            "model_loaded":      self._llm is not None,
+            "model_loaded":      self._llm is not None or bool(self._native and self._native._ready),
             "model_path":        str(self._cfg.model_path),
             "loaded_since_s":    elapsed,   # segundos desde o load (None = descarregado)
             "context":           self._ctx.stats(),
@@ -908,7 +913,8 @@ class SiCDoxBridge:
                 except Exception as exc:
                     print(f"[ORN-NATIVE] falha ao carregar: {exc} — fallback Python")
                     self._native = None
-                    # cai no caminho Python abaixo
+                    self._native_disabled = True
+                    # Evita tentar a mesma biblioteca novamente em _load().
                 else:
                     return  # nativo pronto — não sobe llama-cpp-python
             else:
