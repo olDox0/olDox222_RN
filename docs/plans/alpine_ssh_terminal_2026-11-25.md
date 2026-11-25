@@ -37,7 +37,7 @@ orn sandbox daemon restart
 orn sandbox terminal
 ```
 
-O comando inicia o daemon se estiver offline, cria/reutiliza a chave Ed25519, confirma a porta, instala/configura sshd de forma idempotente e abre a sessão SSH com TTY. Digite `exit` ou Ctrl+D para sair; o QEMU permanece ativo.
+O comando inicia o daemon se estiver offline, cria/reutiliza a chave Ed25519, confirma a porta, instala/configura sshd de forma idempotente, confirma o banner do protocolo SSH e abre a sessão com TTY. Digite `exit` ou Ctrl+D para sair; o QEMU permanece ativo.
 
 ## Segurança
 

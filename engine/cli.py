@@ -3123,6 +3123,12 @@ def sandbox_terminal(timeout: int) -> None:
             f"Não foi possível preparar o SSH no Alpine: {exc}"
         ) from exc
 
+    if not client.wait_for_ssh(timeout=5.0):
+        raise click.ClickException(
+            "A porta encaminhada não apresentou um banner SSH. "
+            "Verifique a porta ORN_QEMU_SSH_PORT e o log do QEMU."
+        )
+
     Display.success(
         f"SSH pronto: {client.username}@{client.host}:{client.port}. "
         "Use exit para fechar a sessão; o QEMU continuará ativo."

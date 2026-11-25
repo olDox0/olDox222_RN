@@ -6,6 +6,7 @@ import base64
 import shlex
 import socket
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -139,6 +140,50 @@ def test_wait_for_forward_detects_local_listener(tmp_path: Path) -> None:
         assert client.wait_for_forward(timeout=0.3) is True
     finally:
         listener.close()
+
+
+def test_wait_for_ssh_requires_ssh_protocol_banner(tmp_path: Path) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    client = QemuSSHClient(state_dir=tmp_path, port=port)
+
+    def send_banner() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            connection.sendall(b"SSH-2.0-OpenSSH_test\\r\\n")
+
+    thread = threading.Thread(target=send_banner, daemon=True)
+    thread.start()
+    try:
+        assert client.wait_for_ssh(timeout=2.0) is True
+    finally:
+        listener.close()
+        thread.join(timeout=1.0)
+
+
+def test_wait_for_ssh_rejects_non_ssh_service(tmp_path: Path) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    client = QemuSSHClient(state_dir=tmp_path, port=port)
+
+    def send_banner() -> None:
+        connection, _ = listener.accept()
+        with connection:
+            connection.sendall(b"HTTP/1.1 200 OK\\r\\n")
+
+    thread = threading.Thread(target=send_banner, daemon=True)
+    thread.start()
+    try:
+        assert client.wait_for_ssh(timeout=0.5) is False
+    finally:
+        listener.close()
+        thread.join(timeout=1.0)
 
 
 def test_sandbox_terminal_command_is_registered() -> None:

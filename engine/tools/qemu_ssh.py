@@ -174,6 +174,24 @@ class QemuSSHClient:
                     return False
                 time.sleep(0.1)
 
+    def wait_for_ssh(self, timeout: float = 5.0) -> bool:
+        """Confirma o banner SSH do guest, não apenas uma porta TCP aberta."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                with socket.create_connection(
+                    (self.host, self.port), timeout=0.5
+                ) as connection:
+                    connection.settimeout(0.8)
+                    banner = connection.recv(255)
+                    if banner.startswith(b"SSH-"):
+                        return True
+            except OSError:
+                pass
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.1)
+
     def _guest_setup_script(self, public_key: str) -> str:
         key = self.validate_public_key(public_key)
         quoted_key = shlex.quote(key)
