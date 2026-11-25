@@ -33,6 +33,7 @@ from collections import deque
 
 import time
 import os
+import sys
 import json
 import logging
 
@@ -46,6 +47,23 @@ from engine.telemetry.runtime import record_direct  # noqa: PLC0415
 from engine.core.prompt_utils import clean_prompt, enforce_hard_limit  # noqa: PLC0415
 
 logger = logging.getLogger("orn.bridge")
+
+
+def _find_native_library() -> Path | None:
+    """Localiza a biblioteca nativa compatível com o sistema operacional."""
+    native_dir = Path(__file__).resolve().parents[2] / "native"
+    if os.name == "nt":
+        names = ("orn.dll",)
+    elif sys.platform == "darwin":
+        names = ("liborn.dylib", "orn.dylib")
+    else:
+        names = ("liborn.so", "orn.so")
+
+    for name in names:
+        candidate = native_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
 
 # ---------------------------------------------------------------------------
 # Configuração de memória
@@ -185,6 +203,8 @@ class BridgeConfig:
             return False
         return None
     def __post_init__(self) -> None:
+        # Aceita Path ou str e expande ~ antes de resolver aliases/ambiente.
+        self.model_path = Path(self.model_path).expanduser()
         # Normaliza valores opcionais recebidos no construtor.
         self.cache_type_k = self._normalize_optional_text(self.cache_type_k)
         self.cache_type_v = self._normalize_optional_text(self.cache_type_v)
@@ -334,22 +354,24 @@ class BridgeConfig:
         if self.active_window > self.n_ctx:
             self.active_window = self.n_ctx
 
-        # --- T1: resolução de alias via catálogo ---
-        # Se model_path ainda é o default hardcoded, tenta resolver via catálogo.
-        # Precedência: ORN_MODEL_PATH > ORN_MODEL_ALIAS > active_alias > default.
+        # --- T1: resolução de modelo via ambiente/catálogo ---
+        # Um model_path explícito no construtor tem precedência sobre o ambiente.
+        # Quando permanece no default: ORN_MODEL_PATH > ORN_MODEL_ALIAS >
+        # active_alias > caminho default. Um ORN_MODEL_PATH inexistente é
+        # preservado para que _load() mostre o erro real, sem trocar de modelo.
         _default_hardcoded = Path("models/smolm_sys/smollm2-135m-instruct-q2_k.gguf")
-        try:
-            _is_default = (self.model_path == _default_hardcoded)
-        except Exception:
-            _is_default = False
-        if _is_default:
-            try:
-                from engine.tools.model_catalog import resolve_active_model
-                _resolved = resolve_active_model()
-                if _resolved is not None:
-                    self.model_path = _resolved
-            except Exception:
-                pass  # OSL-15: mantém o default hardcoded
+        if self.model_path == _default_hardcoded:
+            env_model_path = os.environ.get("ORN_MODEL_PATH", "").strip()
+            if env_model_path:
+                self.model_path = Path(env_model_path).expanduser()
+            else:
+                try:
+                    from engine.tools.model_catalog import resolve_active_model
+                    _resolved = resolve_active_model()
+                    if _resolved is not None:
+                        self.model_path = Path(_resolved).expanduser()
+                except Exception:
+                    pass  # OSL-15: mantém o default hardcoded
 
 # ---------------------------------------------------------------------------
 # KV-cache — sliding window (Relatório §2.2)
@@ -445,15 +467,23 @@ class SiCDoxBridge:
         self._affinity_applied = False
         
         self._native: Any = None
-        if os.environ.get("ORN_NATIVE_BACKEND", "").lower() in {"1", "true", "on"}:
-            from engine.core.native_backend import NativeBackend
-            dll = Path(__file__).parent.parent.parent / "native" / "orn.dll"
-            self._native = NativeBackend(
-                dll_path   = dll,
-                model_path = self._cfg.model_path,
-                n_ctx      = self._cfg.n_ctx,
-                n_threads  = self._cfg.n_threads,
-            )
+        native_flag = os.environ.get("ORN_NATIVE_BACKEND", "").strip().lower()
+        self._native_disabled = native_flag in {"0", "false", "off", "no"}
+        if native_flag in {"1", "true", "on"}:
+            native_library = _find_native_library()
+            if native_library is not None:
+                from engine.core.native_backend import NativeBackend
+                self._native = NativeBackend(
+                    dll_path   = native_library,
+                    model_path = self._cfg.model_path,
+                    n_ctx      = self._cfg.n_ctx,
+                    n_threads  = self._cfg.n_threads,
+                )
+            else:
+                logger.info(
+                    "ORN_NATIVE_BACKEND solicitado, mas não há biblioteca "
+                    "nativa compatível; será usado llama-cpp-python."
+                )
         
         self._llm: Any           = None
         self._ctx: ContextWindow = ContextWindow(
@@ -906,19 +936,23 @@ class SiCDoxBridge:
 
         print("  Modo direto — carregando modelo (rápido via mmap)...", flush=True)
 
-        # 1. Tentativa via DLL nativa (Vulcan / Ptah)
-        from engine.core.native_backend import NativeBackend
-        dll_path = Path(__file__).parent.parent.parent / "native" / "orn.dll"
-        if dll_path.exists():
+        # 1. Tentativa opcional via biblioteca nativa (DLL/SO).
+        # ORN_NATIVE_BACKEND=0 desativa também a descoberta automática.
+        native_library = None if self._native_disabled else _find_native_library()
+        if native_library is not None:
             try:
+                from engine.core.native_backend import NativeBackend
                 self._native = NativeBackend(
-                    dll_path=dll_path,
+                    dll_path=native_library,
                     model_path=self._cfg.model_path,
                     n_ctx=self._cfg.n_ctx,
                     n_threads=self._cfg.n_threads,
                 )
                 self._native.load()
-                print("  [✓] Backend Nativo (orn.dll) ativado com sucesso!", flush=True)
+                print(
+                    f"  [✓] Backend Nativo ({native_library.name}) ativado com sucesso!",
+                    flush=True,
+                )
                 return
             except Exception as e:
                 print(f"  [!] Falha no Backend Nativo, caindo pro Python. Erro: {e}")
