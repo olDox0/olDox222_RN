@@ -3077,6 +3077,69 @@ def sandbox_shell(cmd: tuple[str, ...]) -> None:
     from engine.tools.sandbox_controller import SandboxController
     print(SandboxController().shell(line, timeout=30))
 
+@sandbox.command("terminal")
+@click.option("--timeout", "-t", type=int, default=180, show_default=True,
+              help="Segundos de espera para iniciar o Alpine.")
+def sandbox_terminal(timeout: int) -> None:
+    """Abre um terminal SSH interativo no Alpine persistente."""
+    from engine.tools.qemu_ssh import QemuSSHClient
+
+    client = QemuSSHClient()
+    try:
+        client.require_ssh_tools()
+        public_key = client.ensure_client_key()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    daemon = _get_sandbox_daemon(timeout=timeout)
+
+    if not client.wait_for_forward(timeout=2.0):
+        Display.warn(
+            "O QEMU ativo não parece ter o encaminhamento SSH (127.0.0.1:"
+            f"{client.port} -> Alpine:22)."
+        )
+        if not click.confirm(
+            "Reiniciar o QEMU para aplicar o encaminhamento SSH?",
+            default=False,
+        ):
+            raise click.ClickException(
+                "Reinicialização cancelada. Execute "
+                "'orn sandbox daemon restart' e tente novamente."
+            )
+        daemon.stop()
+        if not daemon.start(timeout=timeout):
+            raise click.ClickException(
+                "Falha ao reiniciar o QEMU. Consulte 'orn sandbox probe -w qemu'."
+            )
+        if not client.wait_for_forward(timeout=5.0):
+            raise click.ClickException(
+                f"A porta SSH {client.port} não abriu após reiniciar o QEMU."
+            )
+
+    try:
+        client.configure_guest(daemon, public_key)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(
+            f"Não foi possível preparar o SSH no Alpine: {exc}"
+        ) from exc
+
+    if not client.wait_for_ssh(timeout=5.0):
+        raise click.ClickException(
+            "A porta encaminhada não apresentou um banner SSH. "
+            "Verifique a porta ORN_QEMU_SSH_PORT e o log do QEMU."
+        )
+
+    Display.success(
+        f"SSH pronto: {client.username}@{client.host}:{client.port}. "
+        "Use exit para fechar a sessão; o QEMU continuará ativo."
+    )
+    try:
+        exit_code = client.open_terminal()
+    except OSError as exc:
+        raise click.ClickException(f"Falha ao executar OpenSSH: {exc}") from exc
+    if exit_code:
+        raise SystemExit(exit_code)
+
 @sandbox.command("check")
 def sandbox_check() -> None:
     """Verifica o estado dos pacotes dentro do Alpine."""
