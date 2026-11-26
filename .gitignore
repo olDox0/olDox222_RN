@@ -138,9 +138,16 @@ o
 # ── Binários nativos ──
 native/*.exe
 
+# Python generated artifacts
+tests/**/__pycache__/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # Exceções (Auto-fixed pelo Doxoade)
 !requirements.txt
 !PipelineHelp.txt
 !tests/
 !tests/**
+tests/**/__pycache__/
+tests/**/*.pyc

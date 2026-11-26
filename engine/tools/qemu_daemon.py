@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Optional
 
 from engine.tools.qemu_sandbox import QemuSandbox, SandboxResult
-from engine.tools.qemu_ssh import qemu_user_netdev
 
 HOST = "127.0.0.1"
 PORT_CANDIDATES = [8373, 8374, 8375, 8376]
@@ -36,16 +35,6 @@ DISK_SIZE_MB = 512
 DEFAULT_QEMU_RAM_MB = 512
 MIN_QEMU_RAM_MB = 256
 MAX_QEMU_RAM_MB = 8192
-
-
-def _has_shell_prompt(buffer: bytes) -> bool:
-    """Reconhece o prompt root independentemente do diretório corrente."""
-    return bool(
-        re.search(
-            rb"(?:^|\r?\n)[A-Za-z0-9_.-]+:[^\r\n]*#\s*$",
-            buffer,
-        )
-    )
 
 
 def _resolve_qemu_memory_mb(memory_mb: int | str | None = None) -> int:
@@ -364,7 +353,10 @@ class QemuDaemon:
         self.log.info("_try_boot: guest RAM=%d MiB", self.memory_mb)
         # Detecção de aceleração nativa para Windows com fallback TCG.
 
+        # Acelerador: WHPX prioritário, TCG como fallback.
         accel_flags = ["-accel", "whpx", "-accel", "tcg"]
+
+        # Perfil de CPU configurável.
         cpu_model = os.environ.get("ORN_QEMU_CPU_MODEL", "").strip()
         cpu_flags = ["-cpu", cpu_model] if cpu_model else []
 
@@ -521,7 +513,7 @@ class QemuDaemon:
             if not chunk:
                 break
             buffer += chunk
-            if _has_shell_prompt(buffer):
+            if b"~#" in buffer:
                 got_prompt = True
                 break
             if b"login:" in buffer.lower():
