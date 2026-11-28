@@ -124,14 +124,17 @@ orn sandbox daemon restart
 
 **Arquivos-alvo:** `engine/tools/disk_forge.py`, `engine/tools/qemu_daemon.py`.
 
-### T05 — Verificar aceleração e CPU exposta [P0] — concluída
+### T05 — Verificar aceleração e CPU exposta [P0] — passthrough e ISA validados; acelerador do EXP-010 ainda a confirmar
 - [x] Testar inicialização isolada de WHPX: retorno `WHPX_INIT_OK`.
-- [x] Confirmar que o processo QEMU da VM (PID 16452) carrega `WinHvPlatform.dll`, além de o teste isolado WHPX ter passado; evidência de WHPX ativo no processo da VM.
-- [x] Registrar comando QEMU com `-accel whpx -accel tcg`, `-smp 2` e RAM 1.280 MiB.
-- [x] Registrar CPU virtual no guest: `QEMU Virtual CPU version 2.5+`, fabricante `GenuineIntel`, família 15, modelo 107, 2 CPUs lógicas expostas.
-- [x] Registrar flags do guest: `mmx`, `sse`, `sse2`, `pni` (SSE3), entre outras flags genéricas; não aparecem `ssse3`, `sse4_1`, `sse4_2` ou `avx`.
-- [x] Definir compilação genérica, sem `-march=native` e sem `GGML_NATIVE=ON`.
-- [x] Registrar diferença entre CPU física do host (Intel Core i5-1235U) e CPU virtual genérica apresentada ao Alpine.
+- [x] Confirmar em rodada anterior que o processo QEMU carregou `WinHvPlatform.dll` (evidência de WHPX naquele processo/rodada).
+- [x] Registrar CPU física do host: Intel Core i5-1235U, 10C/12T.
+- [x] Registrar configuração do EXP-010: `-accel whpx -accel tcg -cpu host,vmx=off -m 2048M -smp 2`.
+- [x] Confirmar no guest flags SSE4.2, AVX, AVX2, AVX-VNNI, FMA, F16C e BMI2.
+- [x] Compilar e executar smoke test C com AVX2/FMA/F16C; resultados esperados foram obtidos.
+- [x] Confirmar `llama_print_system_info()` do wheel nativo com AVX2, AVX-VNNI, FMA, F16C e BMI2 ativos.
+- [ ] Confirmar qual acelerador (WHPX ou TCG) foi efetivamente selecionado durante o benchmark EXP-010.
+
+**Nota histórica:** a CPU virtual genérica QEMU 2.5+ sem SSSE3/SSE4/AVX foi observada antes de definir `ORN_QEMU_CPU_MODEL=host,vmx=off`; não descreve o ambiente do EXP-010.
 
 **Critério:** a aceleração e o conjunto de instruções usados no benchmark são conhecidos.
 
@@ -139,7 +142,7 @@ orn sandbox daemon restart
 
 ## Sprint C — Toolchain Alpine e Python
 
-### T06 — Provisionar dependências de build [P0] — dependências APK instaladas; venv pendente
+### T06 — Provisionar dependências de build [P0] — toolchain e venv validados; pacote llama-cpp permanece isolado por PYTHONPATH
 Dentro do Alpine:
 - [x] Confirmar Alpine 3.24.4, Python 3.14.10 e pip 26.1.2.
 - [x] Confirmar GCC 15.2.0 e `musl-dev` instalados.
@@ -155,7 +158,9 @@ Dentro do Alpine:
 - [x] Validar `pip check`: `No broken requirements found`.
 - [x] Validar pacotes instalados: NumPy 2.5.5, scikit-build-core 1.1.2, typing-extensions 4.16.0, DiskCache 5.6.3 e Jinja2 3.1.6.
 - [x] Medir o espaço após o venv: 670,0 MiB usados, 909,0 MiB livres em `/`.
-- [ ] Registrar importações e executar teste de CMake dentro do venv.
+- [x] Usar o Python do venv para executar o build CMake/scikit-build do wheel 0.3.38.
+- [x] Validar importação de `llama_cpp` no wheel extraído via `PYTHONPATH`.
+- [ ] Instalar o wheel selecionado dentro do venv depois de decidir o perfil padrão.
 
 **Nota:** APK finalizou com `OK: 561.1 MiB in 107 packages`; esse valor é o total reportado do sistema, não o incremento isolado da instalação. Python foi atualizado de `3.14.10-r1` para `3.14.10-r2`.
 
