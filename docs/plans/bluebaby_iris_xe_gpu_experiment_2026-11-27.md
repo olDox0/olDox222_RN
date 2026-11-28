@@ -54,7 +54,7 @@ Componentes a investigar:
 
 Gate de descoberta: `sycl-ls` deve listar a Iris Xe como um dispositivo GPU Level Zero. A simples presença do driver de vídeo no Gerenciador de Dispositivos não prova que o runtime de computação esteja funcional.
 
-A versão de driver informada (`32.0.101.7088`) será registrada como estado inicial, não como requisito fixo. As notas do Intel oneAPI 2026.2, atualizadas em 2026-10-22, listam uma versão mais recente de driver cliente para Iris Xe/Arc (`101.8826`). Antes da instalação do toolkit, verificar a matriz de compatibilidade atual e decidir se a atualização é necessária; não atualizar no escuro nem misturar versões durante o benchmark.
+A versão de driver informada (`32.0.101.7088`) será registrada como estado inicial, não como requisito fixo. O Microsoft Update Catalog lista esse pacote em publicações de junho/julho de 2026. As notas Intel oneAPI 2026.2 (atualizadas em 2026-10-22) recomendam o driver cliente `32.0.101.8826` para Iris Xe/Arc. Antes da instalação do toolkit, verificar a matriz de compatibilidade e decidir se a atualização é necessária; não atualizar no escuro nem misturar versões durante o benchmark.
 
 ## 5. Fases propostas
 
