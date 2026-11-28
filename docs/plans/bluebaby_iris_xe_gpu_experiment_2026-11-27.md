@@ -31,7 +31,7 @@ A ficha oficial Intel do i5-1235U lista:
 
 A arquitetura Iris Xe LP descreve cada EU como um bloco de execução multithreaded. Portanto, a unidade relevante para a avaliação de compute é o total de EUs, não a quantidade de saídas de vídeo.
 
-**Ainda precisa ser confirmado no equipamento:** ID PCI/Device Manager real, nome apresentado pelo driver, quantidade de EUs reconhecida pelo runtime, velocidade/configuração dos canais da RAM e memória compartilhada disponível. A expressão Intel “Graphics eligible” na página do processador também recomenda verificar a identificação efetiva do adaptador no próprio Windows, sem depender apenas do nome comercial do processador.
+**Condição importante de elegibilidade:** a Intel informa que a marca Iris Xe exige memória de 128 bits (dois canais); em configuração de canal único, a marca indicada é Intel UHD. Portanto, é necessário confirmar a configuração de memória real do Bluebaby, apesar de o Windows já reportar “Intel(R) Iris(R) Xe Graphics”. **Ainda precisa ser confirmado no equipamento:** ID PCI/Device Manager real, nome apresentado pelo driver, quantidade de EUs reconhecida pelo runtime, velocidade/configuração dos canais da RAM e memória compartilhada disponível.
 
 ## 3. Viabilidade preliminar
 
@@ -132,6 +132,8 @@ O relatório deve separar tempo de inicialização e transferência de pesos do 
 ## 8. Referências técnicas
 
 - [Intel — especificações do Core i5-1235U](https://www.intel.com.br/content/www/br/pt/products/sku/226261/intel-core-i51235u-processor-12m-cache-up-to-4-40-ghz/specifications.html)
+- [Intel — notas de versão do oneAPI Toolkit 2026.2 (drivers recomendados)](https://www.intel.com/content/www/us/en/developer/articles/release-notes/oneapi-toolkit/2026.html)
+- [Microsoft Update Catalog — driver 32.0.101.7088](https://www.catalog.update.microsoft.com/Search.aspx?q=Intel%20Corporation%20-%20Display%2032.0.101.7088)
 - [Intel — arquitetura Iris Xe / Execution Units](https://www.intel.com/content/www/us/en/docs/oneapi/optimization-guide-gpu/2023-0/intel-iris-xe-gpu-architecture.html)
 - [llama.cpp — backend SYCL](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/SYCL.md)
 - [Intel — executar LLMs em GPUs Intel com llama.cpp](https://www.intel.com/content/www/us/en/developer/articles/technical/run-llms-on-gpus-using-llama-cpp.html)
