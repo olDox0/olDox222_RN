@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Blitz Plan
 
 **Data:** 2026-11-24  
-**Status:** execução em andamento; backend CPU nativo medido no Alpine/QEMU; integração ORN ainda pendente  
+**Status:** execução em andamento; backend CPU genérico/nativo medido no Alpine/QEMU; integração ORN/SiCDoxBridge ainda pendente  
 **Repositório:** `olDox0/olDox222_RN`  
 **Taskier:** [alpine_orn_taskier.md](alpine_orn_taskier.md)
 
@@ -27,7 +27,7 @@ A hipótese não será tratada como conclusão antecipada:
 | CPU | Modelo exato a registrar no inventário |
 | Hospedeiro | Windows + QEMU |
 | Convidado | Alpine Linux x86_64 |
-| RAM inicial do QEMU | 1.280 MiB |
+| RAM inicial do QEMU | 1.280 MiB (primeiro perfil); benchmark EXP-010 executado com 2.048 MiB |
 | vCPU do QEMU | 2 |
 | Aceleração | Registrar se WHPX ou TCG está efetivamente ativo |
 | Modelo | Qwen2.5-Coder-0.5B-Instruct, GGUF Q4_K_M |
@@ -200,7 +200,7 @@ Usar prompts determinísticos e aquecimento separado. Reportar mediana, média e
 ## 8. Fora do escopo inicial
 
 - Portabilidade do backend `orn.dll` para Linux.
-- GPU, CUDA, Vulkan ou aceleração por dispositivo.
+- GPU/SYCL no ciclo CPU atual; Iris Xe tem plano separado para fase posterior no Windows hospedeiro.
 - Otimização avançada de quantização KV, Flash Attention ou OpenMP.
 - Serviço remoto Windows↔Alpine.
 - Alpine nativo fora do QEMU.
