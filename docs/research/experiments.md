@@ -116,3 +116,33 @@ Status: aguardando confirmacao de qual metodo usar no ambiente do projeto.
   EXP-009 -- ConceptMapper no proprio engine/
     Objetivo: gerar seed_graph.json do engine/ atual.
     Prerequisito: Fase 2 implementada.
+
+---
+
+## EXP-010 -- llama.cpp CPU nativo no Alpine/QEMU (2026.11.27)
+
+Objetivo: comparar o wheel genérico x86-64 com um wheel `llama-cpp-python 0.3.38` compilado para a CPU exposta pelo QEMU (`-cpu host,vmx=off`).
+
+Ambiente: Bluebaby / Intel Core i5-1235U; Alpine 3.24.4; QEMU com 2 vCPUs e 2.048 MiB; GCC 15.2.0; Qwen2.5-Coder-0.5B-Instruct Q2_K (SHA256 registrado no relatório).
+
+Build nativo: `-O3 -march=native -mtune=native`, `GGML_NATIVE=ON`, OpenMP/BLAS/CUDA desligados e compilação serial. AVX2, AVX-VNNI, FMA, F16C e BMI2 foram confirmados no backend; smoke test do modelo passou.
+
+Resultados (média de 3 execuções, 2 threads):
+- Genérico: prefill 7,566 tok/s; decode 6,511 tok/s; requisição 3,920 tok/s.
+- Nativo: prefill 110,199 tok/s; decode 35,961 tok/s; requisição 28,461 tok/s.
+- Pico RSS: 507,5 MiB genérico; 637,0 MiB nativo.
+- Nativo em 1 thread: prefill 85,358; decode 25,263; requisição 20,516 tok/s.
+
+Conclusão: o perfil nativo teve ganhos expressivos nesta configuração. O ganho é do perfil completo de compilação e não pode ser atribuído a uma instrução isolada. O ORN/SiCDoxBridge ainda não foi validado por este experimento.
+
+Relatório completo: [alpine_qwen_cpu_simd_benchmark_2026-11-27.md](alpine_qwen_cpu_simd_benchmark_2026-11-27.md).
+
+## EXP-011 -- Intel Iris Xe no Bluebaby (planejado)
+
+Objetivo: avaliar inferência com GPU offload via backend SYCL do llama.cpp no Windows hospedeiro, depois de concluída a etapa CPU/ORN no Alpine.
+
+Dado informado: adaptador `Intel(R) Iris(R) Xe Graphics`, driver `32.0.101.7088`. Para o Core i5-1235U, a ficha Intel informa 80 EUs, OpenCL 3.0, dois mecanismos de codec e suporte a até quatro monitores. Os quatro monitores não são quatro unidades de processamento.
+
+Primeiro gate: inventário real do dispositivo e do driver, depois `sycl-ls` com a GPU enumerada via Level Zero. Só então construir llama.cpp com SYCL, executar o mesmo GGUF e comparar CPU vs. GPU no mesmo host.
+
+Plano: [bluebaby_iris_xe_gpu_experiment_2026-11-27.md](../plans/bluebaby_iris_xe_gpu_experiment_2026-11-27.md).
