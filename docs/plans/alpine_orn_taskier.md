@@ -303,3 +303,40 @@ A coleta mais recente reportou C: com 94,05 GiB livres de 236,33 GiB (39,8% livr
 | D05 | Preservar o perfil restritivo `code` | Obrigatória |
 | D06 | Persistência e capacidade de disco verificadas antes do build | Obrigatória |
 | D07 | Manter backend Windows e Linux comparáveis antes de alegar ganho do SO | Obrigatória |
+
+---
+
+## Atualização experimental — 2026-11-27
+
+### CPU/SIMD do Alpine/QEMU
+
+- [x] QEMU reiniciado com `-cpu host,vmx=off -m 2048M -smp 2`.
+- [x] Alpine confirmou `MemTotal: 2025356 kB`.
+- [x] GCC `-march=native` reconheceu AVX2, AVX-VNNI, BMI2, F16C, FMA e SSE4.2.
+- [x] Programa C executou AVX2, FMA e F16C com resultados esperados.
+- [x] Wheel genérico `llama-cpp-python 0.3.38` preservado.
+- [x] Wheel nativo 0.3.38 compilado serialmente, extraído separadamente e carregado via `PYTHONPATH`.
+- [x] Smoke test do Qwen concluiu geração válida; dependências do `libggml-cpu.so` resolvidas.
+- [x] Benchmark CPU genérico vs. nativo concluído em três execuções por perfil.
+- [x] Benchmark nativo com uma thread concluído.
+
+**Resultados e parâmetros completos:** [alpine_qwen_cpu_simd_benchmark_2026-11-27.md](../research/alpine_qwen_cpu_simd_benchmark_2026-11-27.md).
+
+**Limite do gate:** o wheel nativo ainda foi testado isoladamente, fora da instalação principal do venv. A integração `SiCDoxBridge.ask()`, concorrência e estabilidade prolongada continuam pendentes. Portanto, T08/T10/T12 não devem ser consideradas integralmente fechadas apenas por estes testes.
+
+### T17 — Avaliar Intel Iris Xe do Bluebaby via SYCL [P2] — planejado
+
+- [ ] Fazer inventário do adaptador, PNP ID, driver e memória compartilhada no Windows.
+- [ ] Confirmar enumeração da GPU via `sycl-ls` / Level Zero.
+- [ ] Verificar compatibilidade de driver e Intel oneAPI antes da instalação.
+- [ ] Construir llama.cpp com backend SYCL em ambiente separado no Windows hospedeiro.
+- [ ] Testar o Qwen do EXP-010 com offload parcial e máximo.
+- [ ] Comparar CPU e GPU no mesmo host, commit, GGUF, prompt e parâmetros.
+- [ ] Registrar utilização, clocks, memória compartilhada, RSS, latência e tokens/s.
+- [ ] Só depois avaliar integração no ORN.
+
+**Observação de hardware:** o Intel Core i5-1235U é especificado com 80 Execution Units (EUs), frequência gráfica dinâmica máxima de 1,20 GHz e OpenCL 3.0. A ficha indica até 4 monitores suportados; esse número não representa quatro motores de computação. O driver informado pelo operador é `32.0.101.7088`; sua compatibilidade com o runtime oneAPI escolhido deve ser conferida na fase T17.
+
+**Plano detalhado:** [bluebaby_iris_xe_gpu_experiment_2026-11-27.md](bluebaby_iris_xe_gpu_experiment_2026-11-27.md).
+
+T17 é posterior à conclusão da validação do ORN/SiCDoxBridge no Alpine. O QEMU atual não tem passthrough de GPU configurado; o primeiro ensaio SYCL deve ser no Windows hospedeiro.
