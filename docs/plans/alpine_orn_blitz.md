@@ -23,13 +23,13 @@ A hipótese não será tratada como conclusão antecipada:
 |---|---|
 | Máquina hospedeira | Bluebaby |
 | RAM física | 16 GB (inventário: 15,69 GiB visíveis) |
-| Disco/volume do repositório | C: com 15,69 GiB livres na coleta; capacidade do disco físico deve ser reconciliada com a especificação informada de 125 GB |
-| CPU | Modelo exato a registrar no inventário |
+| Disco/volume do repositório | NVMe ADATA de 238,47 GiB; C: 236,33 GiB. Última coleta registrada em 24-11-2026: 94,05 GiB livres (~39,8%) |
+| CPU | Intel Core i5-1235U, 10 núcleos / 12 threads lógicos |
 | Hospedeiro | Windows + QEMU |
 | Convidado | Alpine Linux x86_64 |
 | RAM inicial do QEMU | 1.280 MiB (primeiro perfil); benchmark EXP-010 executado com 2.048 MiB |
 | vCPU do QEMU | 2 |
-| Aceleração | Registrar se WHPX ou TCG está efetivamente ativo |
+| Aceleração | WHPX identificado em rodada anterior; no EXP-010 a linha continha `-accel whpx -accel tcg`, mas o acelerador efetivo não foi revalidado |
 | Modelo | Qwen2.5-Coder-0.5B-Instruct, GGUF Q4_K_M |
 | Backend Python | llama-cpp-python compilado dentro do Alpine |
 | Inferência inicial | CPU, 2 threads, contexto 1.024, lote 32, saída até 64 tokens |
@@ -42,10 +42,10 @@ O disco físico de 125 GB não significa que todo esse espaço esteja livre. O e
 
 A inspeção do código atual identificou:
 
-- `engine/tools/qemu_daemon.py`: inicialmente usava `-m 512M` fixo; T03 agora permite configurar a RAM pelo argumento `QemuDaemon(memory_mb=...)` ou pela variável `ORN_QEMU_RAM_MB`, preservando 512 MiB como default legado. O intervalo aceito é 256–8.192 MiB. Os 12 testes unitários passaram; a VM ainda foi iniciada com 512 MiB na coleta, então a validação de 1.280 MiB permanece pendente.
-- Inventário do host em 2026-11-24: Intel Core i5-1235U (10C/12T), Windows 11 Pro build 26300, QEMU 11.1.0, 15,69 GiB de RAM visível e 7,92 GiB livres. Unidade C: tinha 15,69 GiB livres.
+- `engine/tools/qemu_daemon.py`: inicialmente usava `-m 512M` fixo; T03 agora permite configurar a RAM pelo argumento `QemuDaemon(memory_mb=...)` ou pela variável `ORN_QEMU_RAM_MB`, preservando 512 MiB como default legado. O intervalo aceito é 256–8.192 MiB. Os 12 testes unitários passaram. Depois, o guest confirmou 1.280 MiB em uma rodada e 2.048 MiB na rodada do EXP-010.
+- Inventário do host em 2026-11-24: Intel Core i5-1235U (10C/12T), Windows 11 Pro build 26300, QEMU 11.1.0 e 15,69 GiB de RAM visível. Uma coleta posterior em 24-11-2026 registrou C: com 94,05 GiB livres de 236,33 GiB.
 - QCOW2 atual: 2 GiB virtuais, ~353 MiB ocupados fisicamente, sem flag de corrupção. Isso contradiz o pressuposto de que a imagem existente teria apenas 512 MiB; o valor de 512 é default de criação, não tamanho constatado.
-- A primeira execução do inventário do guest ocorreu com QEMU offline (PID antigo morto). O daemon iniciou depois com sucesso; o inventário do guest precisa ser repetido.
+- A primeira execução do inventário do guest ocorreu com QEMU offline. Depois, o Alpine iniciou, teve persistência comprovada por sentinela e, no EXP-010, reconheceu `MemTotal: 2025356 kB`.
 - `engine/tools/disk_forge.py`: `DiskForge.forge_qcow2()` cria discos novos com 512 MB por padrão.
 - `engine/tools/qemu_daemon.py`: existe a constante `DISK_SIZE_MB = 512`; sua relação com o valor usado pelo DiskForge precisa ser consolidada.
 - `engine/tools/sandbox_controller.py`: o método `run()` aplica limites por processo, inclusive `ulimit -v 262144`. Esse perfil é para execução de código e não deve ser reutilizado para inferência.
@@ -97,7 +97,7 @@ Registrar:
 ### B1 — Infraestrutura persistente e dimensionável
 
 - [x] Tornar a RAM do QEMU configurável por argumento ou variável de ambiente, preservando o default de 512 MiB.
-- [x] Aplicar 1.280 MiB como valor configurável deste experimento (validação local ainda pendente).
+- [x] Aplicar 1.280 MiB como primeiro valor configurável e validar no guest; posteriormente, validar 2.048 MiB para o EXP-010.
 - Confirmar que o convidado realmente recebe a RAM configurada.
 - Inspecionar a imagem QCOW2 e o filesystem antes de expandir.
 - Planejar disco virtual sparse de referência de 6 GiB, sujeito à confirmação do espaço livre no hospedeiro.
