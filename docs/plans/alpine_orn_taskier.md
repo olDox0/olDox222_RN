@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Taskier
 
-**Data:** 2026-11-24  
-**Status:** Execução em andamento — T01, T03, T05 e T06 concluídas; venv validado; resize do QCOW2 preparado, expansão pendente  
+**Data:** 2026-11-27  
+**Status:** Execução em andamento — T01, T03, T05 e T06 validadas; wheels genérico e nativo 0.3.38 compilados e testados isoladamente; benchmark CPU/SIMD concluído; integração `SiCDoxBridge.ask()` pendente; T17 (GPU Iris Xe) planejada para fase posterior  
 **Plano-mestre:** [alpine_orn_blitz.md](alpine_orn_blitz.md)
 
 ## Legenda
@@ -19,7 +19,7 @@ Prioridades: **P0** bloqueia o avanço; **P1** necessária para o objetivo; **P2
 
 ### T00 — Registrar o estado do Bluebaby [P0] — parcial
 - [x] Executar `scripts/alpine_orn_host_inventory.ps1`.
-- [x] Registrar CPU: Intel Core i5-1235U, 10 cores / 12 threads (flags de instruções ainda pendentes).
+- [x] Registrar CPU: Intel Core i5-1235U, 10 cores / 12 threads; flags do host foram expostas e verificadas no guest após habilitar CPU host.
 - [x] Registrar SO: Windows 11 Pro, build 26300.
 - [x] Registrar QEMU: 11.1.0; executável em `C:\Program Files\qemu\`.
 - [x] Registrar RAM: 15,69 GiB total, 7,92 GiB livres na coleta.
@@ -168,41 +168,45 @@ Dentro do Alpine:
 
 **Critério:** manifesto de dependências Linux sem pacotes pesados não utilizados.
 
-### T08 — Compilar llama-cpp-python no Alpine [P0]
+### T08 — Compilar llama-cpp-python no Alpine [P0] — build genérico e nativo concluídos; instalação definitiva pendente
 - [x] Fixar versão/tag do llama-cpp-python: `v0.3.38`.
-- [ ] Registrar o commit do submódulo llama.cpp embutido no sdist/tag e validar versão.
-- [ ] Começar com CPU baseline: `GGML_NATIVE=OFF` e desligar explicitamente `GGML_SSE42`, `GGML_AVX`, `GGML_AVX2`, `GGML_BMI2`, `GGML_FMA` e `GGML_F16C`.
-- [ ] Desligar `LLAVA_BUILD`, OpenMP, BLAS, CUDA e exemplos/testes/server não necessários.
-- [ ] Compilar com paralelismo 1 para limitar pico de RAM.
-- [ ] Instalar dentro do venv.
-- [ ] Validar importação e registrar versão/caminho do módulo.
+- [x] Registrar o commit do llama.cpp embutido: `f5e6915c28f10330885fcb9243a93ae98d3115ab`.
+- [x] Construir e preservar wheel genérico x86-64 com extensões SIMD modernas desativadas.
+- [x] Construir wheel nativo com `-O3 -march=native -mtune=native` e `GGML_NATIVE=ON`.
+- [x] Desligar OpenMP, BLAS e CUDA nos dois perfis comparados.
+- [x] Compilar serialmente (`CMAKE_BUILD_PARALLEL_LEVEL=1`); o build nativo usou diretório CMake persistente em `/var/tmp/orn-cmake-native`.
+- [x] Validar importação por `PYTHONPATH` e confirmar flags SIMD no backend nativo.
+- [x] Resolver dependências do `libggml-cpu.so` e executar smoke test do Qwen no backend nativo.
+- [ ] Instalar o wheel selecionado dentro de `/opt/orn-runtime/venv` após decisão de qual perfil será o runtime padrão.
 
-**Critério:** extensão nativa carrega em Alpine/musl sem erros de linker ou ABI.
+**Critério parcial atendido:** ambos os wheels carregam em Alpine/musl sem dependências ausentes; a instalação definitiva no venv permanece deliberadamente separada.
 
 ---
 
 ## Sprint D — Modelo e inferência
 
-### T09 — Disponibilizar e identificar o GGUF [P0]
-- [ ] Usar Qwen2.5-Coder-0.5B-Instruct Q4_K_M.
-- [ ] Conferir o repositório de origem e o nome exato do arquivo.
-- [ ] Baixar para diretório persistente fora do venv.
-- [ ] Registrar tamanho, metadados e SHA256.
-- [ ] Garantir que modelo e artefatos grandes não sejam adicionados ao Git.
+### T09 — Disponibilizar e identificar o GGUF [P0] — modelo Q2_K usado no EXP-010; Q4_K_M continua pendente
+- [x] Disponibilizar Qwen2.5-Coder-0.5B-Instruct Q2_K em `/opt/orn-models`, fora do venv e do checkout Git.
+- [x] Registrar nome exato: `qwen2.5-coder-0.5b-instruct-q2_k.gguf`.
+- [x] Registrar tamanho aproximado: 390,28 MiB.
+- [x] Registrar SHA256: `f9bddf294ef15c80bb64a2cdcf15d5b25caf88fb4f4a12383bc9f7a01a09c2e3`.
+- [x] Validar metadados e template `chat_template.default`; modelo carregou e gerou saída válida.
+- [ ] Registrar/verificar a origem de distribuição do arquivo.
+- [ ] Executar a matriz planejada com Q4_K_M, caso ainda seja necessária para o objetivo ORN.
 
-**Critério:** arquivo completo, reconhecido pelo llama.cpp e identificado por checksum.
+**Critério parcial atendido:** GGUF Q2_K identificado por checksum, reconhecido pelo llama.cpp e utilizado no EXP-010.
 
-### T10 — Criar teste de inferência mínima [P0]
-- [ ] Criar teste reproduzível para carregar o GGUF via `llama-cpp-python`.
-- [ ] Configurar contexto 1.024, lote 32, 2 threads, CPU-only.
-- [ ] Usar mmap habilitado e mlock desabilitado.
-- [ ] Limitar a saída a 64 tokens.
-- [ ] Registrar load time, prompt eval, generation time, tokens/s e RSS.
-- [ ] Executar três vezes e confirmar ausência de OOM.
+### T10 — Criar teste de inferência mínima [P0] — smoke test e benchmark isolado concluídos
+- [x] Criar script reproduzível temporário `/var/tmp/orn-qwen-bench.py` (ainda não versionado).
+- [x] Configurar contexto 1.024, batch/ubatch 32, 2 threads, mmap ligado e mlock desligado.
+- [x] Limitar cada geração a 64 tokens; usar temperatura 0 e seed 42.
+- [x] Separar aquecimento de três amostras medidas por backend.
+- [x] Registrar prompt/decode tokens/s, latência total e pico RSS.
+- [x] Executar três amostras para os perfis genérico e nativo, além do nativo em uma thread, sem OOM.
+- [ ] Versionar o script como ferramenta de benchmark e incluir saída JSON estruturada.
+- [ ] Repetir em Q4_K_M se esse formato for escolhido para a validação final do ORN.
 
-**Arquivo sugerido:** `tests/test_alpine_runtime.py`.
-
-**Critério:** três execuções sequenciais com saída válida e sem encerramento por falta de memória.
+**Critério parcial atendido:** inferência isolada e benchmark controlado concluídos para Q2_K; integração ORN segue separada.
 
 ---
 
@@ -242,56 +246,58 @@ Dentro do Alpine:
 
 ## Sprint F — Benchmark e conclusão
 
-### T14 — Preparar benchmark controlado [P1]
-- [ ] Reutilizar/adaptar `tests/orn_llama_deep_profiler.py`.
-- [ ] Fixar prompts, GGUF, versão do backend e parâmetros.
-- [ ] Separar warm-up das amostras.
-- [ ] Medir carga, prompt eval, geração, tokens/s, RSS, CPU e latência total.
+### T14 — Preparar benchmark controlado [P1] — comparação CPU parcial concluída
+- [ ] Reutilizar/adaptar `tests/orn_llama_deep_profiler.py` ou versionar um script específico Alpine.
+- [x] Fixar prompt, GGUF, versão do backend e parâmetros no EXP-010.
+- [x] Separar warm-up das três amostras medidas.
+- [x] Medir prefill, decode, velocidade da requisição, latência total e RSS.
 - [ ] Emitir JSON com configuração completa e resultados.
-- [ ] Reportar média, mediana e desvio padrão.
+- [x] Reportar média e mediana; desvio padrão ainda não incluído.
 
-### T15 — Executar matriz comparativa [P1]
-- [ ] Windows com backend/versão equivalentes.
-- [ ] Alpine em QEMU com 1.280 MiB.
-- [ ] Repetir Alpine com 2.048 MiB e 3.072 MiB, se estável e útil.
-- [ ] Registrar aceleração QEMU para cada rodada.
+### T15 — Executar matriz comparativa [P1] — Alpine CPU genérico/nativo concluído parcialmente
+- [ ] Windows com backend/versão equivalentes para comparação rigorosa.
+- [ ] Repetir exatamente o mesmo script em 1.280 MiB se a comparação de RAM for relevante.
+- [x] Alpine/QEMU com 2.048 MiB, 2 vCPUs e CPU host passthrough.
+- [x] Comparar wheel genérico e nativo no mesmo guest, modelo, prompt e parâmetros.
+- [ ] Testar 3.072 MiB somente se houver hipótese de memória a validar.
+- [ ] Confirmar o acelerador efetivo (WHPX ou TCG) durante a rodada do benchmark.
 - [ ] Manter `orn.dll` como comparação separada se não for o mesmo backend.
-- [ ] Reservar Alpine nativo para uma fase futura.
+- [ ] Reservar Alpine nativo fora do QEMU para uma fase futura.
 
 **Critério:** comparação reproduzível sem atribuir ao SO diferenças causadas pelo backend, CPU ou virtualização.
 
-### T16 — Relatório e decisão [P1]
-- [ ] Documentar ganhos e regressões de portabilidade.
-- [ ] Separar economia de RAM/overhead de ganho em tokens/s.
-- [ ] Registrar limitações do QEMU/musl e trabalho necessário para Alpine nativo.
-- [ ] Decidir entre: otimizar QEMU, melhorar o backend Linux ou planejar teste nativo.
-- [ ] Atualizar o Blitz com os resultados finais.
+### T16 — Relatório e decisão [P1] — relatório preliminar EXP-010 registrado
+- [x] Documentar ganhos e custo adicional de RSS dos perfis genérico/nativo.
+- [x] Separar otimização de compilação/SIMD de alegações sobre desempenho do SO.
+- [x] Registrar limitações do QEMU, backend e amostragem.
+- [x] Definir continuação pela integração ORN no Alpine e teste posterior de vCPUs/OpenMP/GPU.
+- [x] Atualizar o Blitz com resultados preliminares.
+- [ ] Finalizar decisão global após validação do `SiCDoxBridge.ask()` e estabilidade prolongada.
 
 **Critério:** decisão técnica sustentada pelos dados.
 
 ---
 
-## Próxima sequência de execução
+## Estado atual e próxima sequência — 2026-11-27
 
-O host reportou 15,69 GiB livres em C: (236,33 GiB, cerca de 6,6% livres). `Get-Disk` identificou um único NVMe ADATA de 238,47 GiB. O mapa GPT indica: partição 1 System/EFI 0,10 GiB; partição 2 Reserved 0,02 GiB; partição 3 C: 236,33 GiB; partição 4 M: FAT32 com label `ALPINE`, 1,00 GiB; partição 5 Recovery, 1,03 GiB. Os volumes sem letra correspondem às partições pequenas do disco. **Não apagar nem formatar nenhuma partição.** Suspender downloads/builds grandes até recuperar espaço em C:; a expansão QCOW2 continua sem necessidade demonstrada.
+### Concluído e validado
+- T01: persistência do Alpine comprovada por sentinela sobrevivente ao reboot.
+- T03: RAM do QEMU configurável; perfis de 1.280 MiB e 2.048 MiB foram reconhecidos pelo guest em inicializações diferentes.
+- T05: WHPX foi identificado em rodada anterior; passthrough `-cpu host,vmx=off` disponibilizou AVX2/FMA/F16C etc. nesta rodada. A aceleração efetiva WHPX/TCG ainda precisa ser anotada especificamente no benchmark EXP-010.
+- T06: toolchain e venv dedicado disponíveis.
+- T08: wheels genérico e nativo 0.3.38 compilados; wheel nativo validado via `PYTHONPATH`, sem substituir a instalação do venv.
+- T09/T10: Qwen Q2_K identificado por SHA256, smoke test e benchmark concluídos isoladamente.
+- T14/T15/T16: relatório comparativo CPU inicial produzido; a matriz Windows equivalente e dados estruturados permanecem pendentes.
 
-O comando sentinela executou `printf TOKEN > file && cat file` sem newline no arquivo. O `QemuDaemon.shell()` acrescenta um marcador na saída e filtra a linha que contém o marcador; por isso o texto pode ser descartado apesar do comando ter sido executado. Validar com:
-```cmd
-python -c "from engine.tools.qemu_daemon import QemuDaemon; print(QemuDaemon().shell('test \"$(cat /workspace/.orn_alpine_persistence_probe)\" = ORN_PERSIST_20261124 && echo SENTINEL_OK || echo SENTINEL_MISSING'))"
-```
-O `echo` escreve uma linha terminada em newline, permitindo ao parser preservar o resultado.
+### Próximas ações
+1. **Prioridade P0 — T11/T12:** disponibilizar checkout fixo do ORN no Alpine, mapear dependências mínimas e validar `SiCDoxBridge.ask()`/`shutdown()` usando o backend Linux.
+2. **T13:** executar caminho CLI representativo, requisições sequenciais e medir estabilidade/RSS.
+3. **T14/T15:** versionar script de benchmark, adicionar saída JSON/desvio padrão e decidir se a comparação Windows 0.3.38 é necessária.
+4. **Experimentos CPU seguintes:** testar 4 vCPUs e OpenMP em rodadas separadas; não misturar variáveis.
+5. **T17 — GPU:** manter a Iris Xe como experimento posterior no Windows hospedeiro, depois da etapa CPU/ORN. A VM QEMU atual não possui passthrough de GPU.
 
-### Estado atual e próxima sequência
-
-T01 e T03 estão concluídas. A persistência do Alpine foi comprovada pela sobrevivência do sentinela ao reboot; a RAM de 1.280 MiB foi aplicada e reconhecida pelo guest.
-
-1. **T02 / capacidade:** backup inicial SHA256 verificado; agora raiz do guest tem ~909 MiB livres. MBR confirmado: vda2 inicia no setor 616448 e termina no 4194303. Preparar `growpart`/`resize2fs`; fazer segundo backup depois de parar QEMU antes do resize 2→4 GiB.
-2. **T05:** concluída. `WinHvPlatform.dll` foi encontrada no processo QEMU PID 16452; o guest expõe QEMU Virtual CPU 2.5+ com SSE/SSE2/SSE3, sem SSSE3/SSE4/AVX. Compilar para baseline genérico.
-3. **Modelos locais:** Qwen2.5-Coder 0.5B Q2_K, 395,9 MiB, disponível para smoke test. SmolLM2 135M Q4_K_M, 100,6 MiB, disponível para teste rápido de carga; não comparar diretamente resultados de modelos diferentes.
-4. **T06–T08:** depois de fechar capacidade e CPU, provisionar toolchain e compilar `llama-cpp-python` dentro do Alpine.
-
-A coleta mais recente reportou C: com 94,05 GiB livres de 236,33 GiB (39,8% livres), portanto o bloqueio anterior de armazenamento foi resolvido. A partição M: de 1 GiB, label `ALPINE`, permanece sem finalidade confirmada; não alterar nem formatar partições.
-
+### Armazenamento
+O QCOW2 continua com 2 GiB virtuais. A expansão para 4 GiB é pendente de necessidade concreta e backup adicional; não é pré-requisito para o benchmark atual. Não alterar a partição M: `ALPINE` nem partições EFI/MSR/Recovery do host.
 ## Registro de decisões
 
 | ID | Decisão | Estado |
