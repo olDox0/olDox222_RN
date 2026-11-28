@@ -1,7 +1,7 @@
 # ORN Alpine Runtime — Blitz Plan
 
 **Data:** 2026-11-24  
-**Status:** Planejamento aprovado; execução ainda não iniciada  
+**Status:** execução em andamento; backend CPU nativo medido no Alpine/QEMU; integração ORN ainda pendente  
 **Repositório:** `olDox0/olDox222_RN`  
 **Taskier:** [alpine_orn_taskier.md](alpine_orn_taskier.md)
 
@@ -218,3 +218,17 @@ O Blitz será considerado concluído quando:
 - vinte requisições sequenciais concluídas;
 - benchmark Windows/QEMU documentado sem comparação enganosa;
 - decisão fundamentada sobre continuar para Alpine nativo ou otimização do QEMU.
+
+## 10. Atualização experimental — 2026-11-27
+
+A fase de backend CPU avançou além do perfil genérico inicial. Foi construído e validado um wheel nativo `llama-cpp-python 0.3.38` com `-O3 -march=native -mtune=native` e `GGML_NATIVE=ON`. O QEMU foi iniciado com `-cpu host,vmx=off -m 2048M -smp 2`; o Alpine reconheceu aproximadamente 2 GiB e as instruções AVX2, AVX-VNNI, FMA, F16C e BMI2.
+
+Benchmark comparativo com mesmo GGUF, prompt e parâmetros:
+- Genérico (2 threads): 7,566 tok/s prefill; 6,511 decode; 3,920 requisição.
+- Nativo (2 threads): 110,199 tok/s prefill; 35,961 decode; 28,461 requisição.
+
+O wheel nativo também passou no smoke test de geração e no teste de dependências. Os resultados não fecham a integração do ORN: `SiCDoxBridge.ask()`, concorrência e estabilidade ainda precisam ser testados.
+
+Relatório: [alpine_qwen_cpu_simd_benchmark_2026-11-27.md](../research/alpine_qwen_cpu_simd_benchmark_2026-11-27.md).
+
+O experimento GPU continua fora do escopo do gate CPU atual, mas agora tem plano separado para execução posterior no Windows hospedeiro: [bluebaby_iris_xe_gpu_experiment_2026-11-27.md](bluebaby_iris_xe_gpu_experiment_2026-11-27.md). A VM QEMU atual não possui passthrough de GPU configurado.
